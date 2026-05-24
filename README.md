@@ -232,7 +232,7 @@ Each specialist has:
 ### Database Layer
 - **Thread-Safe Singleton**: RLock for reentrancy, double-checked locking
 - **Connection Pool**: Single connection instance with thread-safe operations
-- **Specialist Tables**: specialist_registry, cartridge_offsets, ema_history
+- **Specialist Tables**: specialist_registry, cartridge_offsets, ema_history, cascade_checkpoints, qid_expansions
 
 ### Model Management
 - **Unified Architecture**: Single LLMRunner (llm_manager.py) across all modules
@@ -257,6 +257,15 @@ Each specialist has:
 - **Updated Trafilatura**: Version 2.0.0 with improved extraction
 - **Rate Limiting**: Anti-blocking delays and User-Agent rotation
 - **Trust Scoring**: Tier-based source evaluation
+
+## Latest Results (2026-05-24)
+
+First complete pipeline run with cascade mode:
+- **Phase A**: 19 checkpoints, ~9.5M entities scanned, **525,203 Wikidata matches** across 15 specialists
+- **QID Expansion**: 203 additional QIDs discovered progressively through co-occurrence matching
+- **Phase B**: 45 knowledge packages generated, all 15 specialists processed (3 cycles each)
+- **EMA Scores**: Improved from baseline 0.10 to **0.19-0.25** across all specialists
+- **Processing Time**: ~8 hours for full cascade (Phase A) + ~2 hours for Phase B
 
 ## Configuration
 
