@@ -296,7 +296,7 @@ class LLMRunner:
         self.ollama_port = ollama_port or OLLAMA_PORT
         self.verification_engine = OfflineVerificationEngine()
         self.current_model: Optional[str] = None
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None
         self.api_base_url = f"http://{self.ollama_host}:{self.ollama_port}"
     
     def _get_running_models(self) -> List[RunningModel]:
@@ -436,6 +436,9 @@ class LLMRunner:
         Returns:
             bool: True if successful, False otherwise
         """
+        # Lazy initialize lock to avoid creating it outside event loop
+        if self._lock is None:
+            self._lock = asyncio.Lock()
         async with self._lock:
             # Verify model exists locally
             if not self.verify_model_exists(model_name):

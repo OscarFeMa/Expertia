@@ -316,7 +316,7 @@ class DatabaseManager:
                 
                 cursor.execute("""
                     CREATE INDEX IF NOT EXISTS idx_ema_specialist
-                    ON ema_history(specialist_id)
+                    ON ema_history(specialist_id, timestamp)
                 """)
                 
                 self._get_connection().commit()
