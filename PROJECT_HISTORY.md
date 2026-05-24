@@ -218,21 +218,16 @@
 - Path validation with auto-creation of output directories
 - Progress persistence to database (`cartridge_offsets`)
 
-### Ready for Deployment
-- Full Phase A (Wikidata Dissection) execution — no wdsub required
-- Phase B (Web scraping + LLM distillation) integrated
-- Cross-drive operations configured (E: for data, D: for code)
-- Fallback mechanism for extraction failures
-- Comprehensive error handling with retry logic
-
-### Pending Implementation
-- Unit tests (db_manager, web_scraper, dissect_wikidata)
-- Transitive P279 traversal for deeper Wikidata ontological matching
-- Migration from legacy expert_registry to specialist_registry
-- GitHub repository initialization
-- Dashboard for real-time monitoring
-- Removal/deprecation of legacy modules after validation
-- Auto-pull fallback for Ollama models (missing models)
+### Phase 9: Cascade Wikidata + Parallel Phase B + Real-time Dashboard (2026-05-24)
+- **Batch Wikidata Extractor**: Single-pass scan matching ALL 15 specialists simultaneously (45x faster)
+- **Cascade Mode**: Progressive scanning with checkpoints every 500K entities, data persisted per checkpoint
+- **QID Expansion**: Automatic discovery of related QIDs via co-occurrence matching (203 expanded QIDs)
+- **Real-time Dashboard**: Streamlit UI with cascade progress, speed chart, ETA, per-specialist tracking
+- **Phase B v2**: 8 queries/cycle (varied by cycle), 5 results/query, all distilled, saved to knowledge_packages
+- **Parallel Phase B**: Concurrent asyncio.gather within model groups
+- **First Full Run**: 19 checkpoints, ~9.5M entities, 525K Wikidata matches, 45 knowledge packages
+- **EMA Results**: All 15 specialists improved from 0.10 to 0.19-0.25
+- **Pipeline Status Table**: Shared DB table for real-time orchestrator↔dashboard communication
 
 ---
 *History document generated automatically by Cascade*
