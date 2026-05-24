@@ -358,12 +358,22 @@ class ContentExtractor:
                 import json
                 content_dict = json.loads(content)
                 
+                from urllib.parse import urlparse
+                domain = urlparse(url).netloc.lower()
+                high_trust = any(d in domain for d in [
+                    'wikipedia', 'britannica', 'nature.com', 'sciencedirect',
+                    'ieee', 'acm.org', 'arxiv', 'springer', 'pubmed',
+                    'reuters', 'bloomberg', 'ft.com', 'wsj',
+                ])
+                trust_score = 85 if high_trust else 65
+                
                 result = {
                     'title': content_dict.get('title', ''),
                     'content': content_dict.get('text', ''),
                     'author': content_dict.get('author', ''),
                     'date': content_dict.get('date', ''),
-                    'url': url
+                    'url': url,
+                    'trust_score': trust_score,
                 }
                 
                 logger.info(f"Successfully extracted content from {url}")
@@ -374,7 +384,7 @@ class ContentExtractor:
             
         except httpx.TimeoutException:
             logger.error(f"Timeout while fetching {url}")
-            raise ScraperScraperTimeoutError(f"Timeout while fetching {url}")
+            raise ScraperTimeoutError(f"Timeout while fetching {url}")
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
                 logger.error(f"Rate limit while fetching {url}")
@@ -426,7 +436,7 @@ class ModernWebScraper:
         # Search for URLs
         try:
             search_results = search_duckduckgo(query, max_results)
-        except (RateLimitError, ScraperScraperTimeoutError) as e:
+        except (RateLimitError, ScraperTimeoutError) as e:
             logger.error(f"Search failed: {e}")
             raise
         except WebScraperError as e:
@@ -446,7 +456,7 @@ class ModernWebScraper:
                     # Store in database using thread-safe manager
                     self._store_content(content, query)
                     
-            except (RateLimitError, ScraperScraperTimeoutError) as e:
+            except (RateLimitError, ScraperTimeoutError) as e:
                 logger.warning(f"Skipping {url} due to error: {e}")
                 continue
             except WebScraperError as e:
