@@ -1,25 +1,5 @@
 # Expertia
-## The Autonomous Specialist Orchestration Engine
-
-Expertia es un motor de orquestación de agentes especializados diseñado para hardware local con recursos limitados. Su propósito es gestionar un ecosistema de "micro-cerebros" (modelos LLM de baja huella de memoria), cada uno dedicado a un ámbito específico del saber, alimentados por ontologías estructuradas (Wikidata) y actualizados mediante flujos de datos web en tiempo real.
-
-## Filosofía del Proyecto
-
-Expertia no busca ser un modelo generalista, sino un gestor de facultades. En lugar de entrenar un gigante, Expertia despliega el experto exacto para cada problema, garantizando que el razonamiento esté anclado en datos verificables y no en la probabilidad estadística de un modelo único.
-
-## Núcleo Tecnológico
-
-- **Lazy-Loading GPU Manager**: Gestión dinámica de VRAM para ejecutar modelos especializados en hardware con VRAM restringida (6GB-8GB).
-- **Streaming Ontology Filter**: Disección de conocimiento masivo mediante ijson, filtrando la información crítica según el dominio (P-codes/QIDs).
-- **Zero-Overhead Inference**: Comunicación directa con Ollama vía API para eliminar latencia y maximizar el rendimiento de tokens por segundo.
-
-## ¿Por qué Expertia?
-
-En el ecosistema de sistemas de IA actuales, existe una obsesión por escalar los modelos hacia arriba. Expertia escala hacia afuera: especializando, delegando y auditando. Es el motor fundamental para cualquier arquitectura que requiera conocimiento de dominio específico y alta fiabilidad en la respuesta.
-
-## Nota sobre el diseño
-
-La arquitectura de Expertia sigue un diseño topológico de "nodos independientes". Aunque el sistema está diseñado para integrarse en infraestructuras superiores (como SynapseCode), funciona como una variedad diferenciable independiente. El hecho de que converjan o no en el futuro es una cuestión que dejamos a las leyes de la cosmología del software.
+Expertia es un motor de orquestación de agentes especializados para hardware local. Gestiona redes de micro-modelos LLM (vía Ollama) con un sistema lazy-loading que optimiza la VRAM, permitiendo ejecutar expertos en distintos ámbitos sin saturar el sistema. Diseñado para un conocimiento estructurado, eficiente y soberano.
 
 ## Overview
 
@@ -304,3 +284,6 @@ Ready for GitHub repository creation with:
 - 15-specialist architecture implementation
 - Hardware-optimized configuration
 - Production-ready error handling
+=======
+Expertia es un motor de orquestación de agentes especializados para hardware local. Gestiona redes de micro-modelos LLM (vía Ollama) con un sistema lazy-loading que optimiza la VRAM, permitiendo ejecutar expertos en distintos ámbitos sin saturar el sistema. Diseñado para un conocimiento estructurado, eficiente y soberano.
+>>>>>>> 0a232b871b0aa6d5bd8abbc7909f59cb2b35a8a5
