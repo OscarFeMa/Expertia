@@ -1,0 +1,641 @@
+"""
+LLM Manager - Local Ollama Integration Module
+
+Handles local Ollama model interactions with:
+- Offline verification engine (ollama list parsing)
+- VRAM-aware Single-Active-Model pattern
+- HTTP API communication (localhost:11434/api/generate)
+- Performance optimization with async operations
+- Production-ready error handling and logging
+
+Hardware Constraints: NVIDIA RTX 1660 (6GB VRAM), 32GB RAM
+"""
+
+import subprocess
+import time
+import logging
+import json
+import asyncio
+from typing import Optional, List, Dict, Callable
+from dataclasses import dataclass
+from functools import wraps
+
+import aiohttp
+import requests
+
+from config.settings import (
+    OLLAMA_HOST,
+    OLLAMA_PORT,
+    LLM_TIMEOUT,
+    LLM_TEMPERATURE,
+    LLM_MAX_TOKENS,
+)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# CUSTOM EXCEPTIONS
+# ============================================================================
+
+class LocalModelNotFoundError(Exception):
+    """Raised when required model is not found in local Ollama cache."""
+    pass
+
+
+class ModelLoadError(Exception):
+    """Raised when model loading fails."""
+    pass
+
+
+class LLMQueryError(Exception):
+    """Raised when LLM query fails."""
+    pass
+
+
+class ModelTimeoutError(Exception):
+    """Raised when model operation times out."""
+    pass
+
+
+# ============================================================================
+# RETRY LOGIC WITH EXPONENTIAL BACKOFF
+# ============================================================================
+
+def retry_with_exponential_backoff(
+    max_retries: int = 3,
+    initial_delay: float = 1.0,
+    max_delay: float = 60.0,
+    backoff_factor: float = 2.0
+):
+    """Decorator for retry logic with exponential backoff.
+    
+    Args:
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds
+        max_delay: Maximum delay in seconds
+        backoff_factor: Multiplier for delay after each retry
+    """
+    def decorator(func: Callable):
+        @wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            delay = initial_delay
+            last_exception = None
+            
+            for attempt in range(max_retries):
+                try:
+                    return await func(*args, **kwargs)
+                except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        logger.warning(
+                            f"Attempt {attempt + 1}/{max_retries} failed: {e}. "
+                            f"Retrying in {delay:.1f}s..."
+                        )
+                        await asyncio.sleep(min(delay, max_delay))
+                        delay *= backoff_factor
+                    else:
+                        logger.error(f"All {max_retries} attempts failed")
+                        raise
+                except Exception as e:
+                    # Don't retry on non-retryable exceptions
+                    raise
+            
+            raise last_exception if last_exception else Exception("Retry logic failed")
+        
+        @wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            delay = initial_delay
+            last_exception = None
+            
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        logger.warning(
+                            f"Attempt {attempt + 1}/{max_retries} failed: {e}. "
+                            f"Retrying in {delay:.1f}s..."
+                        )
+                        time.sleep(min(delay, max_delay))
+                        delay *= backoff_factor
+                    else:
+                        logger.error(f"All {max_retries} attempts failed")
+                        raise
+            
+            raise last_exception if last_exception else Exception("Retry logic failed")
+        
+        # Return appropriate wrapper based on function type
+        if asyncio.iscoroutinefunction(func):
+            return async_wrapper
+        else:
+            return sync_wrapper
+    
+    return decorator
+
+
+# ============================================================================
+# DATA STRUCTURES
+# ============================================================================
+
+@dataclass
+class ModelInfo:
+    """Information about a local Ollama model."""
+    name: str
+    size: str
+    modified_at: str
+
+
+@dataclass
+class RunningModel:
+    """Information about a currently running model."""
+    name: str
+    size: str
+    status: str
+
+
+# ============================================================================
+# OFFLINE VERIFICATION ENGINE
+# ============================================================================
+
+class OfflineVerificationEngine:
+    """Verifies local Ollama model availability without network calls."""
+    
+    def __init__(self):
+        """Initialize the verification engine."""
+        self._cached_models: Optional[List[str]] = None
+        self._cache_timestamp: float = 0.0
+        self._cache_ttl: float = 60.0  # Cache for 60 seconds
+    
+    def _run_ollama_list(self) -> List[str]:
+        """Execute `ollama list` and parse output.
+        
+        Returns:
+            List[str]: List of available model names
+        """
+        try:
+            result = subprocess.run(
+                ["ollama", "list"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode != 0:
+                logger.error(f"ollama list failed: {result.stderr}")
+                return []
+            
+            # Parse output (format: "NAME    ID    SIZE    MODIFIED")
+            lines = result.stdout.strip().split('\n')
+            models = []
+            
+            for line in lines[1:]:  # Skip header
+                if line.strip():
+                    parts = line.split()
+                    if parts:
+                        model_name = parts[0].strip()
+                        models.append(model_name)
+            
+            return models
+            
+        except subprocess.TimeoutExpired:
+            logger.error("ollama list timed out")
+            return []
+        except Exception as e:
+            logger.error(f"Failed to run ollama list: {e}")
+            return []
+    
+    def get_available_models(self, force_refresh: bool = False) -> List[str]:
+        """Get list of available local models.
+        
+        Args:
+            force_refresh: Force cache refresh
+            
+        Returns:
+            List[str]: List of available model names
+        """
+        current_time = time.time()
+        
+        # Use cache if valid
+        if not force_refresh and self._cached_models is not None:
+            if (current_time - self._cache_timestamp) < self._cache_ttl:
+                return self._cached_models
+        
+        # Refresh cache
+        self._cached_models = self._run_ollama_list()
+        self._cache_timestamp = current_time
+        
+        return self._cached_models if self._cached_models else []
+    
+    def verify_model_exists(self, model_name: str) -> bool:
+        """Verify that a model exists in local Ollama cache.
+        
+        Args:
+            model_name: Name of the model to verify
+            
+        Returns:
+            bool: True if model exists, False otherwise
+        """
+        available_models = self.get_available_models()
+        
+        # Check exact match
+        if model_name in available_models:
+            logger.info(f"Model '{model_name}' found in local cache")
+            return True
+        
+        # Check partial match (e.g., "qwen2.5:3b" matches "qwen2.5:3b-instruct")
+        for available in available_models:
+            if model_name in available or available in model_name:
+                logger.info(f"Model '{model_name}' found as '{available}' in local cache")
+                return True
+        
+        logger.warning(f"Model '{model_name}' not found in local cache")
+        return False
+    
+    def require_model(self, model_name: str) -> None:
+        """Require a model to exist locally, raise exception if not found.
+        
+        Args:
+            model_name: Name of the model to require
+            
+        Raises:
+            LocalModelNotFoundError: If model is not found locally
+        """
+        if not self.verify_model_exists(model_name):
+            available = self.get_available_models()
+            error_msg = (
+                f"Required model '{model_name}' not found in local Ollama cache. "
+                f"Available models: {', '.join(available) if available else 'None'}. "
+                f"Please install with: ollama pull {model_name}"
+            )
+            logger.critical(error_msg)
+            raise LocalModelNotFoundError(error_msg)
+
+
+# ============================================================================
+# VRAM-AWARE MODEL HANDLER
+# ============================================================================
+
+class LLMRunner:
+    """VRAM-aware LLM runner with Single-Active-Model pattern."""
+    
+    def __init__(self, ollama_host: str = None, ollama_port: int = None):
+        """Initialize the LLM runner.
+        
+        Args:
+            ollama_host: Ollama server host (default from config.settings)
+            ollama_port: Ollama server port (default from config.settings)
+        """
+        self.ollama_host = ollama_host or OLLAMA_HOST
+        self.ollama_port = ollama_port or OLLAMA_PORT
+        self.verification_engine = OfflineVerificationEngine()
+        self.current_model: Optional[str] = None
+        self._lock = asyncio.Lock()
+        self.api_base_url = f"http://{self.ollama_host}:{self.ollama_port}"
+    
+    def _get_running_models(self) -> List[RunningModel]:
+        """Get list of currently running models via `ollama ps`.
+        
+        Returns:
+            List[RunningModel]: List of running models
+        """
+        try:
+            result = subprocess.run(
+                ["ollama", "ps"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode != 0:
+                logger.error(f"ollama ps failed: {result.stderr}")
+                return []
+            
+            # Parse output (format: "NAME    ID    SIZE    STATUS")
+            lines = result.stdout.strip().split('\n')
+            running_models = []
+            
+            for line in lines[1:]:  # Skip header
+                if line.strip():
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        running_models.append(RunningModel(
+                            name=parts[0],
+                            size=parts[1],
+                            status=parts[3]
+                        ))
+            
+            return running_models
+            
+        except subprocess.TimeoutExpired:
+            logger.error("ollama ps timed out")
+            return []
+        except Exception as e:
+            logger.error(f"Failed to run ollama ps: {e}")
+            return []
+    
+    def _stop_model(self, model_name: str) -> bool:
+        """Stop a running model via `ollama stop`.
+        
+        Args:
+            model_name: Name of the model to stop
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            logger.info(f"UNLOADING model: {model_name}")
+            result = subprocess.run(
+                ["ollama", "stop", model_name],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0:
+                logger.info(f"Successfully unloaded model: {model_name}")
+                return True
+            else:
+                logger.warning(f"Failed to unload model: {result.stderr}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout unloading model: {model_name}")
+            return False
+        except Exception as e:
+            logger.error(f"Error unloading model: {e}")
+            return False
+    
+    def _start_model(self, model_name: str) -> bool:
+        """Start a model via `ollama run` (lazy loading).
+        
+        Args:
+            model_name: Name of the model to start
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            logger.info(f"LOADING model: {model_name}")
+            # Use "exit" to immediately exit after loading (lazy loading)
+            result = subprocess.run(
+                ["ollama", "run", model_name, "exit"],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+            
+            if result.returncode == 0:
+                logger.info(f"Successfully loaded model: {model_name}")
+                return True
+            else:
+                logger.error(f"Failed to load model: {result.stderr}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout loading model: {model_name}")
+            return False
+        except Exception as e:
+            logger.error(f"Error loading model: {e}")
+            return False
+    
+    def verify_model_exists(self, model_name: str) -> bool:
+        """Verify that a model exists in local Ollama cache.
+        
+        Args:
+            model_name: Name of the model to verify
+            
+        Returns:
+            bool: True if model exists, False otherwise
+        """
+        return self.verification_engine.verify_model_exists(model_name)
+    
+    def require_model(self, model_name: str) -> None:
+        """Require a model to exist locally.
+        
+        Args:
+            model_name: Name of the model to require
+            
+        Raises:
+            LocalModelNotFoundError: If model is not found locally
+        """
+        self.verification_engine.require_model(model_name)
+    
+    async def ensure_model_loaded(self, model_name: str) -> bool:
+        """Ensure a model is loaded in VRAM (Single-Active-Model pattern).
+        
+        Args:
+            model_name: Name of the model to load
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        async with self._lock:
+            # Verify model exists locally
+            if not self.verify_model_exists(model_name):
+                self.require_model(model_name)
+                return False
+            
+            # Check current running models
+            running_models = self._get_running_models()
+            
+            # If the target model is already running, we're done
+            for running in running_models:
+                if running.name == model_name:
+                    logger.info(f"Model '{model_name}' already loaded in VRAM")
+                    self.current_model = model_name
+                    return True
+            
+            # If a different model is running, stop it
+            if running_models:
+                for running in running_models:
+                    if running.name != model_name:
+                        logger.info(f"Different model '{running.name}' is active, stopping...")
+                        if not self._stop_model(running.name):
+                            logger.warning(f"Failed to stop model '{running.name}'")
+            
+            # Start the target model
+            if not self._start_model(model_name):
+                logger.error(f"Failed to load model '{model_name}'")
+                return False
+            
+            # Wait for model to fully initialize in VRAM
+            logger.info(f"Waiting for model '{model_name}' to initialize in VRAM...")
+            await asyncio.sleep(3)  # Give VRAM time to allocate
+            
+            # Verify model is now running
+            running_models = self._get_running_models()
+            for running in running_models:
+                if running.name == model_name:
+                    logger.info(f"READY for inference: {model_name}")
+                    self.current_model = model_name
+                    return True
+            
+            logger.error(f"Model '{model_name}' failed to initialize in VRAM")
+            return False
+    
+    @retry_with_exponential_backoff(max_retries=3, initial_delay=1.0)
+    async def query_llm(
+        self,
+        model_name: str,
+        prompt: str,
+        timeout: int = None,
+        temperature: float = None,
+        max_tokens: int = None
+    ) -> str:
+        """Query the LLM via Ollama HTTP API with retry logic.
+        
+        Args:
+            model_name: Name of the model to use
+            prompt: Prompt to send to the model
+            timeout: Request timeout in seconds
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+            
+        Returns:
+            str: Generated response
+            
+        Raises:
+            LLMQueryError: If query fails
+            ModelTimeoutError: If query times out
+        """
+        # Ensure model is loaded
+        if not await self.ensure_model_loaded(model_name):
+            raise ModelLoadError(f"Failed to load model '{model_name}'")
+        
+        timeout = timeout or LLM_TIMEOUT
+        temperature = temperature or LLM_TEMPERATURE
+        max_tokens = max_tokens or LLM_MAX_TOKENS
+        
+        url = f"{self.api_base_url}/api/generate"
+        
+        payload = {
+            "model": model_name,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens
+            }
+        }
+        
+        logger.info(f"Sending query to model '{model_name}'")
+        
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
+                async with session.post(url, json=payload) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        raise LLMQueryError(f"API returned status {response.status}: {error_text}")
+                    
+                    result = await response.json()
+                    
+                    if "response" in result:
+                        logger.info(f"Query completed successfully")
+                        return result["response"]
+                    else:
+                        raise LLMQueryError("No response in API result")
+                        
+        except asyncio.TimeoutError:
+            logger.error(f"Query timed out after {timeout} seconds")
+            raise ModelTimeoutError(f"Query timed out after {timeout} seconds")
+        except aiohttp.ClientError as e:
+            logger.error(f"HTTP client error: {e}")
+            raise LLMQueryError(f"HTTP client error: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error during query: {e}")
+            raise LLMQueryError(f"Unexpected error: {e}")
+    
+    def query_llm_sync(
+        self,
+        model_name: str,
+        prompt: str,
+        timeout: int = 30,
+        temperature: float = 0.7,
+        max_tokens: int = 1000
+    ) -> str:
+        """Synchronous wrapper for query_llm (for non-async contexts).
+        
+        Args:
+            model_name: Name of the model to use
+            prompt: Prompt to send to the model
+            timeout: Request timeout in seconds
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+            
+        Returns:
+            str: Generated response
+        """
+        return asyncio.run(self.query_llm(
+            model_name=model_name,
+            prompt=prompt,
+            timeout=timeout,
+            temperature=temperature,
+            max_tokens=max_tokens
+        ))
+    
+    async def cleanup(self) -> None:
+        """Cleanup - stop current model if running."""
+        if self.current_model:
+            logger.info(f"Cleanup: Unloading model '{self.current_model}'")
+            self._stop_model(self.current_model)
+            self.current_model = None
+        logger.info("LLMRunner cleanup completed")
+
+
+# ============================================================================
+# FACTORY FUNCTION
+# ============================================================================
+
+def get_llm_runner(ollama_host: str = None, ollama_port: int = None) -> LLMRunner:
+    """Factory function to get LLMRunner instance.
+    
+    Args:
+        ollama_host: Ollama server host (default from config.settings)
+        ollama_port: Ollama server port (default from config.settings)
+        
+    Returns:
+        LLMRunner: Configured LLM runner instance
+    """
+    return LLMRunner(ollama_host=ollama_host, ollama_port=ollama_port)
+
+
+# ============================================================================
+# MAIN ENTRY POINT (FOR TESTING)
+# ============================================================================
+
+async def main():
+    """Main entry point for testing."""
+    runner = get_llm_runner()
+    
+    try:
+        # Test model verification
+        model_name = "qwen2.5:3b"
+        
+        if runner.verify_model_exists(model_name):
+            print(f"Model '{model_name}' is available locally")
+            
+            # Test query
+            response = await runner.query_llm(
+                model_name=model_name,
+                prompt="What is 2+2?",
+                timeout=30
+            )
+            print(f"Response: {response}")
+        else:
+            print(f"Model '{model_name}' is not available locally")
+            
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        await runner.cleanup()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

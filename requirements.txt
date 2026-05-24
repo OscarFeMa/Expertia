@@ -1,0 +1,21 @@
+# Async Expert Incubator - Dependencies
+# Python 3.10+
+
+# Web Search (Modernized)
+duckduckgo-search>=9.14.0
+
+# HTML Parsing and Content Extraction (Updated)
+trafilatura==2.0.0
+
+# Async HTTP Client for Ollama API (Updated)
+aiohttp>=3.10.0
+
+# Phase A: Wikidata Streaming (Zero-RAM-Bloat)
+ijson>=3.3.0
+kgtk>=2.0.0
+
+# Database Connection Pooling
+# (Using built-in sqlite3, no additional dependencies needed)
+
+# Type Hinting (included in Python 3.10+, but listed for clarity)
+# typing-extensions>=4.0.0
