@@ -19,6 +19,7 @@ import logging
 import json
 from pathlib import Path
 from typing import Dict, List, Optional, Set
+from decimal import Decimal
 from contextlib import contextmanager
 
 from database.db_manager import get_db_manager
@@ -102,6 +103,14 @@ TAG_TO_QID_MAP: Dict[str, str] = {
 # STREAMING EXTRACTOR
 # ============================================================================
 
+class DecimalEncoder(json.JSONEncoder):
+    """Custom encoder that handles Decimal types from Wikidata quantities."""
+    def default(self, obj):
+        if isinstance(obj, (Decimal,)):
+            return float(obj)
+        return super().default(obj)
+
+
 class WikidataStreamingExtractor:
     """Zero-RAM-Bloat Wikidata extractor using ijson and gzip streaming.
     
@@ -146,7 +155,7 @@ class WikidataStreamingExtractor:
     def _open_gzip_stream(self):
         """Context manager for gzip file streaming."""
         try:
-            with gzip.open(self.input_path, 'rt', encoding='utf-8', errors='replace') as f:
+            with gzip.open(self.input_path, 'rb') as f:
                 yield f
         except Exception as e:
             logger.error(f"Failed to open gzip stream: {e}")
@@ -232,7 +241,10 @@ class WikidataStreamingExtractor:
         matched_entities = []
         
         logger.info(f"[Expert {self.expert_id}] Starting extraction. Timeout: {timeout_hours}h")
-        logger.info(f"[Expert {self.expert_id}] Target QIDs: {len(self.target_qids)}")
+        if self._custom_matcher:
+            logger.info(f"[Expert {self.expert_id}] Using custom matcher (root QID from schema)")
+        else:
+            logger.info(f"[Expert {self.expert_id}] Target QIDs: {len(self.target_qids)}")
         
         try:
             with self._open_gzip_stream() as f:
@@ -299,7 +311,7 @@ class WikidataStreamingExtractor:
         try:
             with gzip.open(output_file, 'at', encoding='utf-8') as f:
                 for entity in entities:
-                    f.write(json.dumps(entity) + '\n')
+                    f.write(json.dumps(entity, cls=DecimalEncoder) + '\n')
         except Exception as e:
             logger.error(f"Failed to write entities to file: {e}")
             raise

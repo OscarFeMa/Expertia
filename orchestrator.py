@@ -16,6 +16,7 @@ import logging
 import json
 import asyncio
 from pathlib import Path
+from collections import defaultdict
 from typing import Dict, List, Optional, Callable
 
 from database.db_manager import get_db_manager
@@ -24,6 +25,7 @@ from web_scraper import ModernWebScraper, WebScraperError, RateLimitError
 from metrics import MetricsCollector
 
 from config.settings import (
+    LOGS_DIR,
     WIKIDATA_DUMP_PATH,
     WIKIDATA_OUTPUT_DIR as TARGET_OUTPUT_DIR,
     WIKIDATA_EXTRACTION_TIMEOUT_HOURS,
@@ -33,9 +35,15 @@ from config.settings import (
 
 
 # Configure logging
+from datetime import datetime
+log_file = LOGS_DIR / f"pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler(log_file, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -128,20 +136,23 @@ def validate_paths() -> bool:
 class PipelineController:
     """Main pipeline controller for Phase A and Phase B execution."""
     
-    def __init__(self, sample_size: Optional[int] = None):
+    def __init__(self, sample_size: Optional[int] = None, cycles_per_specialist: int = 3):
         """Initialize the pipeline controller.
         
         Args:
             sample_size: Optional limit for testing (None = full processing)
+            cycles_per_specialist: Number of cycles per specialist (default 3)
         """
         self.db_manager = get_db_manager()
         self.llm_runner = LLMRunner()
         self.web_scraper = ModernWebScraper()
         self.metrics = MetricsCollector()
         self._sample_size = sample_size
+        self._cycles_per_specialist = cycles_per_specialist
+        self._start_time = 0
     
     def initialize_specialists(self) -> bool:
-        """Initialize specialist registry in database.
+        """Initialize specialist registry in database, preserving existing EMA scores.
         
         Returns:
             bool: True if successful, False otherwise
@@ -152,12 +163,34 @@ class PipelineController:
                 logger.error("Failed to initialize specialist tables")
                 return False
             
-            # Insert specialists from registry
+            # Create pipeline_status table for real-time monitoring
+            self.db_manager.execute_query("""
+                CREATE TABLE IF NOT EXISTS pipeline_status (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    current_specialist TEXT DEFAULT '',
+                    current_model TEXT DEFAULT '',
+                    current_cycle INTEGER DEFAULT 0,
+                    total_cycles INTEGER DEFAULT 0,
+                    phase TEXT DEFAULT '',
+                    status TEXT DEFAULT 'IDLE',
+                    elapsed_seconds REAL DEFAULT 0,
+                    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            # Migrate: add start_epoch column if missing (pre-2026-05-24 schema)
+            try:
+                self.db_manager.execute_query("ALTER TABLE pipeline_status ADD COLUMN start_epoch REAL DEFAULT 0")
+            except Exception:
+                pass  # already exists
+            
+            # Insert or update specialists (preserves existing EMA scores)
             for specialist in SPECIALIST_REGISTRY:
                 try:
+                    # Insert if new (with base EMA), ignore if exists
                     self.db_manager.execute_query(
                         """
-                        INSERT OR REPLACE INTO specialist_registry 
+                        INSERT OR IGNORE INTO specialist_registry 
                         (domain, model, root_qid, properties, ema_score, tier, status)
                         VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
@@ -166,16 +199,34 @@ class PipelineController:
                             specialist['model'],
                             specialist['root'],
                             json.dumps(specialist['props']),
-                            0.10,  # Base EMA score
-                            3,  # Tier 3
+                            0.10,
+                            3,
                             'IDLE'
+                        )
+                    )
+                    # Update existing-record fields (preserves ema_score, packages_absorbed)
+                    self.db_manager.execute_query(
+                        """
+                        UPDATE specialist_registry 
+                        SET model = ?, root_qid = ?, properties = ?, tier = ?
+                        WHERE domain = ?
+                        """,
+                        (
+                            specialist['model'],
+                            specialist['root'],
+                            json.dumps(specialist['props']),
+                            3,
+                            specialist['domain'],
                         )
                     )
                     logger.info(f"Initialized specialist: {specialist['domain']}")
                 except Exception as e:
                     logger.error(f"Failed to insert specialist {specialist['domain']}: {e}")
             
-            logger.info("Specialist registry initialized successfully")
+            # Reset all to IDLE for fresh run
+            self.db_manager.execute_query("UPDATE specialist_registry SET status = 'IDLE'")
+            
+            logger.info("Specialist registry initialized successfully (existing EMA scores preserved)")
             return True
             
         except Exception as e:
@@ -220,6 +271,28 @@ class PipelineController:
             logger.warning(f"Specialist {specialist_id} marked as FALLBACK_TRIGGERED")
         except Exception as e:
             logger.error(f"Failed to register fallback: {e}")
+    
+    def _update_pipeline_status(self, specialist='', model='', cycle=0, total_cycles=0, phase='', status='IDLE'):
+        """Write current pipeline status to database for real-time dashboard."""
+        try:
+            now = time.time()
+            self.db_manager.execute_query(
+                "INSERT OR IGNORE INTO pipeline_status (id, status, start_epoch) VALUES (1, ?, ?)",
+                (status, now)
+            )
+            elapsed = now - self._start_time if self._start_time else 0
+            self.db_manager.execute_query(
+                """
+                UPDATE pipeline_status SET
+                    current_specialist = ?, current_model = ?, current_cycle = ?,
+                    total_cycles = ?, phase = ?, status = ?, elapsed_seconds = ?,
+                    start_epoch = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = 1
+                """,
+                (specialist, model, cycle, total_cycles, phase, status, elapsed, self._start_time)
+            )
+        except Exception as e:
+            logger.debug(f"Status update failed (non-critical): {e}")
     
     def update_ema_score(
         self,
@@ -420,18 +493,25 @@ class PipelineController:
         
         return success
     
-    async def run_phase_b(self, specialist: Dict) -> bool:
+    async def run_phase_b(self, specialist: Dict) -> Dict:
         """Run Phase B: Web scraping + LLM distillation for specialist.
         
         Args:
             specialist: Specialist dictionary
             
         Returns:
-            bool: True if successful, False otherwise
+            Dict with keys: success, contents_count, total_length, avg_trust
         """
         specialist_id = specialist['id']
         domain = specialist['domain']
         model = specialist['model']
+        
+        result = {
+            'success': False,
+            'contents_count': 0,
+            'total_length': 0,
+            'avg_trust': 50.0,
+        }
         
         logger.info(f"\n{'=' * 60}")
         logger.info(f"PHASE B: Web Scraping + Distillation for {domain}")
@@ -442,7 +522,7 @@ class PipelineController:
             model_loaded = await self.llm_runner.ensure_model_loaded(model)
             if not model_loaded:
                 logger.error(f"Failed to load model: {model}")
-                return False
+                return result
             
             # Update specialist status
             self.db_manager.execute_query(
@@ -462,6 +542,9 @@ class PipelineController:
             ]
             
             total_contents = 0
+            total_length = 0
+            trust_scores = []
+            
             for query in search_queries:
                     try:
                         # Direct await since search_and_extract is async
@@ -475,9 +558,13 @@ class PipelineController:
                         if results:
                             for content in results[:2]:  # Distill top 2 per query
                                 try:
+                                    content_text = content.get('content', '')
+                                    total_length += len(content_text)
+                                    trust_scores.append(content.get('trust_score', 50))
+                                    
                                     distill_prompt = (
                                         f"Summarize the following {domain} knowledge in 3 bullet points:\n\n"
-                                        f"{content.get('content', '')[:2000]}"
+                                        f"{content_text[:2000]}"
                                     )
                                     distillation = await self.llm_runner.query_llm(
                                         model_name=model,
@@ -509,15 +596,25 @@ class PipelineController:
                 (specialist_id,)
             )
             
+            avg_trust = sum(trust_scores) / len(trust_scores) if trust_scores else 50.0
+            
             logger.info(f"PHASE B completed for {domain}: {total_contents} contents extracted")
-            return total_contents > 0
+            
+            result['success'] = total_contents > 0
+            result['contents_count'] = total_contents
+            result['total_length'] = total_length
+            result['avg_trust'] = avg_trust
+            return result
             
         except Exception as e:
             logger.error(f"Phase B failed for {domain}: {e}")
-            return False
+            return result
     
     async def run_pipeline(self, sample_size: Optional[int] = None) -> None:
         """Run the complete pipeline for all specialists.
+        
+        Groups specialists by model to minimize VRAM load/unload,
+        and runs multiple cycles per specialist.
         
         Args:
             sample_size: Optional limit for testing (None = full processing)
@@ -526,14 +623,19 @@ class PipelineController:
         logger.info("CORAL THOUGHT ORCHESTRATOR - PIPELINE START")
         logger.info("=" * 80 + "\n")
         
+        self._start_time = time.time()
+        self._update_pipeline_status(status='INIT', phase='Inicializando...')
+        
         # Validate paths
         if not validate_paths():
             logger.critical("Path validation failed. Aborting.")
+            self._update_pipeline_status(status='ERROR', phase='Path validation failed')
             return
         
         # Initialize specialists
         if not self.initialize_specialists():
             logger.critical("Failed to initialize specialists. Aborting.")
+            self._update_pipeline_status(status='ERROR', phase='Failed to initialize specialists')
             return
         
         # Fetch specialists
@@ -543,36 +645,114 @@ class PipelineController:
             logger.warning("No specialists found. Aborting.")
             return
         
-        logger.info(f"Processing {len(specialists)} specialists...\n")
+        logger.info(f"Processing {len(specialists)} specialists, {self._cycles_per_specialist} cycle(s) each\n")
+        
+        # Group specialists by model for VRAM optimization
+        model_groups = defaultdict(list)
+        for specialist in specialists:
+            model_groups[specialist['model']].append(specialist)
+        
+        # Sort groups by model name for consistent ordering
+        sorted_models = sorted(model_groups.keys())
+        logger.info(f"Model groups: {len(sorted_models)} unique models\n")
+        for model_name, group in sorted(model_groups.items()):
+            domains = [s['domain'] for s in group]
+            logger.info(f"  {model_name} -> {', '.join(domains)}")
         
         try:
-            # Process each specialist
-            for specialist in specialists:
-                specialist_id = specialist['id']
-                domain = specialist['domain']
+            for model_name in sorted_models:
+                group = model_groups[model_name]
+                
+                self._update_pipeline_status(
+                    status='CHECKING_MODEL', phase=f'Verificando modelo: {model_name}'
+                )
+                
+                # Check if model is available locally before processing group
+                model_available = self.llm_runner.verify_model_exists(model_name)
+                if not model_available:
+                    self._update_pipeline_status(
+                        status='SKIPPED', phase=f'Modelo no encontrado: {model_name}'
+                    )
+                    logger.warning(f"\n{'=' * 80}")
+                    logger.warning(f"MODEL '{model_name}' NOT FOUND - skipping {len(group)} specialist(s)")
+                    logger.warning(f"{'=' * 80}\n")
+                    for specialist in group:
+                        self.update_ema_score(specialist['id'], False)
+                    continue
                 
                 logger.info(f"\n{'=' * 80}")
-                logger.info(f"Processing Specialist: {domain} (ID: {specialist_id})")
-                logger.info(f"Model: {specialist['model']}")
-                logger.info(f"Current EMA: {specialist['ema_score']:.3f}")
-                logger.info(f"{'=' * 80}")
+                logger.info(f"MODEL GROUP: {model_name} ({len(group)} specialist(s))")
+                logger.info(f"{'=' * 80}\n")
                 
-                try:
-                    # Phase A: Wikidata Extraction
-                    phase_a_success = await self.run_phase_a(specialist)
+                # Model will be loaded once for the entire group.
+                # ensure_model_loaded() keeps it in VRAM across calls.
+                for specialist in group:
+                    specialist_id = specialist['id']
+                    domain = specialist['domain']
                     
-                    # Phase B: Web Scraping (always run for delta updates)
-                    phase_b_success = await self.run_phase_b(specialist)
-                    
-                    # Update EMA score with dynamic scoring
-                    overall_success = phase_a_success or phase_b_success
-                    content_length = 500 if overall_success else 0
-                    trust_score = 70 if overall_success else 50
-                    self.update_ema_score(specialist_id, overall_success, content_length, trust_score)
-                    
-                except Exception as e:
-                    logger.error(f"Error processing specialist {domain}: {e}")
-                    self.update_ema_score(specialist_id, False)
+                    for cycle in range(1, self._cycles_per_specialist + 1):
+                        self._update_pipeline_status(
+                            specialist=domain, model=model_name,
+                            cycle=cycle, total_cycles=self._cycles_per_specialist,
+                            phase='Inicio de ciclo', status='ACTIVE'
+                        )
+                        
+                        # Accumulate sample across cycles
+                        cycle_sample = self._sample_size * cycle if self._sample_size else None
+                        original_sample = self._sample_size
+                        self._sample_size = cycle_sample
+                        
+                        logger.info(f"\n{'=' * 80}")
+                        logger.info(f"Processing: {domain} (ID: {specialist_id}) - Cycle {cycle}/{self._cycles_per_specialist}")
+                        logger.info(f"Model: {specialist['model']}")
+                        logger.info(f"Current EMA: {specialist['ema_score']:.3f}")
+                        logger.info(f"{'=' * 80}")
+                        
+                        try:
+                            # Phase A: Wikidata Extraction
+                            self._update_pipeline_status(
+                                specialist=domain, model=model_name,
+                                cycle=cycle, total_cycles=self._cycles_per_specialist,
+                                phase='Phase A: Wikidata Extraction', status='ACTIVE'
+                            )
+                            phase_a_success = await self.run_phase_a(specialist)
+                            
+                            # Phase B: Web Scraping (always run for delta updates)
+                            self._update_pipeline_status(
+                                specialist=domain, model=model_name,
+                                cycle=cycle, total_cycles=self._cycles_per_specialist,
+                                phase='Phase B: Web Scraping + Distillation', status='ACTIVE'
+                            )
+                            phase_b_result = await self.run_phase_b(specialist)
+                            
+                            # Update EMA score with REAL data from Phase B
+                            overall_success = phase_a_success or phase_b_result['success']
+                            content_length = phase_b_result.get('total_length', 0)
+                            trust_score = phase_b_result.get('avg_trust', 50)
+                            self.update_ema_score(specialist_id, overall_success, content_length, trust_score)
+                            
+                            # Restore original sample
+                            self._sample_size = original_sample
+                            
+                            # Re-fetch specialist to get updated EMA for next cycle
+                            if cycle < self._cycles_per_specialist:
+                                result = self.db_manager.execute_query(
+                                    "SELECT ema_score FROM specialist_registry WHERE id = ?",
+                                    (specialist_id,),
+                                    fetch=True
+                                )
+                                if result:
+                                    specialist['ema_score'] = result[0]['ema_score']
+                            
+                        except Exception as e:
+                            self._sample_size = original_sample
+                            self._update_pipeline_status(
+                                specialist=domain, model=model_name,
+                                cycle=cycle, total_cycles=self._cycles_per_specialist,
+                                phase=f'ERROR: {str(e)[:60]}', status='ERROR'
+                            )
+                            logger.error(f"Error processing {domain} cycle {cycle}: {e}")
+                            self.update_ema_score(specialist_id, False)
         
         finally:
             # Cleanup - ensure VRAM is freed even on error
@@ -582,6 +762,7 @@ class PipelineController:
         # Print final metrics summary
         self.metrics.print_summary()
         
+        self._update_pipeline_status(status='COMPLETED', phase='Pipeline finalizado')
         logger.info("\n" + "=" * 80)
         logger.info("PIPELINE COMPLETE")
         logger.info("=" * 80)
@@ -591,13 +772,14 @@ class PipelineController:
 # MAIN ENTRY POINT
 # ============================================================================
 
-async def main(sample_size: Optional[int] = None):
+async def main(sample_size: Optional[int] = None, cycles: int = 3):
     """Main entry point for the orchestrator.
     
     Args:
         sample_size: Optional limit for testing (None = full processing)
+        cycles: Number of cycles per specialist (default 3)
     """
-    controller = PipelineController(sample_size=sample_size)
+    controller = PipelineController(sample_size=sample_size, cycles_per_specialist=cycles)
     await controller.run_pipeline()
 
 
