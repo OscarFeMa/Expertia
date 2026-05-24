@@ -284,6 +284,3 @@ Ready for GitHub repository creation with:
 - 15-specialist architecture implementation
 - Hardware-optimized configuration
 - Production-ready error handling
-=======
-Expertia es un motor de orquestación de agentes especializados para hardware local. Gestiona redes de micro-modelos LLM (vía Ollama) con un sistema lazy-loading que optimiza la VRAM, permitiendo ejecutar expertos en distintos ámbitos sin saturar el sistema. Diseñado para un conocimiento estructurado, eficiente y soberano.
->>>>>>> 0a232b871b0aa6d5bd8abbc7909f59cb2b35a8a5

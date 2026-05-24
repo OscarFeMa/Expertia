@@ -463,33 +463,33 @@ class PipelineController:
             
             total_contents = 0
             for query in search_queries:
-                try:
-                    results = await asyncio.to_thread(
-                        self.web_scraper.search_and_extract,
-                        query=query,
-                        max_results=3,
-                    )
-                    total_contents += len(results)
-                    
-                    # If a model is loaded, distill each extracted content
-                    if results:
-                        for content in results[:2]:  # Distill top 2 per query
-                            try:
-                                distill_prompt = (
-                                    f"Summarize the following {domain} knowledge in 3 bullet points:\n\n"
-                                    f"{content.get('content', '')[:2000]}"
-                                )
-                                distillation = await self.llm_runner.query_llm(
-                                    model_name=model,
-                                    prompt=distill_prompt,
-                                )
-                                logger.debug(f"Distillation result: {distillation[:100]}...")
-                            except Exception as distill_err:
-                                logger.warning(f"Distillation failed: {distill_err}")
-                
-                except (RateLimitError, WebScraperError) as e:
-                    logger.warning(f"Search failed for '{query}': {e}")
-                    continue
+                    try:
+                        # Direct await since search_and_extract is async
+                        results = await self.web_scraper.search_and_extract(
+                            query=query,
+                            max_results=3,
+                        )
+                        total_contents += len(results)
+                        
+                        # If a model is loaded, distill each extracted content
+                        if results:
+                            for content in results[:2]:  # Distill top 2 per query
+                                try:
+                                    distill_prompt = (
+                                        f"Summarize the following {domain} knowledge in 3 bullet points:\n\n"
+                                        f"{content.get('content', '')[:2000]}"
+                                    )
+                                    distillation = await self.llm_runner.query_llm(
+                                        model_name=model,
+                                        prompt=distill_prompt,
+                                    )
+                                    logger.debug(f"Distillation result: {distillation[:100]}...")
+                                except Exception as distill_err:
+                                    logger.warning(f"Distillation failed: {distill_err}")
+                        
+                    except (RateLimitError, WebScraperError) as e:
+                        logger.warning(f"Search failed for '{query}': {e}")
+                        continue
             
             # Track metrics
             self.metrics.record_phase_b(

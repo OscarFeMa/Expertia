@@ -51,7 +51,7 @@ class RateLimitError(WebScraperError):
     pass
 
 
-class TimeoutError(WebScraperError):
+class ScraperTimeoutError(WebScraperError):
     """Exception raised when request times out."""
     pass
 
@@ -100,7 +100,7 @@ def search_duckduckgo(
     Raises:
         WebScraperError: If search fails or returns no results.
         RateLimitError: If rate limit is exceeded (HTTP 429).
-        TimeoutError: If request times out.
+        ScraperTimeoutError: If request times out.
     """
     if max_results is None:
         max_results = MAX_RESULTS_PER_SEARCH
@@ -143,7 +143,7 @@ def search_duckduckgo(
                 raise RateLimitError(f"Rate limit exceeded: {e}")
             elif 'timeout' in error_msg or 'timed out' in error_msg:
                 logger.error(f"Timeout for query '{query}': {e}")
-                raise TimeoutError(f"Request timeout: {e}")
+                raise ScraperTimeoutError(f"Request timeout: {e}")
             else:
                 raise WebScraperError(f"Search failed: {e}")
         
@@ -161,7 +161,7 @@ def search_duckduckgo(
         
         return sorted_results
         
-    except (RateLimitError, TimeoutError):
+    except (RateLimitError, ScraperTimeoutError):
         raise  # Re-raise specific exceptions
     except Exception as e:
         logger.error(f"Unexpected error in search for query '{query}': {e}")
@@ -374,7 +374,7 @@ class ContentExtractor:
             
         except httpx.TimeoutException:
             logger.error(f"Timeout while fetching {url}")
-            raise TimeoutError(f"Timeout while fetching {url}")
+            raise ScraperScraperTimeoutError(f"Timeout while fetching {url}")
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
                 logger.error(f"Rate limit while fetching {url}")
@@ -426,7 +426,7 @@ class ModernWebScraper:
         # Search for URLs
         try:
             search_results = search_duckduckgo(query, max_results)
-        except (RateLimitError, TimeoutError) as e:
+        except (RateLimitError, ScraperScraperTimeoutError) as e:
             logger.error(f"Search failed: {e}")
             raise
         except WebScraperError as e:
@@ -446,7 +446,7 @@ class ModernWebScraper:
                     # Store in database using thread-safe manager
                     self._store_content(content, query)
                     
-            except (RateLimitError, TimeoutError) as e:
+            except (RateLimitError, ScraperScraperTimeoutError) as e:
                 logger.warning(f"Skipping {url} due to error: {e}")
                 continue
             except WebScraperError as e:
