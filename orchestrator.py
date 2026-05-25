@@ -21,6 +21,7 @@ from database.db_manager import get_db_manager
 from llm_manager import LLMRunner
 from web_scraper import ModernWebScraper, WebScraperError, RateLimitError
 from metrics import MetricsCollector
+from knowledge_ingestor import KnowledgeIngestor
 
 from config.settings import (
     LOGS_DIR,
@@ -60,20 +61,20 @@ WIKIDATA_SCHEMAS = {
 
 SPECIALIST_REGISTRY = [
     {"domain": "SoftwareEngineering", "model": "qwen2.5-coder:3b", "root": "Q11661", "props": ["P31", "P279", "P306", "P400"]},
-    {"domain": "Mathematics", "model": "qwen2.5:3b", "root": "Q395", "props": ["P31", "P279", "P2534", "P192"]},
-    {"domain": "Medicine", "model": "phi3:mini", "root": "Q11190", "props": ["P31", "P279", "P923", "P780", "P699"]},
+    {"domain": "Mathematics", "model": "deepseek-r1:1.5b", "root": "Q395", "props": ["P31", "P279", "P2534", "P192"]},
+    {"domain": "Medicine", "model": "phi4-mini:3.8b", "root": "Q11190", "props": ["P31", "P279", "P923", "P780", "P699"]},
     {"domain": "LegalSystem", "model": "llama3.2:3b", "root": "Q7748", "props": ["P31", "P279", "P1684", "P427"]},
-    {"domain": "PhilosophyHistory", "model": "gemma2:2b", "root": "Q315", "props": ["P31", "P279", "P61"]},
-    {"domain": "FinanceEconomics", "model": "mistral:7b", "root": "Q8134", "props": ["P31", "P279", "P2283", "P1441"]},
-    {"domain": "Physics", "model": "qwen2.5:3b", "root": "Q11424", "props": ["P31", "P279", "P2067", "P2541"]},
-    {"domain": "Cybersecurity", "model": "llama3.2:3b", "root": "Q151211", "props": ["P31", "P279", "P2824"]},
-    {"domain": "Bioinformatics", "model": "phi3:mini", "root": "Q193635", "props": ["P31", "P279", "P685"]},
+    {"domain": "PhilosophyHistory", "model": "gemma3:4b", "root": "Q315", "props": ["P31", "P279", "P61"]},
+    {"domain": "FinanceEconomics", "model": "gemma3:4b", "root": "Q8134", "props": ["P31", "P279", "P2283", "P1441"]},
+    {"domain": "Physics", "model": "deepseek-r1:1.5b", "root": "Q11424", "props": ["P31", "P279", "P2067", "P2541"]},
+    {"domain": "Cybersecurity", "model": "qwen2.5-coder:3b", "root": "Q151211", "props": ["P31", "P279", "P2824"]},
+    {"domain": "Bioinformatics", "model": "phi4-mini:3.8b", "root": "Q193635", "props": ["P31", "P279", "P685"]},
     {"domain": "Geopolitics", "model": "llama3.2:3b", "root": "Q79461", "props": ["P31", "P279", "P30"]},
     {"domain": "DataScience", "model": "qwen2.5-coder:3b", "root": "Q1156829", "props": ["P31", "P279", "P2078"]},
-    {"domain": "Chemistry", "model": "qwen2.5:3b", "root": "Q11158", "props": ["P31", "P279", "P662", "P2067"]},
-    {"domain": "ArtHistory", "model": "gemma2:2b", "root": "Q178561", "props": ["P31", "P279", "P170", "P136"]},
-    {"domain": "Electronics", "model": "qwen2.5:3b", "root": "Q11663", "props": ["P31", "P279", "P306", "P400"]},
-    {"domain": "Astronomy", "model": "qwen2.5:3b", "root": "Q333", "props": ["P31", "P279", "P2067"]}
+    {"domain": "Chemistry", "model": "phi4-mini:3.8b", "root": "Q11158", "props": ["P31", "P279", "P662", "P2067"]},
+    {"domain": "ArtHistory", "model": "gemma3:4b", "root": "Q178561", "props": ["P31", "P279", "P170", "P136"]},
+    {"domain": "Electronics", "model": "qwen2.5-coder:3b", "root": "Q11663", "props": ["P31", "P279", "P306", "P400"]},
+    {"domain": "Astronomy", "model": "phi4-mini:3.8b", "root": "Q333", "props": ["P31", "P279", "P2067"]}
 ]
 
 from dissect_wikidata import WikidataStreamingExtractor
@@ -106,18 +107,63 @@ class DecimalEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
+class ClassHierarchyCache:
+    """Tracks P279 parent-child relationships during streaming and
+    resolves transitive descendants up to depth 3 for each specialist root."""
+
+    def __init__(self, specialist_roots: Dict[int, str]):
+        self.parent_map: Dict[str, Set[str]] = {}
+        self.specialist_roots = specialist_roots
+        self._expanded_roots: Dict[int, Set[str]] = {}
+        for sid, root in specialist_roots.items():
+            self._expanded_roots[sid] = {root}
+
+    def record_link(self, child_qid: str, parent_qid: str):
+        if child_qid not in self.parent_map:
+            self.parent_map[child_qid] = set()
+        if parent_qid not in self.parent_map[child_qid]:
+            self.parent_map[child_qid].add(parent_qid)
+
+    def get_expanded_map(self) -> Dict[str, Set[int]]:
+        """Recompute and return reverse mapping: qid -> set of specialist_ids."""
+        self._recompute()
+        mapping: Dict[str, Set[int]] = {}
+        for sid, qids in self._expanded_roots.items():
+            for qid in qids:
+                mapping.setdefault(qid, set()).add(sid)
+        return mapping
+
+    def _recompute(self):
+        for sid, root in self.specialist_roots.items():
+            descendants = {root}
+            frontier = {root}
+            for _ in range(3):
+                next_frontier = set()
+                for qid in frontier:
+                    for child, parents in self.parent_map.items():
+                        if qid in parents:
+                            next_frontier.add(child)
+                frontier = next_frontier
+                descendants.update(frontier)
+                if not frontier:
+                    break
+            self._expanded_roots[sid] = descendants
+
+
 class BatchWikidataExtractor:
     """Scans dump ONCE, matches ALL specialists, with progressive QID expansion & checkpoints."""
 
     def __init__(self, input_path: Path, output_dir: Path,
                  specialist_matchers: Dict[int, Dict],
                  checkpoint_callback=None,
-                 progress_callback=None):
+                 progress_callback=None,
+                 hierarchy_cache: Optional[ClassHierarchyCache] = None):
         self.input_path = input_path
         self.output_dir = output_dir
         self.specialist_matchers = specialist_matchers
         self.checkpoint_callback = checkpoint_callback
         self.progress_callback = progress_callback
+        self.hierarchy_cache = hierarchy_cache
         self.entities_processed = 0
         self.start_time = time.time()
         self.matched_counts: Dict[int, int] = {sid: 0 for sid in specialist_matchers}
@@ -236,6 +282,17 @@ class BatchWikidataExtractor:
                     if not entity_qids:
                         continue
 
+                    # Record P279 parent-child links in hierarchy cache
+                    entity_id = entity.get('id')
+                    if self.hierarchy_cache and entity_id:
+                        for claim in entity.get('claims', {}).get('P279', []):
+                            try:
+                                pid = claim['mainsnak']['datavalue']['value']['id']
+                                if pid:
+                                    self.hierarchy_cache.record_link(entity_id, pid)
+                            except (KeyError, TypeError):
+                                pass
+
                     matched_sids = set()
                     trigger_by_root = set()
 
@@ -246,6 +303,13 @@ class BatchWikidataExtractor:
                                 trigger_by_root.add(sid)
                         if qid in expanded_qids_map:
                             matched_sids.update(expanded_qids_map[qid])
+
+                    # Check hierarchy cache for transitive P279 matches
+                    if self.hierarchy_cache and not matched_sids:
+                        cache_expanded = self.hierarchy_cache.get_expanded_map()
+                        for qid in entity_qids:
+                            if qid in cache_expanded:
+                                matched_sids.update(cache_expanded[qid])
 
                     if not matched_sids:
                         continue
@@ -304,9 +368,36 @@ class PipelineController:
         self.llm_runner = LLMRunner()
         self.web_scraper = ModernWebScraper()
         self.metrics = MetricsCollector()
+        self.ingestor = KnowledgeIngestor(
+            packages_dir=Path('storage/packages'),
+            reports_dir=Path('storage/reports'),
+        )
         self._sample_size = sample_size
         self._cycles_per_specialist = cycles_per_specialist
         self._start_time = 0
+        self._ensure_activity_table()
+
+    def _ensure_activity_table(self):
+        try:
+            self.db_manager.execute_query("""
+                CREATE TABLE IF NOT EXISTS activity_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    level TEXT DEFAULT 'INFO',
+                    message TEXT NOT NULL
+                )
+            """)
+        except Exception as e:
+            logger.debug(f"Activity table init: {e}")
+
+    def _log_activity(self, message: str, level: str = 'INFO'):
+        try:
+            self.db_manager.execute_query(
+                "INSERT INTO activity_log (level, message) VALUES (?, ?)",
+                (level, message[:500])
+            )
+        except Exception:
+            pass
 
     def _create_cascade_tables(self):
         self.db_manager.execute_query("""
@@ -348,22 +439,7 @@ class PipelineController:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        try:
-            self.db_manager.execute_query("ALTER TABLE pipeline_status ADD COLUMN start_epoch REAL DEFAULT 0")
-        except Exception:
-            pass
-        try:
-            self.db_manager.execute_query("ALTER TABLE pipeline_status ADD COLUMN cascade_entities INTEGER DEFAULT 0")
-        except Exception:
-            pass
-        try:
-            self.db_manager.execute_query("ALTER TABLE pipeline_status ADD COLUMN cascade_max INTEGER DEFAULT 0")
-        except Exception:
-            pass
-        try:
-            self.db_manager.execute_query("ALTER TABLE pipeline_status ADD COLUMN cascade_checkpoint INTEGER DEFAULT 0")
-        except Exception:
-            pass
+
 
     def initialize_specialists(self) -> bool:
         try:
@@ -438,7 +514,8 @@ class PipelineController:
         try:
             now = time.time()
             self.db_manager.execute_query(
-                "INSERT OR IGNORE INTO pipeline_status (id, status, start_epoch) VALUES (1, ?, ?)",
+                "INSERT INTO pipeline_status (id, status, start_epoch) VALUES (1, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET status=excluded.status",
                 (status, now)
             )
             elapsed = now - self._start_time if self._start_time else 0
@@ -462,12 +539,17 @@ class PipelineController:
             if not result:
                 return
             current_ema = result[0]['ema_score']
-            quality_factor = 1.0
-            if success and content_length > 0:
-                length_factor = min(content_length / 1000.0, 1.0)
-                trust_factor = trust_score / 100.0
-                quality_factor = 0.6 * length_factor + 0.4 * trust_factor
-            new_ema = min(current_ema + 0.05 * quality_factor, 1.0) if success else max(current_ema - 0.02, 0.0)
+            alpha = 0.05
+            if success:
+                if content_length > 0:
+                    length_factor = min(content_length / 1000.0, 1.0)
+                    trust_factor = trust_score / 100.0
+                    quality = 0.6 * length_factor + 0.4 * trust_factor
+                else:
+                    quality = 0.15
+            else:
+                quality = 0.0
+            new_ema = alpha * quality + (1.0 - alpha) * current_ema
             self.db_manager.execute_query(
                 "UPDATE specialist_registry SET ema_score=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
                 (new_ema, specialist_id)
@@ -476,7 +558,7 @@ class PipelineController:
                 "INSERT INTO ema_history (specialist_id, ema_score) VALUES (?, ?)",
                 (specialist_id, new_ema)
             )
-            logger.info(f"EMA {specialist_id}: {current_ema:.3f} -> {new_ema:.3f} (qf:{quality_factor:.2f})")
+            logger.info(f"EMA {specialist_id}: {current_ema:.3f} -> {new_ema:.3f} (quality:{quality:.2f})")
         except Exception as e:
             logger.error(f"Failed to update EMA: {e}")
 
@@ -508,11 +590,15 @@ class PipelineController:
             specialist_matchers[sid] = {'domain': domain, 'root_qid': schema['root']}
             results[sid] = False
             try:
-                self.db_manager.execute_query(
-                    """INSERT OR REPLACE INTO cartridge_offsets (qid, cartridge_name, specialist_id, status)
-                       VALUES (?, ?, ?, ?)""",
-                    (f"specialist_{sid}", f"cartridge_{domain}.json.gz", sid, "PROCESSING: 0%")
+                existing_cart = self.db_manager.execute_query(
+                    "SELECT status FROM cartridge_offsets WHERE specialist_id = ?", (sid,), fetch=True
                 )
+                if not existing_cart or existing_cart[0]['status'] != 'COMPLETED':
+                    self.db_manager.execute_query(
+                        """INSERT OR REPLACE INTO cartridge_offsets (qid, cartridge_name, specialist_id, status)
+                           VALUES (?, ?, ?, ?)""",
+                        (f"specialist_{sid}", f"cartridge_{domain}.json.gz", sid, "PROCESSING: 0%")
+                    )
             except Exception as e:
                 logger.error(f"Failed to init cartridge for {domain}: {e}")
 
@@ -565,12 +651,16 @@ class PipelineController:
             except Exception:
                 pass
 
+        hierarchy_cache = ClassHierarchyCache(
+            {sid: info['root_qid'] for sid, info in specialist_matchers.items()}
+        )
         extractor = BatchWikidataExtractor(
             input_path=WIKIDATA_DUMP_PATH,
             output_dir=TARGET_OUTPUT_DIR,
             specialist_matchers=specialist_matchers,
             checkpoint_callback=checkpoint_callback,
             progress_callback=progress_callback,
+            hierarchy_cache=hierarchy_cache,
         )
 
         logger.info(f"\n{'='*80}")
@@ -606,6 +696,8 @@ class PipelineController:
         sid, domain, model = specialist['id'], specialist['domain'], specialist['model']
         result = {'success': False, 'contents_count': 0, 'total_length': 0, 'avg_trust': 50.0, 'packages_saved': 0}
 
+        self._log_activity(f"Iniciando {domain} (ciclo {cycle}) con {model}")
+
         # Vary queries per cycle for diverse knowledge
         cycle_queries = {
             1: [f"{domain} latest research 2026", f"{domain} best practices",
@@ -624,19 +716,24 @@ class PipelineController:
         queries = cycle_queries.get(cycle, cycle_queries[1])
 
         try:
+            self._log_activity(f"Cargando modelo {model} para {domain}")
             model_loaded = await self.llm_runner.ensure_model_loaded(model)
             if not model_loaded:
                 logger.error(f"Failed to load model: {model}")
+                self._log_activity(f"ERROR: modelo {model} no disponible", 'ERROR')
                 return result
 
+            self._log_activity(f"Modelo {model} listo — iniciando {domain}")
             self.db_manager.execute_query("UPDATE specialist_registry SET status='ACTIVE' WHERE id=?", (sid,))
 
             total_c, total_l, trusts, pkgs_saved = 0, 0, [], 0
 
             for query in queries:
+                self._log_activity(f"{domain} > Buscando: \"{query[:60]}\"")
                 try:
                     results = await self.web_scraper.search_and_extract(query=query, max_results=5)
                     total_c += len(results)
+                    self._log_activity(f"{domain} > {len(results)} resultados para \"{query[:40]}\"")
                     for content in results:
                         ct = content.get('content', '')
                         if not ct:
@@ -645,10 +742,19 @@ class PipelineController:
                         trust = content.get('trust_score', 50)
                         trusts.append(trust)
                         url = content.get('url', '') or content.get('source', '')
-                        prompt = f"Summarize the following {domain} knowledge in 3 bullet points:\n\n{ct[:2000]}"
-                        dist = await self.llm_runner.query_llm(model_name=model, prompt=prompt)
-                        logger.debug(f"Distill: {dist[:100]}...")
-                        # Save knowledge package
+                        self._log_activity(f"{domain} > Destilando: {url[:60]}...")
+                        system_ctx = self.ingestor.get_system_context(domain=domain, max_chars=2000)
+                        try:
+                            if system_ctx:
+                                prompt = f"{system_ctx}\n\nSummarize the following {domain} knowledge in 3 bullet points:\n\n{ct[:2000]}"
+                            else:
+                                prompt = f"Summarize the following {domain} knowledge in 3 bullet points:\n\n{ct[:2000]}"
+                            dist = await self.llm_runner.query_llm(model_name=model, prompt=prompt)
+                            logger.debug(f"Distill: {dist[:100]}...")
+                        except Exception as e:
+                            logger.warning(f"Distill failed for {url[:60]}: {e}")
+                            continue
+                        # Save knowledge package (DB + file)
                         if dist and url:
                             try:
                                 self.db_manager.execute_query(
@@ -657,6 +763,19 @@ class PipelineController:
                                     (query[:100], url, domain, dist[:500])
                                 )
                                 pkgs_saved += 1
+                                self._log_activity(f"{domain} > Package guardado: {query[:40]}")
+                                # Save as .md file for KnowledgeIngestor
+                                pkg_dir = Path('storage/packages') / domain
+                                pkg_dir.mkdir(parents=True, exist_ok=True)
+                                ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                                slug = ''.join(c if c.isalnum() or c in ' _-' else '' for c in query[:40]).strip()
+                                pkg_path = pkg_dir / f'{ts}_{slug}.md'
+                                pkg_path.write_text(
+                                    f"# {domain}: {query[:80]}\n\n"
+                                    f"**Source:** {url}\n\n"
+                                    f"**Distilled:**\n{dist[:1000]}\n",
+                                    encoding='utf-8'
+                                )
                             except Exception as e:
                                 logger.debug(f"Failed to save package: {e}")
                 except (RateLimitError, WebScraperError) as e:
@@ -673,19 +792,95 @@ class PipelineController:
             self.db_manager.execute_query("UPDATE specialist_registry SET status='IDLE' WHERE id=?", (sid,))
             avg_t = sum(trusts) / len(trusts) if trusts else 50.0
             logger.info(f"Phase B complete for {domain} (cycle {cycle}): {total_c} contents, {pkgs_saved} packages")
+            self._log_activity(f"{domain} completado — {pkgs_saved} paquetes en ciclo {cycle}")
             result.update(success=total_c > 0, contents_count=total_c, total_length=total_l, avg_trust=avg_t, packages_saved=pkgs_saved)
             return result
         except Exception as e:
             logger.error(f"Phase B failed for {domain}: {e}")
             return result
 
-    async def run_pipeline(self, sample_size: Optional[int] = None) -> None:
+    async def _generate_report(self, elapsed_seconds: float):
+        """Generate EMA evolution report with chart, saved to storage/reports/."""
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
+        report_dir = Path('storage/reports')
+        report_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        specialists = self.db_manager.execute_query(
+            "SELECT id, domain, model, ema_score, packages_absorbed FROM specialist_registry ORDER BY ema_score DESC",
+            fetch=True
+        ) or []
+
+        history = self.db_manager.execute_query(
+            "SELECT specialist_id, ema_score, created_at FROM ema_history ORDER BY id",
+            fetch=True
+        ) or []
+
+        # Build time-aligned series per specialist
+        from collections import defaultdict
+        series_raw = defaultdict(list)
+        time_labels = []
+        for row in history:
+            sid = row['specialist_id']
+            t = row['created_at'][:16] if row['created_at'] else ''
+            series_raw[sid].append((t, row['ema_score']))
+        for sid, pts in series_raw.items():
+            time_labels = [p[0] for p in pts]
+
+        # Chart: combined EMA evolution
+        plt.figure(figsize=(14, 8))
+        colors = plt.cm.tab20.colors + plt.cm.tab20b.colors
+        for i, s in enumerate(specialists):
+            sid = s['id']
+            pts = series_raw.get(sid, [])
+            if len(pts) < 2:
+                continue
+            times = [p[0] for p in pts]
+            vals = [p[1] for p in pts]
+            label = f"{s['domain']} ({s['ema_score']:.3f})"
+            plt.plot(range(len(vals)), vals, color=colors[i % len(colors)],
+                     marker='o', markersize=3, linewidth=1.2, label=label)
+
+        plt.title(f'EMA Evolution — {ts}', fontsize=14)
+        plt.xlabel('Observation #')
+        plt.ylabel('EMA Score')
+        plt.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=7)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        chart_path = report_dir / f'ema_evolution_{ts}.png'
+        plt.savefig(chart_path, dpi=150)
+        plt.close()
+
+        # Markdown report
+        lines = [f"# Pipeline Report — {ts}\n"]
+        lines.append(f"**Elapsed:** {elapsed_seconds/3600:.2f}h ({elapsed_seconds/60:.1f} min)\n")
+        lines.append(f"**Total history records:** {len(history)}\n")
+        lines.append(f"\n## EMA Scores\n")
+        lines.append(f"| # | Domain | Model | EMA | Packages |")
+        lines.append(f"|---|--------|-------|-----|----------|")
+        for i, s in enumerate(specialists, 1):
+            lines.append(f"| {i} | {s['domain']} | {s['model']} | {s['ema_score']:.3f} | {s['packages_absorbed']} |")
+
+        lines.append(f"\n## Charts\n")
+        lines.append(f"![EMA Evolution](ema_evolution_{ts}.png)\n")
+
+        report_path = report_dir / f'report_{ts}.md'
+        report_path.write_text('\n'.join(lines), encoding='utf-8')
+        logger.info(f"Report saved: {report_path}")
+
+    async def run_pipeline(self, sample_size: Optional[int] = None,
+                           min_duration_hours: float = 5.0,
+                           report_interval_minutes: int = 30) -> None:
         logger.info("=" * 80)
-        logger.info("CORAL THOUGHT ORCHESTRATOR - PIPELINE START (CASCADE MODE)")
+        logger.info("CORAL THOUGHT ORCHESTRATOR - PIPELINE (CONTINUOUS MODE)")
+        logger.info(f"Min duration: {min_duration_hours}h | Report every {report_interval_minutes}min")
         logger.info("=" * 80 + "\n")
 
         self._start_time = time.time()
-        self._update_pipeline_status(status='INIT', phase='Inicializando...')
+        self._update_pipeline_status(status='INIT', phase='Initializing...')
 
         if not validate_paths():
             self._update_pipeline_status(status='ERROR', phase='Path validation failed')
@@ -699,55 +894,88 @@ class PipelineController:
             return
 
         max_entities = sample_size or MAX_CASCADE_ENTITIES
-        logger.info(f"Cascade target: {max_entities:,} entities for {len(all_specialists)} specialists")
-
         model_groups = defaultdict(list)
         for specialist in all_specialists:
             model_groups[specialist['model']].append(specialist)
         sorted_models = sorted(model_groups.keys())
 
         try:
-            # Phase A: Cascade
-            phase_a_results = await self.run_phase_a_cascade(all_specialists, max_entities)
+            # Phase A: Cascade — skip if checkpoints exist
+            existing = self.db_manager.execute_query(
+                "SELECT COUNT(*) as cnt FROM cascade_checkpoints", fetch=True
+            )
+            has_checkpoints = existing and existing[0]['cnt'] > 0
+            if has_checkpoints:
+                logger.info(f"Checkpoints exist ({existing[0]['cnt']}), SKIPPING Phase A cascade")
+                phase_a_results = {s['id']: True for s in all_specialists}
+                self._update_pipeline_status(phase='Phase A: SKIPPED (checkpoints exist)', status='ACTIVE')
+            else:
+                phase_a_results = await self.run_phase_a_cascade(all_specialists, max_entities)
 
-            # Phase B: Parallel per model group, 3 cycles
-            for model_name in sorted_models:
-                group = model_groups[model_name]
-                self._update_pipeline_status(status='CHECKING_MODEL', phase=f'Verificando modelo: {model_name}')
-                model_available = self.llm_runner.verify_model_exists(model_name)
-                if not model_available:
-                    self._update_pipeline_status(status='SKIPPED', phase=f'Modelo no encontrado: {model_name}')
-                    for specialist in group:
-                        self.update_ema_score(specialist['id'], False)
-                    continue
+            # Phase B: Continuous loop until minimum duration
+            pipeline_start = time.time()
+            last_report_time = 0.0
+            global_cycle = 0
 
-                for cycle in range(1, self._cycles_per_specialist + 1):
+            while True:
+                elapsed = time.time() - pipeline_start
+                if elapsed >= min_duration_hours * 3600:
+                    logger.info(f"Minimum duration reached ({min_duration_hours}h). Finishing...")
+                    break
+
+                global_cycle += 1
+                effective_cycle = ((global_cycle - 1) % 3) + 1
+
+                for model_name in sorted_models:
+                    group = model_groups[model_name]
+                    if global_cycle == 1:
+                        self._update_pipeline_status(status='CHECKING_MODEL', phase=f'Verifying model: {model_name}')
+                        model_ready = await self.llm_runner.ensure_model_ready(model_name)
+                        if not model_ready:
+                            self._update_pipeline_status(status='SKIPPED', phase=f'Model unavailable: {model_name}')
+                            for specialist in group:
+                                self.update_ema_score(specialist['id'], False)
+                            model_groups[model_name] = []
+                            continue
+
+                    if not group:
+                        continue
+
                     domains = [s['domain'] for s in group]
                     self._update_pipeline_status(
                         specialist=', '.join(domains[:3]) + ('...' if len(domains) > 3 else ''),
-                        model=model_name, cycle=cycle, total_cycles=self._cycles_per_specialist,
+                        model=model_name, cycle=global_cycle, total_cycles=999,
                         phase=f'Phase B: Web + LLM ({len(group)} paralelo)', status='ACTIVE'
                     )
-                    # Parallel Phase B for all specialists sharing this model
-                    tasks = [self.run_phase_b(s, cycle) for s in group]
+                    tasks = [self.run_phase_b(s, effective_cycle) for s in group]
                     phase_b_results = await asyncio.gather(*tasks)
 
                     for specialist, phase_b in zip(group, phase_b_results):
                         sid, domain = specialist['id'], specialist['domain']
-                        phase_a_ok = phase_a_results.get(sid, False)
-                        ok = phase_a_ok or phase_b['success']
+                        ok = phase_a_results.get(sid, False) or phase_b['success']
                         self.update_ema_score(sid, ok, phase_b.get('total_length', 0), phase_b.get('avg_trust', 50))
-                        if cycle < self._cycles_per_specialist:
-                            r = self.db_manager.execute_query(
-                                "SELECT ema_score FROM specialist_registry WHERE id=?", (sid,), fetch=True
-                            )
-                            if r:
-                                specialist['ema_score'] = r[0]['ema_score']
+
+                # Report every report_interval_minutes
+                new_elapsed = time.time() - pipeline_start
+                if new_elapsed - last_report_time >= report_interval_minutes * 60:
+                    await self._generate_report(new_elapsed)
+                    last_report_time = new_elapsed
+
+                if global_cycle == 1:
+                    # Re-fetch specialists for updated EMA scores + rebuild groups
+                    all_specialists = self.get_specialists()
+                    model_groups = defaultdict(list)
+                    for specialist in all_specialists:
+                        model_groups[specialist['model']].append(specialist)
+                    sorted_models = sorted(model_groups.keys())
 
         finally:
             await self.llm_runner.cleanup()
             self.web_scraper.cleanup()
 
+        # Final report
+        final_elapsed = time.time() - self._start_time
+        await self._generate_report(final_elapsed)
         self.metrics.print_summary()
         self._update_pipeline_status(status='COMPLETED', phase='Pipeline finalizado')
         logger.info("\n" + "=" * 80)
@@ -755,10 +983,36 @@ class PipelineController:
         logger.info("=" * 80)
 
 
-async def main(sample_size: Optional[int] = None, cycles: int = 3):
-    controller = PipelineController(sample_size=sample_size, cycles_per_specialist=cycles)
-    await controller.run_pipeline()
+async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.0, report_interval_minutes: int = 30):
+    crash_log = LOGS_DIR / 'crash.log'
+    while True:
+        try:
+            controller = PipelineController(sample_size=sample_size, cycles_per_specialist=3)
+            await controller.run_pipeline(
+                min_duration_hours=min_duration_hours,
+                report_interval_minutes=report_interval_minutes
+            )
+            logger.info("Pipeline completed normally, restarting...")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            logger.critical(f"Pipeline CRASHED: {e}\n{tb}")
+            with open(crash_log, 'a', encoding='utf-8') as f:
+                f.write(f"\n=== {datetime.now()} ===\n{e}\n{tb}\n")
+            logger.info("Restarting pipeline in 10s...")
+            await asyncio.sleep(10)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    while True:
+        try:
+            asyncio.run(main(min_duration_hours=5.0, report_interval_minutes=30))
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            with open(Path('logs') / 'crash.log', 'a', encoding='utf-8') as f:
+                f.write(f"\n=== FATAL {datetime.now()} ===\n{e}\n{tb}\n")
+            print(f"FATAL: {e}", flush=True)
+            time.sleep(10)
