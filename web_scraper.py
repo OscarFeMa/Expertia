@@ -443,27 +443,35 @@ class ModernWebScraper:
             logger.error(f"Search failed: {e}")
             raise
         
-        # Extract content from each URL
+        # Extract content from each URL concurrently
         extracted_contents = []
-        for result in search_results:
-            url = result.get('href', '')
-            
-            try:
-                content = self.content_extractor.extract_content(url)
-                if content:
-                    extracted_contents.append(content)
-                    
-                    # Store in database using thread-safe manager
-                    self._store_content(content, query)
-                    
-            except (RateLimitError, ScraperTimeoutError) as e:
-                logger.warning(f"Skipping {url} due to error: {e}")
-                continue
-            except WebScraperError as e:
-                logger.warning(f"Failed to extract from {url}: {e}")
-                continue
         
-        logger.info(f"Extracted content from {len(extracted_contents)} URLs")
+        # Limit concurrency using a Semaphore
+        sem = asyncio.Semaphore(5)
+        
+        async def process_url(result):
+            url = result.get('href', '')
+            if not url: return None
+            
+            async with sem:
+                try:
+                    # Run the synchronous extraction in a thread to avoid blocking event loop
+                    content = await asyncio.to_thread(self.content_extractor.extract_content, url)
+                    if content:
+                        self._store_content(content, query)
+                        return content
+                except (RateLimitError, ScraperTimeoutError) as e:
+                    logger.warning(f"Skipping {url} due to error: {e}")
+                except WebScraperError as e:
+                    logger.warning(f"Failed to extract from {url}: {e}")
+                return None
+                
+        tasks = [process_url(result) for result in search_results]
+        results_gathered = await asyncio.gather(*tasks)
+        
+        extracted_contents = [c for c in results_gathered if c is not None]
+        
+        logger.info(f"Extracted content from {len(extracted_contents)} URLs concurrently")
         return extracted_contents
     
     def _store_content(self, content: Dict[str, str], query: str) -> None:

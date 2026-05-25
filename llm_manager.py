@@ -249,9 +249,14 @@ class OfflineVerificationEngine:
             logger.info(f"Model '{model_name}' found in local cache")
             return True
         
-        # Check partial match (e.g., "qwen2.5:3b" matches "qwen2.5:3b-instruct")
+        # Check tag-preserving match (require exact name or name as prefix with same tag)
         for available in available_models:
-            if model_name in available or available in model_name:
+            available_tag = available.split(':')[-1] if ':' in available else ''
+            model_tag = model_name.split(':')[-1] if ':' in model_name else ''
+            if model_name == available:
+                logger.info(f"Model '{model_name}' found in local cache")
+                return True
+            if model_tag and available_tag == model_tag and available.startswith(model_name.split(':')[0]):
                 logger.info(f"Model '{model_name}' found as '{available}' in local cache")
                 return True
         
@@ -297,6 +302,7 @@ class LLMRunner:
         self.verification_engine = OfflineVerificationEngine()
         self.current_model: Optional[str] = None
         self._lock: Optional[asyncio.Lock] = None
+        self._session: Optional[aiohttp.ClientSession] = None
         self.api_base_url = f"http://{self.ollama_host}:{self.ollama_port}"
     
     def _get_running_models(self) -> List[RunningModel]:
@@ -427,6 +433,47 @@ class LLMRunner:
         """
         self.verification_engine.require_model(model_name)
     
+    async def ensure_model_ready(self, model_name: str) -> bool:
+        """Check if model exists locally; auto-pull with retry if missing.
+
+        Args:
+            model_name: Name of the model to ensure is available.
+
+        Returns:
+            bool: True if model is available (either existed or was pulled).
+        """
+        if self.verify_model_exists(model_name):
+            return True
+
+        logger.warning(f"MODEL '{model_name}' missing locally. Attempting auto-pull...")
+
+        for attempt in range(3):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "ollama", "pull", model_name,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+                if proc.returncode == 0:
+                    logger.info(f"Model '{model_name}' pulled successfully")
+                    self.verification_engine.get_available_models(force_refresh=True)
+                    return True
+                else:
+                    logger.error(f"Pull attempt {attempt+1} failed: {stderr.decode().strip()}")
+            except asyncio.TimeoutError:
+                logger.error(f"Pull attempt {attempt+1} timed out after 600s")
+            except Exception as e:
+                logger.error(f"Pull attempt {attempt+1} error: {e}")
+
+            if attempt < 2:
+                wait = 5 * (attempt + 1)
+                logger.info(f"Retrying in {wait}s...")
+                await asyncio.sleep(wait)
+
+        logger.error(f"Failed to pull model '{model_name}' after 3 attempts")
+        return False
+
     async def ensure_model_loaded(self, model_name: str) -> bool:
         """Ensure a model is loaded in VRAM (Single-Active-Model pattern).
         
@@ -468,19 +515,19 @@ class LLMRunner:
                 logger.error(f"Failed to load model '{model_name}'")
                 return False
             
-            # Wait for model to fully initialize in VRAM
+            # Wait for model to fully initialize in VRAM via active polling
             logger.info(f"Waiting for model '{model_name}' to initialize in VRAM...")
-            await asyncio.sleep(3)  # Give VRAM time to allocate
+            max_attempts = 15
+            for attempt in range(max_attempts):
+                running_models = self._get_running_models()
+                for running in running_models:
+                    if running.name == model_name:
+                        logger.info(f"READY for inference: {model_name} (loaded in ~{attempt*2}s)")
+                        self.current_model = model_name
+                        return True
+                await asyncio.sleep(2)
             
-            # Verify model is now running
-            running_models = self._get_running_models()
-            for running in running_models:
-                if running.name == model_name:
-                    logger.info(f"READY for inference: {model_name}")
-                    self.current_model = model_name
-                    return True
-            
-            logger.error(f"Model '{model_name}' failed to initialize in VRAM")
+            logger.error(f"Model '{model_name}' failed to initialize in VRAM after {max_attempts*2}s")
             return False
     
     @retry_with_exponential_backoff(max_retries=3, initial_delay=1.0)
@@ -531,19 +578,21 @@ class LLMRunner:
         logger.info(f"Sending query to model '{model_name}'")
         
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
-                async with session.post(url, json=payload) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        raise LLMQueryError(f"API returned status {response.status}: {error_text}")
-                    
-                    result = await response.json()
-                    
-                    if "response" in result:
-                        logger.info(f"Query completed successfully")
-                        return result["response"]
-                    else:
-                        raise LLMQueryError("No response in API result")
+            if self._session is None or self._session.closed:
+                self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout))
+
+            async with self._session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise LLMQueryError(f"API returned status {response.status}: {error_text}")
+                
+                result = await response.json()
+                
+                if "response" in result:
+                    logger.info(f"Query completed successfully")
+                    return result["response"]
+                else:
+                    raise LLMQueryError("No response in API result")
                         
         except asyncio.TimeoutError:
             logger.error(f"Query timed out after {timeout} seconds")
@@ -584,11 +633,15 @@ class LLMRunner:
         ))
     
     async def cleanup(self) -> None:
-        """Cleanup - stop current model if running."""
+        """Cleanup - stop current model if running and close HTTP session."""
         if self.current_model:
             logger.info(f"Cleanup: Unloading model '{self.current_model}'")
             self._stop_model(self.current_model)
             self.current_model = None
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
+            logger.info("HTTP session closed")
         logger.info("LLMRunner cleanup completed")
 
 

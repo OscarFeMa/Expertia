@@ -112,3 +112,13 @@ logs/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Data
+storage/
+*.db
+*.db-shm
+*.db-wal
+
+# Test files
+test_*.py
+tmp_streamlit_test/

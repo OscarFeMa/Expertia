@@ -68,19 +68,30 @@ class DatabaseManager:
         if self._connection is None:
             with self._connection_lock:
                 if self._connection is None:
-                    try:
-                        self._connection = sqlite3.connect(
-                            str(self.db_path),
-                            check_same_thread=False,
-                            timeout=30.0
-                        )
-                        self._connection.row_factory = sqlite3.Row
-                        logger.info("SQLite connection established successfully")
-                    except sqlite3.Error as e:
-                        logger.error(f"Failed to establish SQLite connection: {e}")
-                        raise
+                    self._connection = self._open_connection()
+        else:
+            try:
+                self._connection.execute("SELECT 1")
+            except sqlite3.ProgrammingError:
+                with self._connection_lock:
+                    self._connection = self._open_connection()
         
         return self._connection
+    
+    def _open_connection(self):
+        try:
+            conn = sqlite3.connect(
+                str(self.db_path),
+                check_same_thread=False,
+                timeout=30.0
+            )
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.row_factory = sqlite3.Row
+            logger.info("SQLite connection established successfully (WAL mode enabled)")
+            return conn
+        except sqlite3.Error as e:
+            logger.error(f"Failed to establish SQLite connection: {e}")
+            raise
     
     def _close_connection(self) -> None:
         """Close the SQLite connection if it exists."""
@@ -138,8 +149,8 @@ class DatabaseManager:
                 
                 if fetch:
                     results = cursor.fetchall()
+                    self._get_connection().commit()
                     return [dict(row) for row in results]
-                
                 self._get_connection().commit()
                 return None
                 
