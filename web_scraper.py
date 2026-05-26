@@ -17,7 +17,7 @@ import httpx
 from typing import List, Dict, Optional
 from pathlib import Path
 
-from ddgs import DDGS
+from duckduckgo_search import DDGS
 import trafilatura
 from trafilatura import extract
 
