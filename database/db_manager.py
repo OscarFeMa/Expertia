@@ -267,8 +267,11 @@ class DatabaseManager:
                         tier INTEGER DEFAULT 3,
                         packages_absorbed INTEGER DEFAULT 0,
                         status TEXT DEFAULT 'IDLE',
+                        parent_id INTEGER DEFAULT NULL,
+                        qid_path TEXT DEFAULT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (parent_id) REFERENCES specialist_registry(id)
                     )
                 """)
                 
@@ -293,6 +296,8 @@ class DatabaseManager:
                         topic TEXT NOT NULL,
                         source_url TEXT NOT NULL,
                         domain TEXT,
+                        qid TEXT DEFAULT NULL,
+                        subdomain_path TEXT DEFAULT NULL,
                         structured_knowledge TEXT,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
@@ -324,12 +329,32 @@ class DatabaseManager:
                     CREATE INDEX IF NOT EXISTS idx_knowledge_domain
                     ON knowledge_packages(domain)
                 """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_knowledge_qid
+                    ON knowledge_packages(qid)
+                """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_specialist_parent
+                    ON specialist_registry(parent_id)
+                """)
                 
                 cursor.execute("""
                     CREATE INDEX IF NOT EXISTS idx_ema_specialist
                     ON ema_history(specialist_id, timestamp)
                 """)
                 
+                # Migration: add columns if upgrading from old schema
+                for col_sql in [
+                    "ALTER TABLE specialist_registry ADD COLUMN parent_id INTEGER DEFAULT NULL REFERENCES specialist_registry(id)",
+                    "ALTER TABLE specialist_registry ADD COLUMN qid_path TEXT DEFAULT NULL",
+                    "ALTER TABLE knowledge_packages ADD COLUMN qid TEXT DEFAULT NULL",
+                    "ALTER TABLE knowledge_packages ADD COLUMN subdomain_path TEXT DEFAULT NULL",
+                ]:
+                    try:
+                        cursor.execute(col_sql)
+                    except sqlite3.OperationalError:
+                        pass
+
                 self._get_connection().commit()
                 logger.info("Specialist tables initialized successfully")
                 return True

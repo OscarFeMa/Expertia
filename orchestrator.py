@@ -10,6 +10,8 @@ import json
 import asyncio
 import gzip
 import ijson
+import argparse
+import requests
 from pathlib import Path
 from collections import defaultdict
 from typing import Dict, List, Optional, Callable, Set
@@ -28,6 +30,16 @@ from config.settings import (
     WIKIDATA_DUMP_PATH,
     WIKIDATA_OUTPUT_DIR as TARGET_OUTPUT_DIR,
     WIKIDATA_EXTRACTION_TIMEOUT_HOURS,
+    SUBSPECIALIST_THRESHOLD,
+    MAX_SUBSPECIALISTS,
+    SUBSPECIALIST_CYCLE_INTERVAL,
+    MAX_CHILDREN_PER_PARENT,
+    BLOCKLIST_LABELS,
+    BLOCKLIST_LABEL_PREFIXES,
+    WIKIDATA_ENTITY_API,
+    WIKIDATA_SPARQL_ENDPOINT,
+    WIKIDATA_API_USER_AGENT,
+    WIKIDATA_LABEL_BATCH_SIZE,
 )
 
 log_file = LOGS_DIR / f"pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -42,40 +54,131 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 WIKIDATA_SCHEMAS = {
-    "SoftwareEngineering": {"root": "Q11661", "props": ["P31", "P279", "P306", "P400"]},
+    "SoftwareEngineering": {"root": "Q80993", "props": ["P31", "P279", "P306", "P400"]},
     "Mathematics": {"root": "Q395", "props": ["P31", "P279", "P2534", "P192"]},
     "Medicine": {"root": "Q11190", "props": ["P31", "P279", "P923", "P780", "P699"]},
     "LegalSystem": {"root": "Q7748", "props": ["P31", "P279", "P1684", "P427"]},
-    "PhilosophyHistory": {"root": "Q315", "props": ["P31", "P279", "P61"]},
+    "PhilosophyHistory": {"root": "Q5891", "props": ["P31", "P279", "P61"]},
     "FinanceEconomics": {"root": "Q8134", "props": ["P31", "P279", "P2283", "P1441"]},
-    "Physics": {"root": "Q11424", "props": ["P31", "P279", "P2067", "P2541"]},
-    "Cybersecurity": {"root": "Q151211", "props": ["P31", "P279", "P2824"]},
-    "Bioinformatics": {"root": "Q193635", "props": ["P31", "P279", "P685"]},
-    "Geopolitics": {"root": "Q79461", "props": ["P31", "P279", "P30"]},
-    "DataScience": {"root": "Q1156829", "props": ["P31", "P279", "P2078"]},
-    "Chemistry": {"root": "Q11158", "props": ["P31", "P279", "P662", "P2067"]},
-    "ArtHistory": {"root": "Q178561", "props": ["P31", "P279", "P170", "P136"]},
-    "Electronics": {"root": "Q11663", "props": ["P31", "P279", "P306", "P400"]},
+    "Physics": {"root": "Q413", "props": ["P31", "P279", "P2067", "P2541"]},
+    "Cybersecurity": {"root": "Q3510521", "props": ["P31", "P279", "P2824"]},
+    "Bioinformatics": {"root": "Q128570", "props": ["P31", "P279", "P685"]},
+    "Geopolitics": {"root": "Q159385", "props": ["P31", "P279", "P30"]},
+    "DataScience": {"root": "Q2374463", "props": ["P31", "P279", "P2078"]},
+    "Chemistry": {"root": "Q2329", "props": ["P31", "P279", "P662", "P2067"]},
+    "ArtHistory": {"root": "Q50637", "props": ["P31", "P279", "P170", "P136"]},
+    "Electronics": {"root": "Q11650", "props": ["P31", "P279", "P306", "P400"]},
     "Astronomy": {"root": "Q333", "props": ["P31", "P279", "P2067"]}
 }
 
 SPECIALIST_REGISTRY = [
-    {"domain": "SoftwareEngineering", "model": "qwen2.5-coder:3b", "root": "Q11661", "props": ["P31", "P279", "P306", "P400"]},
+    {"domain": "SoftwareEngineering", "model": "qwen2.5-coder:3b", "root": "Q80993", "props": ["P31", "P279", "P306", "P400"]},
     {"domain": "Mathematics", "model": "deepseek-r1:1.5b", "root": "Q395", "props": ["P31", "P279", "P2534", "P192"]},
     {"domain": "Medicine", "model": "phi4-mini:3.8b", "root": "Q11190", "props": ["P31", "P279", "P923", "P780", "P699"]},
     {"domain": "LegalSystem", "model": "llama3.2:3b", "root": "Q7748", "props": ["P31", "P279", "P1684", "P427"]},
-    {"domain": "PhilosophyHistory", "model": "gemma3:4b", "root": "Q315", "props": ["P31", "P279", "P61"]},
+    {"domain": "PhilosophyHistory", "model": "gemma3:4b", "root": "Q5891", "props": ["P31", "P279", "P61"]},
     {"domain": "FinanceEconomics", "model": "gemma3:4b", "root": "Q8134", "props": ["P31", "P279", "P2283", "P1441"]},
-    {"domain": "Physics", "model": "deepseek-r1:1.5b", "root": "Q11424", "props": ["P31", "P279", "P2067", "P2541"]},
-    {"domain": "Cybersecurity", "model": "qwen2.5-coder:3b", "root": "Q151211", "props": ["P31", "P279", "P2824"]},
-    {"domain": "Bioinformatics", "model": "phi4-mini:3.8b", "root": "Q193635", "props": ["P31", "P279", "P685"]},
-    {"domain": "Geopolitics", "model": "llama3.2:3b", "root": "Q79461", "props": ["P31", "P279", "P30"]},
-    {"domain": "DataScience", "model": "qwen2.5-coder:3b", "root": "Q1156829", "props": ["P31", "P279", "P2078"]},
-    {"domain": "Chemistry", "model": "phi4-mini:3.8b", "root": "Q11158", "props": ["P31", "P279", "P662", "P2067"]},
-    {"domain": "ArtHistory", "model": "gemma3:4b", "root": "Q178561", "props": ["P31", "P279", "P170", "P136"]},
-    {"domain": "Electronics", "model": "qwen2.5-coder:3b", "root": "Q11663", "props": ["P31", "P279", "P306", "P400"]},
+    {"domain": "Physics", "model": "deepseek-r1:1.5b", "root": "Q413", "props": ["P31", "P279", "P2067", "P2541"]},
+    {"domain": "Cybersecurity", "model": "qwen2.5-coder:3b", "root": "Q3510521", "props": ["P31", "P279", "P2824"]},
+    {"domain": "Bioinformatics", "model": "phi4-mini:3.8b", "root": "Q128570", "props": ["P31", "P279", "P685"]},
+    {"domain": "Geopolitics", "model": "llama3.2:3b", "root": "Q159385", "props": ["P31", "P279", "P30"]},
+    {"domain": "DataScience", "model": "qwen2.5-coder:3b", "root": "Q2374463", "props": ["P31", "P279", "P2078"]},
+    {"domain": "Chemistry", "model": "phi4-mini:3.8b", "root": "Q2329", "props": ["P31", "P279", "P662", "P2067"]},
+    {"domain": "ArtHistory", "model": "gemma3:4b", "root": "Q50637", "props": ["P31", "P279", "P170", "P136"]},
+    {"domain": "Electronics", "model": "qwen2.5-coder:3b", "root": "Q11650", "props": ["P31", "P279", "P306", "P400"]},
     {"domain": "Astronomy", "model": "phi4-mini:3.8b", "root": "Q333", "props": ["P31", "P279", "P2067"]}
 ]
+
+SUPER_EXPERTS = {
+    "LanguagesLinguistics": {
+        "description": "Language, linguistics, NLP, philology, semiotics and communication theory",
+        "members": {"DataScience": 0.25, "PhilosophyHistory": 0.25, "SoftwareEngineering": 0.15, "ArtHistory": 0.15, "LegalSystem": 0.10, "Mathematics": 0.10}
+    },
+    "VisualArts": {
+        "description": "Painting, sculpture, architecture, photography, digital art, design, color theory and visual culture",
+        "members": {"ArtHistory": 0.40, "PhilosophyHistory": 0.20, "SoftwareEngineering": 0.12, "Electronics": 0.10, "Chemistry": 0.06, "Physics": 0.06, "Medicine": 0.06}
+    },
+    "PerformingArts": {
+        "description": "Music, dance, theater, opera, film, performance, acoustics and stagecraft",
+        "members": {"ArtHistory": 0.25, "PhilosophyHistory": 0.20, "Electronics": 0.20, "SoftwareEngineering": 0.12, "Physics": 0.10, "Medicine": 0.08, "DataScience": 0.05}
+    },
+    "EconomyFinance": {
+        "description": "Financial systems, markets, economic policy and cross-border regulation",
+        "members": {"FinanceEconomics": 0.35, "LegalSystem": 0.20, "DataScience": 0.20, "Geopolitics": 0.15, "PhilosophyHistory": 0.10}
+    },
+    "ArtificialIntelligence": {
+        "description": "Machine learning, LLMs, neural networks, AI safety and intelligent systems",
+        "members": {"DataScience": 0.30, "SoftwareEngineering": 0.25, "Mathematics": 0.20, "PhilosophyHistory": 0.10, "Electronics": 0.10, "Cybersecurity": 0.05}
+    },
+    "BiotechnologyHealth": {
+        "description": "Bioinformatics, medicine, drug discovery, genomics and healthcare technology",
+        "members": {"Bioinformatics": 0.30, "Medicine": 0.25, "Chemistry": 0.20, "DataScience": 0.15, "SoftwareEngineering": 0.10}
+    },
+    "QuantumPhysics": {
+        "description": "Quantum mechanics, particle physics, cosmology and fundamental science",
+        "members": {"Physics": 0.35, "Mathematics": 0.25, "Chemistry": 0.15, "Electronics": 0.15, "Astronomy": 0.10}
+    },
+    "CybersecurityDefense": {
+        "description": "Cyber threats, defense strategy, cryptography, compliance and national security",
+        "members": {"Cybersecurity": 0.35, "SoftwareEngineering": 0.20, "Electronics": 0.15, "LegalSystem": 0.15, "Mathematics": 0.10, "FinanceEconomics": 0.05}
+    },
+    "ClimateEnvironment": {
+        "description": "Climate change, environmental science, sustainability, green policy and energy transition",
+        "members": {"Chemistry": 0.20, "Physics": 0.20, "DataScience": 0.15, "Geopolitics": 0.15, "FinanceEconomics": 0.10, "LegalSystem": 0.10, "Medicine": 0.05, "Astronomy": 0.05}
+    },
+    "SpaceExploration": {
+        "description": "Astronomy, space technology, orbital mechanics, planetary science and satellite systems",
+        "members": {"Astronomy": 0.30, "Physics": 0.25, "Electronics": 0.15, "SoftwareEngineering": 0.10, "Mathematics": 0.10, "Chemistry": 0.10}
+    },
+    "DataPrivacyEthics": {
+        "description": "Data protection, privacy regulation, digital ethics, GDPR and responsible AI",
+        "members": {"LegalSystem": 0.30, "Cybersecurity": 0.25, "PhilosophyHistory": 0.20, "DataScience": 0.15, "SoftwareEngineering": 0.10}
+    },
+    "CulturalHeritage": {
+        "description": "Art history, cultural preservation, digital archives, museology and conservation",
+        "members": {"ArtHistory": 0.30, "PhilosophyHistory": 0.25, "DataScience": 0.15, "SoftwareEngineering": 0.10, "Chemistry": 0.10, "LegalSystem": 0.10}
+    },
+    "EnergySustainability": {
+        "description": "Renewable energy, power systems, battery tech, energy economics and grid modernization",
+        "members": {"Physics": 0.25, "Chemistry": 0.20, "Electronics": 0.15, "FinanceEconomics": 0.15, "Geopolitics": 0.10, "DataScience": 0.10, "LegalSystem": 0.05}
+    },
+    "CryptocurrencyBlockchain": {
+        "description": "Cryptocurrencies, blockchain protocols, DeFi, tokenomics, smart contracts and Web3",
+        "members": {"FinanceEconomics": 0.25, "Cybersecurity": 0.20, "SoftwareEngineering": 0.20, "DataScience": 0.15, "LegalSystem": 0.10, "Mathematics": 0.05, "PhilosophyHistory": 0.05}
+    },
+    "EducationTechnology": {
+        "description": "Learning systems, educational technology, pedagogy, learning analytics and LMS",
+        "members": {"PhilosophyHistory": 0.25, "DataScience": 0.25, "SoftwareEngineering": 0.20, "Mathematics": 0.15, "ArtHistory": 0.10, "Electronics": 0.05}
+    },
+    "ManufacturingIndustry": {
+        "description": "Industry 4.0, automation, robotics, supply chain, smart manufacturing and IoT",
+        "members": {"Electronics": 0.25, "SoftwareEngineering": 0.20, "Physics": 0.15, "DataScience": 0.15, "Mathematics": 0.10, "Chemistry": 0.10, "FinanceEconomics": 0.05}
+    },
+    "Telecommunications": {
+        "description": "Communication networks, 5G/6G, signal processing, satellite comms and internet infrastructure",
+        "members": {"Electronics": 0.30, "Physics": 0.20, "SoftwareEngineering": 0.20, "DataScience": 0.10, "Mathematics": 0.10, "Astronomy": 0.10}
+    },
+    "MaterialsScience": {
+        "description": "New materials, nanotechnology, polymers, composites, semiconductors and metamaterials",
+        "members": {"Chemistry": 0.35, "Physics": 0.25, "Electronics": 0.15, "Mathematics": 0.10, "DataScience": 0.10, "SoftwareEngineering": 0.05}
+    },
+    "UrbanPlanningSmartCities": {
+        "description": "Urban development, smart infrastructure, mobility, civic tech and sustainable cities",
+        "members": {"Geopolitics": 0.20, "DataScience": 0.20, "Electronics": 0.15, "FinanceEconomics": 0.15, "LegalSystem": 0.10, "SoftwareEngineering": 0.10, "PhilosophyHistory": 0.05, "ArtHistory": 0.05}
+    },
+    "DefenseStrategy": {
+        "description": "Military strategy, international security, arms control, defense tech and geopolitical risk",
+        "members": {"Geopolitics": 0.30, "LegalSystem": 0.15, "Cybersecurity": 0.15, "Physics": 0.10, "Electronics": 0.10, "FinanceEconomics": 0.10, "PhilosophyHistory": 0.10}
+    },
+    "NeuroscienceCognition": {
+        "description": "Brain science, cognitive science, consciousness, neural interfaces and neurotechnology",
+        "members": {"Medicine": 0.25, "Bioinformatics": 0.20, "DataScience": 0.15, "Physics": 0.10, "Chemistry": 0.10, "SoftwareEngineering": 0.10, "PhilosophyHistory": 0.10}
+    },
+    "GeneralKnowledge": {
+        "description": "Cross-domain synthesis — all specialists contributing proportionally by packages absorbed",
+        "members": {"SoftwareEngineering": 0.08, "Mathematics": 0.07, "Medicine": 0.08, "LegalSystem": 0.06, "PhilosophyHistory": 0.08, "FinanceEconomics": 0.06, "Physics": 0.10, "Cybersecurity": 0.06, "Bioinformatics": 0.06, "Geopolitics": 0.05, "DataScience": 0.08, "Chemistry": 0.07, "ArtHistory": 0.06, "Electronics": 0.04, "Astronomy": 0.06}
+    }
+}
 
 from dissect_wikidata import WikidataStreamingExtractor
 
@@ -191,6 +294,18 @@ class BatchWikidataExtractor:
                         qids.add(qid)
                 except (KeyError, TypeError):
                     pass
+        return qids
+
+    def _extract_entity_p279(self, entity: Dict) -> Set[str]:
+        """Extract only P279 (subclass of) QIDs from an entity."""
+        qids = set()
+        for claim in entity.get('claims', {}).get('P279', []):
+            try:
+                qid = claim['mainsnak']['datavalue']['value']['id']
+                if qid:
+                    qids.add(qid)
+            except (KeyError, TypeError):
+                pass
         return qids
 
     def _flush_buffer(self, specialist_id: int, buffer: list):
@@ -322,9 +437,12 @@ class BatchWikidataExtractor:
                             buffers[sid] = []
 
                     if trigger_by_root:
+                        # Only use P279 (subclass of) relationships for expansion,
+                        # not P31 (instance of) — prevents cross-domain contamination
+                        entity_p279 = self._extract_entity_p279(entity)
                         for sid in trigger_by_root:
                             root_qid = self.specialist_matchers[sid]['root_qid']
-                            for qid in entity_qids:
+                            for qid in entity_p279:
                                 if qid != root_qid and qid not in all_root_qids:
                                     if qid not in discovered_expansions[sid]:
                                         discovered_expansions[sid].add(qid)
@@ -452,10 +570,10 @@ class PipelineController:
                 try:
                     self.db_manager.execute_query(
                         """INSERT OR IGNORE INTO specialist_registry 
-                           (domain, model, root_qid, properties, ema_score, tier, status)
-                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                           (domain, model, root_qid, properties, ema_score, tier, status, parent_id, qid_path)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (specialist['domain'], specialist['model'], specialist['root'],
-                         json.dumps(specialist['props']), 0.10, 3, 'IDLE')
+                         json.dumps(specialist['props']), 0.10, 3, 'IDLE', None, None)
                     )
                     self.db_manager.execute_query(
                         """UPDATE specialist_registry 
@@ -561,6 +679,387 @@ class PipelineController:
             logger.info(f"EMA {specialist_id}: {current_ema:.3f} -> {new_ema:.3f} (quality:{quality:.2f})")
         except Exception as e:
             logger.error(f"Failed to update EMA: {e}")
+
+    def _batch_resolve_labels(self, qids: List[str]) -> Dict[str, str]:
+        """Resolve English labels for a batch of QIDs via Wikidata API.
+        Falls back to raw QID if API fails or label not found."""
+        if not qids:
+            return {}
+        result = {}
+        cached = getattr(self, '_label_cache', {})
+        uncached = [q for q in qids if q not in cached]
+        result.update({q: cached[q] for q in qids if q in cached})
+
+        for i in range(0, len(uncached), WIKIDATA_LABEL_BATCH_SIZE):
+            batch = uncached[i:i + WIKIDATA_LABEL_BATCH_SIZE]
+            try:
+                ids_str = '|'.join(batch)
+                resp = requests.get(
+                    WIKIDATA_ENTITY_API,
+                    params={
+                        'action': 'wbgetentities',
+                        'ids': ids_str,
+                        'props': 'labels',
+                        'format': 'json',
+                        'languages': 'en',
+                    },
+                    headers={'User-Agent': WIKIDATA_API_USER_AGENT},
+                    timeout=15
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if 'entities' in data:
+                    for qid, entity in data['entities'].items():
+                        label = entity.get('labels', {}).get('en', {}).get('value', qid)
+                        cached[qid] = label
+                        result[qid] = label
+            except Exception as e:
+                logger.warning(f"Label resolution failed for batch starting at {batch[0]}: {e}")
+                for qid in batch:
+                    if qid not in result:
+                        result[qid] = qid
+                        cached[qid] = qid
+
+        self._label_cache = cached
+        return result
+
+    def _is_blocklisted_label(self, label: str) -> bool:
+        """Check if a label matches the generic blocklist (meta-categories, etc.)."""
+        label_lower = label.strip().lower()
+        if label_lower in BLOCKLIST_LABELS:
+            return True
+        for prefix in BLOCKLIST_LABEL_PREFIXES:
+            if label_lower.startswith(prefix):
+                return True
+        return False
+
+    def _validate_qid_for_spawning(self, qids: List[str], root_qid: str) -> Set[str]:
+        """Validate candidate QIDs by checking P279 parent-sharing with root.
+        A QID is valid if its P279 includes the root QID (direct subclass)
+        OR shares at least one P279 parent with the root QID (sibling subclass)."""
+        if not qids:
+            return set()
+        try:
+            # Shortcut: early return for small batches already cached
+            cache = getattr(self, '_p279_cache', {})
+            target_root_p279 = self._fetch_p279_parents(root_qid, cache)
+
+            if not target_root_p279:
+                # Root has no P279 parents — only direct children qualify
+                all_qids = list(set(qids + [root_qid]))
+                self._batch_fetch_p279(all_qids, cache)
+                self._p279_cache = cache
+                return {q for q in qids if root_qid in cache.get(q, set())}
+
+            # Batch-fetch P279 for all candidates
+            all_candidates = [q for q in qids if q not in cache]
+            if all_candidates:
+                self._batch_fetch_p279(all_candidates, cache)
+            self._p279_cache = cache
+
+            valid = set()
+            for qid in qids:
+                cand_p279 = cache.get(qid, set())
+                if root_qid in cand_p279:
+                    valid.add(qid)
+                elif cand_p279 & target_root_p279:
+                    valid.add(qid)
+            return valid
+        except Exception as e:
+            logger.warning(f"P279 validation failed for {len(qids)} QIDs: {e}")
+            return set()
+
+    def _fetch_p279_parents(self, qid: str, cache: dict) -> Set[str]:
+        """Fetch P279 (subclass of) parents for a QID, using cache."""
+        if qid in cache:
+            return cache[qid]
+        try:
+            resp = requests.get(
+                WIKIDATA_ENTITY_API,
+                params={'action': 'wbgetentities', 'ids': qid, 'props': 'claims', 'format': 'json'},
+                headers={'User-Agent': WIKIDATA_API_USER_AGENT},
+                timeout=15
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            entity = data.get('entities', {}).get(qid, {})
+            p279 = set()
+            for claim in entity.get('claims', {}).get('P279', []):
+                try:
+                    p279.add(claim['mainsnak']['datavalue']['value']['id'])
+                except (KeyError, TypeError):
+                    pass
+            cache[qid] = p279
+            return p279
+        except Exception as e:
+            logger.warning(f"Failed to fetch P279 for {qid}: {e}")
+            cache[qid] = set()
+            return set()
+
+    def _batch_fetch_p279(self, qids: List[str], cache: dict):
+        """Batch-fetch P279 parents for multiple QIDs via single API call."""
+        uncached = [q for q in qids if q not in cache]
+        if not uncached:
+            return
+        for i in range(0, len(uncached), WIKIDATA_LABEL_BATCH_SIZE):
+            batch = uncached[i:i + WIKIDATA_LABEL_BATCH_SIZE]
+            try:
+                ids_str = '|'.join(batch)
+                resp = requests.get(
+                    WIKIDATA_ENTITY_API,
+                    params={'action': 'wbgetentities', 'ids': ids_str, 'props': 'claims', 'format': 'json'},
+                    headers={'User-Agent': WIKIDATA_API_USER_AGENT},
+                    timeout=15
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                for qid, entity in data.get('entities', {}).items():
+                    if qid not in cache:
+                        p279 = set()
+                        for claim in entity.get('claims', {}).get('P279', []):
+                            try:
+                                p279.add(claim['mainsnak']['datavalue']['value']['id'])
+                            except (KeyError, TypeError):
+                                pass
+                        cache[qid] = p279
+            except Exception as e:
+                logger.warning(f"Batch P279 fetch failed for batch: {e}")
+                for qid in batch:
+                    if qid not in cache:
+                        cache[qid] = set()
+
+    def _check_subspecialist_spawning(self, specialist_id: int):
+        """Evaluate a single specialist for sub-specialist spawning with validation pipeline."""
+        try:
+            parent = self.db_manager.execute_query(
+                "SELECT id, domain, model, root_qid, properties, packages_absorbed FROM specialist_registry WHERE id = ?",
+                (specialist_id,), fetch=True
+            )
+            if not parent:
+                return
+            parent = parent[0]
+
+            total_children = self.db_manager.execute_query(
+                "SELECT COUNT(*) as cnt FROM specialist_registry WHERE parent_id IS NOT NULL", fetch=True
+            )
+            current_children = total_children[0]['cnt'] if total_children else 0
+            if current_children >= MAX_SUBSPECIALISTS:
+                return
+
+            children_count = self.db_manager.execute_query(
+                "SELECT COUNT(*) as cnt FROM specialist_registry WHERE parent_id = ?",
+                (parent['id'],), fetch=True
+            )
+            existing_children = children_count[0]['cnt'] if children_count else 0
+            if existing_children >= MAX_CHILDREN_PER_PARENT:
+                return
+
+            expansions = self.db_manager.execute_query(
+                "SELECT qid FROM qid_expansions WHERE specialist_id = ? ORDER BY discovered_at_checkpoint ASC",
+                (parent['id'],), fetch=True
+            )
+            if not expansions or len(expansions) < 3:
+                return
+            if parent['packages_absorbed'] < SUBSPECIALIST_THRESHOLD:
+                return
+
+            root_qid = parent['root_qid']
+
+            # Filter candidates: pre-existing children first
+            unspawned = []
+            for exp in expansions:
+                qid = exp['qid']
+                existing = self.db_manager.execute_query(
+                    "SELECT id FROM specialist_registry WHERE root_qid = ? AND parent_id = ?",
+                    (qid, parent['id']), fetch=True
+                )
+                if not existing:
+                    unspawned.append(qid)
+            if not unspawned:
+                return
+
+            # Resolve labels for remaining candidates (cached internally)
+            labels = self._batch_resolve_labels(unspawned)
+
+            # Validate via P279 parent-sharing with root QID
+            valid_qids = self._validate_qid_for_spawning(unspawned, root_qid)
+
+            spawned_this_cycle = 0
+            for qid in unspawned:
+                if spawned_this_cycle >= MAX_CHILDREN_PER_PARENT:
+                    break
+                if current_children + spawned_this_cycle >= MAX_SUBSPECIALISTS:
+                    break
+
+                label = labels.get(qid, qid)
+
+                # 1. Blocklist heuristic check
+                if self._is_blocklisted_label(label):
+                    logger.info(f"BLOCKED (blocklist label): {qid} -> '{label}' for {parent['domain']}")
+                    self._log_activity(f"Bloqueado {parent['domain']}/{label} (QID {qid}) — etiqueta genérica", 'WARNING')
+                    continue
+
+                # 2. P279 parent-sharing validation
+                if qid not in valid_qids:
+                    branch_label = f"{parent['domain']}/{label}"
+                    logger.info(f"BLOCKED (P279): {qid} -> '{label}' not a subclass of {root_qid}")
+                    self._log_activity(f"Rama externa {branch_label} (QID {qid}) — no emparenta con {parent['domain']}", 'WARNING')
+                    continue
+
+                # 3. Passes all checks — spawn
+                child_domain = f"{parent['domain']}/{label}"
+                parent_path = parent.get('qid_path') or parent['domain']
+                child_path = f"{parent_path}/{label}"
+
+                self.db_manager.execute_query(
+                    """INSERT INTO specialist_registry 
+                       (domain, model, root_qid, properties, ema_score, tier, status, parent_id, qid_path)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (child_domain, parent['model'], qid, parent['properties'], 0.10, 3, 'IDLE', parent['id'], child_path)
+                )
+                spawned_this_cycle += 1
+                logger.info(f"SPAWNED sub-specialist: {child_domain} (QID: {qid}, parent: {parent['domain']})")
+                self._log_activity(f"Germinado {child_domain} de {parent['domain']} (QID {qid})")
+
+        except Exception as e:
+            logger.error(f"Subspecialist spawning check failed for specialist {specialist_id}: {e}")
+
+    # ── Super-Expert Methods ──────────────────────────────────────────────────
+
+    def _create_super_expert_tables(self):
+        self.db_manager.execute_query("""
+            CREATE TABLE IF NOT EXISTS super_experts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain TEXT NOT NULL UNIQUE,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self.db_manager.execute_query("""
+            CREATE TABLE IF NOT EXISTS super_expert_members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                super_expert_id INTEGER NOT NULL,
+                specialist_id INTEGER NOT NULL,
+                weight REAL NOT NULL DEFAULT 0.1,
+                FOREIGN KEY (super_expert_id) REFERENCES super_experts(id),
+                FOREIGN KEY (specialist_id) REFERENCES specialist_registry(id),
+                UNIQUE(super_expert_id, specialist_id)
+            )
+        """)
+        logger.info("Super-expert tables ready")
+
+    def initialize_super_experts(self):
+        """Seed super_experts and super_expert_members from SUPER_EXPERTS config."""
+        self._create_super_expert_tables()
+        # Build a domain->id lookup for specialist_registry
+        specialists = self.db_manager.execute_query(
+            "SELECT id, domain FROM specialist_registry WHERE parent_id IS NULL", fetch=True
+        ) or []
+        domain_to_id = {s['domain']: s['id'] for s in specialists}
+
+        for se_domain, se_config in SUPER_EXPERTS.items():
+            try:
+                existing = self.db_manager.execute_query(
+                    "SELECT id FROM super_experts WHERE domain = ?", (se_domain,), fetch=True
+                )
+                if existing and existing[0]['id']:
+                    se_id = existing[0]['id']
+                else:
+                    self.db_manager.execute_query(
+                        "INSERT INTO super_experts (domain, description) VALUES (?, ?)",
+                        (se_domain, se_config['description'])
+                    )
+                    se_id = self.db_manager.execute_query(
+                        "SELECT last_insert_rowid()", fetch=True
+                    )[0]['last_insert_rowid()']
+
+                # Remove stale members, insert current
+                self.db_manager.execute_query(
+                    "DELETE FROM super_expert_members WHERE super_expert_id = ?", (se_id,)
+                )
+                for spec_domain, weight in se_config['members'].items():
+                    sid = domain_to_id.get(spec_domain)
+                    if sid is None:
+                        logger.warning(f"Super-expert {se_domain}: specialist {spec_domain} not found in DB")
+                        continue
+                    self.db_manager.execute_query(
+                        "INSERT OR IGNORE INTO super_expert_members (super_expert_id, specialist_id, weight) VALUES (?, ?, ?)",
+                        (se_id, sid, weight)
+                    )
+                logger.info(f"Super-expert '{se_domain}' initialized with {len(se_config['members'])} members")
+            except Exception as e:
+                logger.error(f"Failed to initialize super-expert '{se_domain}': {e}")
+
+    def get_super_expert_members(self, se_domain: str) -> List[Dict]:
+        """Return members of a super-expert with current EMA and packages."""
+        try:
+            rows = self.db_manager.execute_query("""
+                SELECT se.domain AS se_domain, se.description,
+                       s.id, s.domain, s.ema_score, s.packages_absorbed, sem.weight
+                FROM super_experts se
+                JOIN super_expert_members sem ON sem.super_expert_id = se.id
+                JOIN specialist_registry s ON s.id = sem.specialist_id
+                WHERE se.domain = ?
+                ORDER BY sem.weight DESC
+            """, (se_domain,), fetch=True)
+            return rows if rows else []
+        except Exception as e:
+            logger.error(f"Failed to get super-expert {se_domain}: {e}")
+            return []
+
+    def get_all_super_experts(self) -> List[Dict]:
+        """Return all super-experts with aggregated info."""
+        try:
+            rows = self.db_manager.execute_query("""
+                SELECT se.id, se.domain, se.description,
+                       COUNT(sem.id) AS member_count,
+                       AVG(s.ema_score) AS avg_ema,
+                       SUM(s.packages_absorbed * sem.weight) / SUM(sem.weight) AS weighted_ema,
+                       SUM(s.packages_absorbed) AS total_packages
+                FROM super_experts se
+                LEFT JOIN super_expert_members sem ON sem.super_expert_id = se.id
+                LEFT JOIN specialist_registry s ON s.id = sem.specialist_id
+                GROUP BY se.id
+                ORDER BY se.domain
+            """, fetch=True)
+            return rows if rows else []
+        except Exception as e:
+            logger.error(f"Failed to get all super-experts: {e}")
+            return []
+
+    def query_super_expert(self, se_domain: str, question: str, top_k: int = 5) -> List[Dict]:
+        """Synthesize knowledge from member specialists weighted by relevance.
+        Returns ranked knowledge packages."""
+        members = self.get_super_expert_members(se_domain)
+        if not members:
+            return []
+
+        results = []
+        for m in members:
+            try:
+                pkgs = self.db_manager.execute_query("""
+                    SELECT topic, structured_knowledge, source_url, created_at
+                    FROM knowledge_packages
+                    WHERE domain = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """, (m['domain'], top_k), fetch=True) or []
+                for pkg in pkgs:
+                    results.append({
+                        'specialist': m['domain'],
+                        'weight': m['weight'],
+                        'ema': m['ema_score'],
+                        'topic': pkg['topic'],
+                        'knowledge': pkg['structured_knowledge'],
+                        'source': pkg['source_url'],
+                        'timestamp': pkg['created_at'],
+                    })
+            except Exception as e:
+                logger.debug(f"Query super-expert member {m['domain']}: {e}")
+
+        # Sort by weight desc, then EMA desc
+        results.sort(key=lambda r: (r['weight'], r['ema']), reverse=True)
+        return results
 
     @staticmethod
     def _make_schema_matcher(schema: Dict) -> Callable[[Dict], bool]:
@@ -731,7 +1230,7 @@ class PipelineController:
             for query in queries:
                 self._log_activity(f"{domain} > Buscando: \"{query[:60]}\"")
                 try:
-                    results = await self.web_scraper.search_and_extract(query=query, max_results=5)
+                    results = await self.web_scraper.search_and_extract(query=query, max_results=5, domain=domain)
                     total_c += len(results)
                     self._log_activity(f"{domain} > {len(results)} resultados para \"{query[:40]}\"")
                     for content in results:
@@ -758,9 +1257,9 @@ class PipelineController:
                         if dist and url:
                             try:
                                 self.db_manager.execute_query(
-                                    """INSERT INTO knowledge_packages (topic, source_url, domain, structured_knowledge)
-                                       VALUES (?, ?, ?, ?)""",
-                                    (query[:100], url, domain, dist[:500])
+                                    """INSERT INTO knowledge_packages (topic, source_url, domain, qid, structured_knowledge)
+                                       VALUES (?, ?, ?, ?, ?)""",
+                                    (query[:100], url, domain, None, dist[:500])
                                 )
                                 pkgs_saved += 1
                                 self._log_activity(f"{domain} > Package guardado: {query[:40]}")
@@ -873,9 +1372,13 @@ class PipelineController:
 
     async def run_pipeline(self, sample_size: Optional[int] = None,
                            min_duration_hours: float = 5.0,
-                           report_interval_minutes: int = 30) -> None:
+                           report_interval_minutes: int = 30,
+                           phase: str = 'full',
+                           specialist_filter: str = 'all',
+                           model_filter: str = 'all') -> None:
         logger.info("=" * 80)
-        logger.info("CORAL THOUGHT ORCHESTRATOR - PIPELINE (CONTINUOUS MODE)")
+        logger.info("CORAL THOUGHT ORCHESTRATOR - PIPELINE")
+        logger.info(f"Phase: {phase} | Specialist: {specialist_filter} | Model: {model_filter}")
         logger.info(f"Min duration: {min_duration_hours}h | Report every {report_interval_minutes}min")
         logger.info("=" * 80 + "\n")
 
@@ -888,10 +1391,24 @@ class PipelineController:
         if not self.initialize_specialists():
             self._update_pipeline_status(status='ERROR', phase='Init failed')
             return
+        self.initialize_super_experts()
 
         all_specialists = self.get_specialists()
         if not all_specialists:
             return
+
+        # Apply filters
+        if specialist_filter != 'all':
+            all_specialists = [s for s in all_specialists if s['domain'] == specialist_filter]
+        if model_filter != 'all':
+            all_specialists = [s for s in all_specialists if s['model'] == model_filter]
+        if not all_specialists:
+            logger.warning(f"No specialists match filter (specialist={specialist_filter}, model={model_filter})")
+            self._update_pipeline_status(status='COMPLETED', phase='No specialists matched filter')
+            return
+
+        domains_str = ', '.join(s['domain'] for s in all_specialists)
+        logger.info(f"Selected specialists ({len(all_specialists)}): {domains_str}")
 
         max_entities = sample_size or MAX_CASCADE_ENTITIES
         model_groups = defaultdict(list)
@@ -900,80 +1417,95 @@ class PipelineController:
         sorted_models = sorted(model_groups.keys())
 
         try:
-            # Phase A: Cascade — skip if checkpoints exist
-            existing = self.db_manager.execute_query(
-                "SELECT COUNT(*) as cnt FROM cascade_checkpoints", fetch=True
-            )
-            has_checkpoints = existing and existing[0]['cnt'] > 0
-            if has_checkpoints:
-                logger.info(f"Checkpoints exist ({existing[0]['cnt']}), SKIPPING Phase A cascade")
-                phase_a_results = {s['id']: True for s in all_specialists}
-                self._update_pipeline_status(phase='Phase A: SKIPPED (checkpoints exist)', status='ACTIVE')
+            # Phase A: Cascade
+            phase_a_results = {s['id']: True for s in all_specialists}
+            if phase in ('full', 'cascade'):
+                existing = self.db_manager.execute_query(
+                    "SELECT COUNT(*) as cnt FROM cascade_checkpoints", fetch=True
+                )
+                has_checkpoints = existing and existing[0]['cnt'] > 0
+                if has_checkpoints:
+                    logger.info(f"Checkpoints exist ({existing[0]['cnt']}), SKIPPING Phase A cascade")
+                    self._update_pipeline_status(phase='Phase A: SKIPPED (checkpoints exist)', status='ACTIVE')
+                else:
+                    phase_a_results = await self.run_phase_a_cascade(all_specialists, max_entities)
             else:
-                phase_a_results = await self.run_phase_a_cascade(all_specialists, max_entities)
+                logger.info("Phase A skipped (--phase=web)")
 
-            # Phase B: Continuous loop until minimum duration
-            pipeline_start = time.time()
-            last_report_time = 0.0
-            global_cycle = 0
+            # Phase B: Continuous loop
+            if phase in ('full', 'web'):
+                pipeline_start = time.time()
+                last_report_time = 0.0
+                global_cycle = 0
 
-            while True:
-                elapsed = time.time() - pipeline_start
-                if elapsed >= min_duration_hours * 3600:
-                    logger.info(f"Minimum duration reached ({min_duration_hours}h). Finishing...")
-                    break
+                while True:
+                    elapsed = time.time() - pipeline_start
+                    if elapsed >= min_duration_hours * 3600:
+                        logger.info(f"Minimum duration reached ({min_duration_hours}h). Finishing...")
+                        break
 
-                global_cycle += 1
-                effective_cycle = ((global_cycle - 1) % 3) + 1
+                    global_cycle += 1
+                    effective_cycle = ((global_cycle - 1) % 3) + 1
 
-                for model_name in sorted_models:
-                    group = model_groups[model_name]
-                    if global_cycle == 1:
-                        self._update_pipeline_status(status='CHECKING_MODEL', phase=f'Verifying model: {model_name}')
-                        model_ready = await self.llm_runner.ensure_model_ready(model_name)
-                        if not model_ready:
-                            self._update_pipeline_status(status='SKIPPED', phase=f'Model unavailable: {model_name}')
-                            for specialist in group:
-                                self.update_ema_score(specialist['id'], False)
-                            model_groups[model_name] = []
+                    for model_name in sorted_models:
+                        group = model_groups[model_name]
+                        if global_cycle == 1:
+                            self._update_pipeline_status(status='CHECKING_MODEL', phase=f'Verifying model: {model_name}')
+                            model_ready = await self.llm_runner.ensure_model_ready(model_name)
+                            if not model_ready:
+                                self._update_pipeline_status(status='SKIPPED', phase=f'Model unavailable: {model_name}')
+                                for specialist in group:
+                                    self.update_ema_score(specialist['id'], False)
+                                model_groups[model_name] = []
+                                continue
+
+                        if not group:
                             continue
 
-                    if not group:
-                        continue
+                        domains = [s['domain'] for s in group]
+                        self._update_pipeline_status(
+                            specialist=', '.join(domains[:3]) + ('...' if len(domains) > 3 else ''),
+                            model=model_name, cycle=global_cycle, total_cycles=999,
+                            phase=f'Phase B: Web + LLM ({len(group)} paralelo)', status='ACTIVE'
+                        )
+                        tasks = [self.run_phase_b(s, effective_cycle) for s in group]
+                        phase_b_results = await asyncio.gather(*tasks)
 
-                    domains = [s['domain'] for s in group]
-                    self._update_pipeline_status(
-                        specialist=', '.join(domains[:3]) + ('...' if len(domains) > 3 else ''),
-                        model=model_name, cycle=global_cycle, total_cycles=999,
-                        phase=f'Phase B: Web + LLM ({len(group)} paralelo)', status='ACTIVE'
-                    )
-                    tasks = [self.run_phase_b(s, effective_cycle) for s in group]
-                    phase_b_results = await asyncio.gather(*tasks)
+                        for specialist, phase_b in zip(group, phase_b_results):
+                            sid, domain = specialist['id'], specialist['domain']
+                            ok = phase_a_results.get(sid, False) or phase_b['success']
+                            self.update_ema_score(sid, ok, phase_b.get('total_length', 0), phase_b.get('avg_trust', 50))
 
-                    for specialist, phase_b in zip(group, phase_b_results):
-                        sid, domain = specialist['id'], specialist['domain']
-                        ok = phase_a_results.get(sid, False) or phase_b['success']
-                        self.update_ema_score(sid, ok, phase_b.get('total_length', 0), phase_b.get('avg_trust', 50))
+                        # After Phase B completes for this specialist, check spawning
+                        for specialist in group:
+                            if global_cycle % SUBSPECIALIST_CYCLE_INTERVAL == 0:
+                                self._check_subspecialist_spawning(specialist['id'])
 
-                # Report every report_interval_minutes
-                new_elapsed = time.time() - pipeline_start
-                if new_elapsed - last_report_time >= report_interval_minutes * 60:
-                    await self._generate_report(new_elapsed)
-                    last_report_time = new_elapsed
+                    new_elapsed = time.time() - pipeline_start
+                    if new_elapsed - last_report_time >= report_interval_minutes * 60:
+                        await self._generate_report(new_elapsed)
+                        last_report_time = new_elapsed
 
-                if global_cycle == 1:
-                    # Re-fetch specialists for updated EMA scores + rebuild groups
-                    all_specialists = self.get_specialists()
-                    model_groups = defaultdict(list)
-                    for specialist in all_specialists:
-                        model_groups[specialist['model']].append(specialist)
-                    sorted_models = sorted(model_groups.keys())
+                    if global_cycle == 1:
+                        all_specialists = self.get_specialists()
+                        if specialist_filter != 'all':
+                            all_specialists = [s for s in all_specialists if s['domain'] == specialist_filter]
+                        if model_filter != 'all':
+                            all_specialists = [s for s in all_specialists if s['model'] == model_filter]
+                        if not all_specialists:
+                            logger.warning("No specialists match filter after re-fetch, ending Phase B")
+                            break
+                        model_groups = defaultdict(list)
+                        for specialist in all_specialists:
+                            model_groups[specialist['model']].append(specialist)
+                        sorted_models = sorted(model_groups.keys())
+            else:
+                logger.info("Phase B skipped (--phase=cascade)")
 
         finally:
             await self.llm_runner.cleanup()
             self.web_scraper.cleanup()
 
-        # Final report
         final_elapsed = time.time() - self._start_time
         await self._generate_report(final_elapsed)
         self.metrics.print_summary()
@@ -983,14 +1515,32 @@ class PipelineController:
         logger.info("=" * 80)
 
 
-async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.0, report_interval_minutes: int = 30):
+def parse_args():
+    parser = argparse.ArgumentParser(description='Expertia Pipeline Orchestrator')
+    parser.add_argument('--phase', choices=['full', 'cascade', 'web'], default='full',
+                        help='Pipeline phase to run (default: full)')
+    parser.add_argument('--specialist', type=str, default='all',
+                        help='Run only this specialist domain (default: all)')
+    parser.add_argument('--model', type=str, default='all',
+                        help='Run only specialists using this model (default: all)')
+    parser.add_argument('--duration', type=float, default=5.0,
+                        help='Minimum duration in hours for Phase B (default: 5.0)')
+    return parser.parse_args()
+
+
+async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.0,
+               report_interval_minutes: int = 30,
+               phase: str = 'full', specialist_filter: str = 'all',
+               model_filter: str = 'all'):
     crash_log = LOGS_DIR / 'crash.log'
     while True:
         try:
             controller = PipelineController(sample_size=sample_size, cycles_per_specialist=3)
             await controller.run_pipeline(
                 min_duration_hours=min_duration_hours,
-                report_interval_minutes=report_interval_minutes
+                report_interval_minutes=report_interval_minutes,
+                phase=phase, specialist_filter=specialist_filter,
+                model_filter=model_filter
             )
             logger.info("Pipeline completed normally, restarting...")
         except asyncio.CancelledError:
@@ -1006,9 +1556,16 @@ async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.
 
 
 if __name__ == "__main__":
+    args = parse_args()
     while True:
         try:
-            asyncio.run(main(min_duration_hours=5.0, report_interval_minutes=30))
+            asyncio.run(main(
+                min_duration_hours=args.duration,
+                report_interval_minutes=30,
+                phase=args.phase,
+                specialist_filter=args.specialist,
+                model_filter=args.model
+            ))
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
