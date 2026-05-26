@@ -11,24 +11,7 @@ import sys
 import json
 from typing import Dict, List, Set
 
-# Copia directa del SPECIALIST_REGISTRY de orchestrator.py
-SPECIALIST_REGISTRY = [
-    {"domain": "SoftwareEngineering", "model": "qwen2.5-coder:3b"},
-    {"domain": "Mathematics", "model": "deepseek-r1:1.5b"},
-    {"domain": "Medicine", "model": "phi4-mini:3.8b"},
-    {"domain": "LegalSystem", "model": "llama3.2:3b"},
-    {"domain": "PhilosophyHistory", "model": "gemma3:4b"},
-    {"domain": "FinanceEconomics", "model": "gemma3:4b"},
-    {"domain": "Physics", "model": "deepseek-r1:1.5b"},
-    {"domain": "Cybersecurity", "model": "qwen2.5-coder:3b"},
-    {"domain": "Bioinformatics", "model": "phi4-mini:3.8b"},
-    {"domain": "Geopolitics", "model": "llama3.2:3b"},
-    {"domain": "DataScience", "model": "qwen2.5-coder:3b"},
-    {"domain": "Chemistry", "model": "phi4-mini:3.8b"},
-    {"domain": "ArtHistory", "model": "gemma3:4b"},
-    {"domain": "Electronics", "model": "qwen2.5-coder:3b"},
-    {"domain": "Astronomy", "model": "phi4-mini:3.8b"},
-]
+from orchestrator import SPECIALIST_REGISTRY
 
 
 def get_local_models() -> Set[str]:
