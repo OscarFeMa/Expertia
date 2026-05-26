@@ -1,295 +1,173 @@
-# Expertia
-Expertia es un motor de orquestación de agentes especializados para hardware local. Gestiona redes de micro-modelos LLM (vía Ollama) con un sistema lazy-loading que optimiza la VRAM, permitiendo ejecutar expertos en distintos ámbitos sin saturar el sistema. Diseñado para un conocimiento estructurado, eficiente y soberano.
+# Expertia — Synaptic Archive
+
+Motor de orquestación de agentes especializados para hardware local. Gestiona una red de 15 micro-modelos LLM (Ollama) con pipeline de scraping web + destilación, spawning de sub-especialistas validado por Wikidata, y un consejo de 22 super-expertos para síntesis cross-dominio.
 
 ## Overview
 
-The Coral Thought Ecosystem is designed for local-first AI multi-agent infrastructure with optimized resource usage for hardware-constrained environments (NVIDIA RTX 1660, 6GB VRAM, 32GB RAM). It provides:
+Expertia es un sistema de conocimiento autónomo, soberano y local-first. Opera mediante:
 
-- **15-Specialist Architecture**: Domain-specific experts with hardware-optimized models
-- **Thread-Safe Database**: Singleton SQLite connection pool with RLock for reentrancy
-- **Zero-RAM-Bloat Wikidata Extraction**: Streaming via ijson for 142GB dump processing
-- **Single-Active-Model Policy**: VRAM-aware lazy loading with ollama stop/run
-- **Hybrid Pipeline**: Phase A (Wikidata) + Phase B (Web Scraping) with fallback
-- **Dynamic EMA Scoring**: Quality-based expert performance evaluation
-- **Retry Logic**: Exponential backoff for HTTP operations
-- **Path Validation**: Pre-flight checks for all required paths
-- **Error Cleanup**: Guaranteed VRAM cleanup on errors
-- **Modern Web Scraping**: Updated DDGS (>=9.14.0) and Trafilatura (==2.0.0)
+- **15 especialistas raíz** con modelos ajustados por hardware (RTX 1660 6GB VRAM)
+- **Pipeline Phase B** (Web Scraping + LLM distillation) con scoring dinámico EMA
+- **Spawning de sub-especialistas** con validación vía Wikidata P279 (parentesco directo/hermano)
+- **Resolución de labels** por API Wikidata (`wbgetentities`) — sin diccionarios hardcodeados
+- **22 consejos super-expertos** de referencia estática con miembros ponderados
+- **Consola Streamlit** "Synaptic Archive" con estética pergamino, gráficos sunburst y control de pipeline
+- **Reportes automáticos** cada 30 min
+
+## 15 Especialistas
+
+| Dominio | Modelo | Root QID | Corrección |
+|---|---|---|---|
+| SoftwareEngineering | qwen2.5-coder:3b | Q80993 | ✅ |
+| Mathematics | deepseek-r1:1.5b | Q395 | ✅ |
+| Medicine | phi4-mini:3.8b | Q11190 | ✅ |
+| LegalSystem | llama3.2:3b | Q7748 | ✅ |
+| PhilosophyHistory | gemma3:4b | Q5891 | ✅ |
+| FinanceEconomics | gemma3:4b | Q8134 | ✅ |
+| Physics | deepseek-r1:1.5b | Q413 | ✅ |
+| Cybersecurity | qwen2.5-coder:3b | Q3510521 | ✅ corregido |
+| Bioinformatics | phi4-mini:3.8b | Q128570 | ✅ corregido |
+| Geopolitics | llama3.2:3b | Q159385 | ✅ corregido |
+| DataScience | qwen2.5-coder:3b | Q2374463 | ✅ corregido |
+| Chemistry | phi4-mini:3.8b | Q2329 | ✅ corregido |
+| ArtHistory | gemma3:4b | Q50637 | ✅ corregido |
+| Electronics | qwen2.5-coder:3b | Q11650 | ✅ corregido |
+| Astronomy | phi4-mini:3.8b | Q333 | ✅ |
+
+## 22 Super-Expertos
+
+Consejos estáticos de referencia (sin pipeline propio):
+
+EconomyFinance, ArtificialIntelligence, BiotechnologyHealth, QuantumPhysics, CybersecurityDefense, ClimateEnvironment, SpaceExploration, DataPrivacyEthics, CulturalHeritage, EnergySustainability, CryptocurrencyBlockchain, EducationTechnology, ManufacturingIndustry, Telecommunications, MaterialsScience, UrbanPlanningSmartCities, DefenseStrategy, NeuroscienceCognition, GeneralKnowledge, LanguagesLinguistics, VisualArts, PerformingArts.
+
+Cada consejo tiene miembros de los 15 especialistas con pesos que suman 1.0.
+
+## Sub-especialistas
+
+Cuando un especialista acumula ≥100 packages por sub-QID, el pipeline puede spawnear un sub-especialista hijo:
+1. **Filtro rápido**: label blocklist (generic/umbrella terms)
+2. **Validación P279**: llama a Wikidata API para verificar parentesco directo (hijo) o hermano (comparte padre P279)
+3. **Límites**: máx 20 total, máx 3 hijos por padre por ciclo
 
 ## Project Structure
 
 ```
 incubator-root/
 ├── config/
-│   ├── __init__.py
-│   └── settings.py         # Search delays, user-agents, and DB paths
+│   └── settings.py           # Configuración centralizada
 ├── database/
 │   ├── __init__.py
-│   ├── connection.py       # SQLite connection handling and table initialization
-│   └── queries.py          # Expert registry audits and updates
-├── crawler/
-│   ├── __init__.py
-│   ├── search_engine.py    # DuckDuckGo integration with safe anti-blocking delays
-│   ├── parser.py           # Trafilatura HTML-to-Markdown processing
-│   ├── distiller.py        # Ollama-powered knowledge distillation
-│   └── ollama_manager.py   # Ollama model management
-├── master/
-│   ├── auditor/
-│   │   ├── __init__.py
-│   │   └── ecosystem_auditor.py  # Density-based specialist germination
-│   └── evaluation/
-│       ├── __init__.py
-│       └── evaluator.py   # Expert performance evaluation
-├── scripts/
-│   ├── seed_experts.py     # Initial expert seeding
-│   └── run_evolution_test.py  # Expert evolution pipeline
-├── logs/                   # Directory for operational execution logs
+│   └── db_manager.py         # SQLite singleton thread-safe
+├── crawler/                  # (legacy, no usado)
 ├── storage/
-│   ├── incubator.db        # SQLite database
-│   ├── packages/           # Knowledge packages storage
-│   └── reports/            # Hourly Markdown reports
-├── incubator_ingestion.py  # Main entry point orchestration script
-├── auto_incubator.py       # Autonomous batch supervisor with interactive menu
-├── orchestrator.py         # Main pipeline controller (15 specialists)
-├── llm_manager.py          # Ollama model manager with Single-Active-Model policy
-├── web_scraper.py          # Modern web scraper with DDGS and Trafilatura
-├── database/
-│   ├── __init__.py
-│   ├── connection.py       # Legacy SQLite connection handling
-│   ├── queries.py          # Expert registry audits and updates
-│   └── db_manager.py       # Thread-Safe Singleton Database Manager
-├── PROJECT_STATUS.md       # Current system state and configuration
-└── PROJECT_HISTORY.md      # Complete project chronology
+│   ├── incubator.db          # Base de datos SQLite
+│   ├── packages/             # Paquetes de conocimiento
+│   └── reports/              # Reportes automáticos
+├── orchestrator.py           # Pipeline controller principal
+├── expertia_console.py       # Consola Streamlit "Synaptic Archive"
+├── report_scheduler.py       # Generación de reportes periódicos
+├── web_scraper.py            # Scraper moderno (DDGS + Trafilatura)
+├── llm_manager.py            # Gestor de modelos Ollama
+├── dissect_wikidata.py       # Extractor Wikidata streaming (ijson+gzip)
+├── metrics.py                # Colector de métricas
+├── knowledge_ingestor.py     # Ingestor de conocimiento
+├── launch_expertia.bat       # Lanzador Streamlit (PowerShell oculto)
+├── install_models.bat        # Descarga de modelos Ollama
+├── download_models.bat
+└── requirements.txt
 ```
 
 ## Requirements
 
 - Python 3.10+
-- Windows 11 (Native execution, NO Docker, NO WSL)
+- Windows 11 (nativo, sin Docker/WSL)
 - NVIDIA RTX 1660 (6GB VRAM), 32GB RAM
-- Ollama with models for 15 specialists
-- Dependencies listed in `requirements.txt`
+- Ollama con modelos para 15 especialistas
+- Dependencias en `requirements.txt`
 
 ## Installation
 
-1. Navigate to the project directory:
 ```bash
 cd incubator-root
-```
-
-2. Install dependencies:
-```bash
 pip install -r requirements.txt
 ```
 
-3. Install Ollama and pull required models:
+Instalar Ollama y modelos:
 ```bash
-# Install Ollama (Windows)
 winget install Ollama.Ollama
-
-# Pull required models for 15 specialists
-ollama pull qwen2.5:3b
 ollama pull qwen2.5-coder:3b
-ollama pull phi3:mini
+ollama pull deepseek-r1:1.5b
+ollama pull phi4-mini:3.8b
 ollama pull llama3.2:3b
-ollama pull gemma2:2b
-ollama pull mistral:7b
-```
-
-4. Verify Wikidata dump path:
-```bash
-# Ensure E:\aria2-1.37.0-win-64bit-build1\latest-all.json.gz exists
-# Create E:\expertia-data\ for output cartridges
-```
-
-5. Initialize specialist registry:
-```bash
-python orchestrator.py
+ollama pull gemma3:4b
 ```
 
 ## Usage
 
-### Coral Thought Orchestrator (15-Specialist Pipeline)
-
-Run the main orchestrator to process all 15 specialists:
+### Consola Synaptic Archive
 
 ```bash
+streamlit run expertia_console.py
+```
+
+O desde el acceso directo de escritorio «Expertia Control Center».
+
+La consola permite:
+- Visualizar los 15 especialistas en tarjetas con métricas EMA, packages, status
+- Gráfico de sol (sunburst) de la jerarquía de especialistas y sub-especialistas
+- Control del pipeline: lanzar/parar, elegir especialista, modelo, fase, duración
+- Pestalla de Super-Expertos con miembros ponderados
+- Auto-refresh cada 5s, reportes cada 30 min
+
+### Pipeline (CLI)
+
+```bash
+# Phase B: web scraping + LLM para un especialista
+python orchestrator.py --phase web --specialist Physics --model deepseek-r1:1.5b --duration 3.0
+
+# Sin especificar: ejecuta todos los especialistas en cascada
 python orchestrator.py
 ```
 
-The system will:
-1. Validate required paths (Wikidata dump, output directory)
-2. Initialize specialist registry in database
-3. Process each specialist with:
-   - Phase A: Wikidata extraction via ijson streaming (zero-RAM-bloat)
-   - Phase B: Web scraping with modern DDGS and Trafilatura
-   - Dynamic EMA scoring based on content quality
-4. Apply Single-Active-Model policy (VRAM optimization)
-5. Handle errors with retry logic and exponential backoff
-6. Guarantee VRAM cleanup on errors
-
-### Web Scraper (Standalone)
-
-Run the modern web scraper independently:
-
-```bash
-python web_scraper.py
-```
-
-### LLM Manager (Standalone)
-
-Test Ollama model management:
-
-```bash
-python llm_manager.py
-```
-
-### Autonomous Mode (Legacy)
-
-Run the legacy autonomous batch supervisor with interactive menu:
-
-```bash
-python auto_incubator.py
-```
-
-Select option [1] for autonomous loop. The system will:
-1. Run EcosystemAuditor for density-based germination (with hard limits)
-2. Display expert ecosystem status by tier
-3. Identify expert with lowest EMA score
-4. Generate dynamic search query via Ollama
-5. Trigger evolution pipeline with the query
-6. Generate hourly reports every 60 minutes
-7. Apply passive pruning for frozen experts
-
 ## Database Schema
 
-### specialist_registry (Coral Thought 15-Specialist Architecture)
-- `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
-- `domain` (TEXT NOT NULL UNIQUE) - Specialist domain (e.g., SoftwareEngineering)
-- `model` (TEXT NOT NULL) - Hardware-optimized Ollama model
-- `root_qid` (TEXT NOT NULL) - Wikidata root QID for filtering
-- `properties` (TEXT NOT NULL) - Wikidata properties (JSON array)
-- `ema_score` (REAL DEFAULT 0.10) - Dynamic EMA score
-- `tier` (INTEGER DEFAULT 3) - 3: In-Training
-- `packages_absorbed` (INTEGER DEFAULT 0)
-- `status` (TEXT DEFAULT 'IDLE') - IDLE, ACTIVE, PROCESSING
-- `created_at` (TIMESTAMP)
-- `updated_at` (TIMESTAMP)
+### specialist_registry
+- `id`, `domain`, `model`, `root_qid`, `properties`, `ema_score`, `tier`
+- `packages_absorbed`, `status`, `parent_id`, `qid_path`, `created_at`, `updated_at`
 
-### cartridge_offsets (Wikidata Extraction Tracking)
-- `qid` (TEXT PRIMARY KEY)
-- `cartridge_name` (TEXT)
-- `offset_start` (INTEGER)
-- `offset_end` (INTEGER)
-- `specialist_id` (INTEGER)
-- `status` (TEXT DEFAULT 'Available') - Available, PROCESSING, COMPLETED, FALLBACK_TRIGGERED
-- `created_at` (TIMESTAMP)
-- FOREIGN KEY (specialist_id) REFERENCES specialist_registry(id)
+### knowledge_packages
+- `id`, `topic`, `source_url`, `domain`, `structured_knowledge`, `qid`, `subdomain_path`, `created_at`
 
-### knowledge_packages (Knowledge Storage)
-- `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
-- `topic` (TEXT NOT NULL)
-- `source_url` (TEXT NOT NULL)
-- `domain` (TEXT)
-- `structured_knowledge` (TEXT)
-- `created_at` (TIMESTAMP)
+### ema_history
+- `id`, `specialist_id`, `ema_score`, `timestamp`
 
-### ema_history (EMA Score History)
-- `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
-- `specialist_id` (INTEGER NOT NULL)
-- `ema_score` (REAL NOT NULL)
-- `timestamp` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
-- FOREIGN KEY (specialist_id) REFERENCES specialist_registry(id)
+### pipeline_status
+- `id`, `status`, `current_specialist`, `phase`, `cycle`, `packages_this_session`, `started_at`, `updated_at`
 
-## 15-Specialist Architecture
+### super_experts / super_expert_members
+- Consejos de super-expertos (22) con miembros y pesos
 
-The Coral Thought ecosystem implements 15 domain-specific specialists with hardware-optimized models:
+## Pipeline Flow
 
-1. **SoftwareEngineering** - qwen2.5-coder:3b (Q11661)
-2. **Mathematics** - qwen2.5:3b (Q395)
-3. **Medicine** - phi3:mini (Q11190)
-4. **LegalSystem** - llama3.2:3b (Q7748)
-5. **PhilosophyHistory** - gemma2:2b (Q315)
-6. **FinanceEconomics** - mistral:7b (Q8134)
-7. **Physics** - qwen2.5:3b (Q11424)
-8. **Cybersecurity** - llama3.2:3b (Q151211)
-9. **Bioinformatics** - phi3:mini (Q193635)
-10. **Geopolitics** - llama3.2:3b (Q79461)
-11. **DataScience** - qwen2.5-coder:3b (Q1156829)
-12. **Chemistry** - qwen2.5:3b (Q11158)
-13. **ArtHistory** - gemma2:2b (Q178561)
-14. **Electronics** - qwen2.5:3b (Q11663)
-15. **Astronomy** - qwen2.5:3b (Q333)
-
-Each specialist has:
-- Hardware-optimized model (2b-7b parameters)
-- Wikidata QID mapping for domain filtering
-- Dynamic EMA scoring based on content quality
-- Single-Active-Model policy for VRAM optimization
-
-## Key Improvements (Refactoring 2026-05-24)
-
-### Database Layer
-- **Thread-Safe Singleton**: RLock for reentrancy, double-checked locking
-- **Connection Pool**: Single connection instance with thread-safe operations
-- **Specialist Tables**: specialist_registry, cartridge_offsets, ema_history, cascade_checkpoints, qid_expansions
-
-### Model Management
-- **Unified Architecture**: Single LLMRunner (llm_manager.py) across all modules
-- **Single-Active-Model Policy**: VRAM-aware lazy loading with ollama stop/run
-- **Offline Verification**: Local model cache validation before operations
-- **HTTP API Communication**: Direct API calls (localhost:11434) instead of subprocess
-
-### Error Handling
-- **Retry Logic**: Exponential backoff for HTTP operations (max 3 retries)
-- **Path Validation**: Pre-flight checks for all required paths
-- **Error Cleanup**: Guaranteed VRAM cleanup on errors (try/finally)
-- **Custom Exceptions**: LocalModelNotFoundError, ModelLoadError, LLMQueryError, ModelTimeoutError
-
-### Performance
-- **Zero-RAM-Bloat**: ijson streaming for 142GB Wikidata dump
-- **Dynamic EMA Scoring**: Quality-based evaluation (content length + trust score)
-- **Batch Processing**: Periodic entity writes to avoid memory buildup
-- **Timeout Protection**: 4-hour timeout for Wikidata extraction
-
-### Web Scraping
-- **Modern DDGS**: Updated to duckduckgo-search>=9.14.0
-- **Updated Trafilatura**: Version 2.0.0 with improved extraction
-- **Rate Limiting**: Anti-blocking delays and User-Agent rotation
-- **Trust Scoring**: Tier-based source evaluation
-
-## Latest Results (2026-05-24)
-
-First complete pipeline run with cascade mode:
-- **Phase A**: 19 checkpoints, ~9.5M entities scanned, **525,203 Wikidata matches** across 15 specialists
-- **QID Expansion**: 203 additional QIDs discovered progressively through co-occurrence matching
-- **Phase B**: 45 knowledge packages generated, all 15 specialists processed (3 cycles each)
-- **EMA Scores**: Improved from baseline 0.10 to **0.19-0.25** across all specialists
-- **Processing Time**: ~8 hours for full cascade (Phase A) + ~2 hours for Phase B
+1. **Inicialización**: Valida paths, registra especialistas en DB
+2. **Phase A** (opcional): Wikidata streaming scanning con extracción progresiva
+3. **Phase B** (principal): Web scraping (DDGS) + destilación LLM + scoring EMA
+4. **Spawning** (cada 10 ciclos): Verifica QIDs candidatos, valida P279, crea sub-especialistas
+5. **Reportes**: scheduler genera `Rendimiento_<ts>.txt` cada 30 min
 
 ## Configuration
 
-Edit `config/settings.py` to customize:
-- Search delays and timeouts
-- User-Agent rotation list
-- Database paths
-- Suitability score threshold
-- Maximum results per search
-
-## Logging
-
-Operational logs are saved to the `logs/` directory with timestamped filenames.
-
-Hourly reports are saved to `storage/reports/` with format `hourly_report_YYYYMMDD_HHMM.md`.
+Editar `config/settings.py` para:
+- Rutas de Wikidata dump y salida
+- Timeouts y delays de búsqueda
+- Límites de sub-especialistas (`SUBSPECIALIST_THRESHOLD`, `MAX_SUBSPECIALISTS`, etc.)
+- Blocklist de labels QID
+- Intervalo de reportes
 
 ## License
 
-This project is part of the "Pensamiento Coral" ecosystem.
+Proyecto parte del ecosistema «Pensamiento Coral».
 
-## GitHub Repository
+## Repository
 
-Ready for GitHub repository creation with:
-- Complete refactoring documentation
-- 15-specialist architecture implementation
-- Hardware-optimized configuration
-- Production-ready error handling
+https://github.com/OscarFeMa/Expertia

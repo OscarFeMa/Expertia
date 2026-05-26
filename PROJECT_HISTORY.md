@@ -229,5 +229,45 @@
 - **EMA Results**: All 15 specialists improved from 0.10 to 0.19-0.25
 - **Pipeline Status Table**: Shared DB table for real-time orchestrator↔dashboard communication
 
+### Phase 10: Synaptic Archive Console & Theme (2026-05-25)
+- **Parchment aesthetic**: Color palette #E3DECE bg, #FFFFFF cards, #121212 text, coral/teal status
+- **expertia_console.py**: Streamlit UI with specialist cards, metrics, Plotly charts
+- **Container width deprecation fix**: Replaced 5× `use_container_width` with `width='stretch'`
+- **Pipeline stop**: 3-attempt `taskkill /F /T /PID` loop, `force_idle` session flag
+- **Plotly charts**: Per-expert Dark24 colors, `template="plotly_white"`, transparent background
+
+### Phase 11: Sub-Specialist Spawning & Schema Migration (2026-05-25)
+- **Schema update**: `specialist_registry` gets `parent_id`, `qid_path`; `knowledge_packages` gets `qid`, `subdomain_path`
+- **Indexes added**: For qid_path, parent_id, subdomain_path queries
+- **Spawning engine**: `_check_subspecialist_spawning()` with `MAX_CHILDREN_PER_PARENT=3`
+- **Wikidata label resolution**: `_batch_resolve_labels()` via `wbgetentities` API (batch 50 QIDs), cached in `_label_cache`
+- **Blocklist**: `_is_blocklisted_label()` filters generic labels (academic discipline, field of study, etc.)
+- **P279 parent-sharing validation**: `_validate_qid_for_spawning()` — direct child (P279 includes root) or sibling (share P279 parent)
+- **`trigger_by_root` fixed** to P279-only (prevents P31 cross-domain pollution)
+
+### Phase 12: Dead Code Cleanup & Root QID Corrections (2026-05-25)
+- **Deleted modules**: `database/connection.py`, `database/queries.py`, `ecosystem_auditor.py`, `seed_experts.py`, `run_evolution_test.py`, `auto_incubator.py`, `hybrid_pipeline.py`, `dashboard_original.py`
+- **19 invalid Medicine children cleaned**: All `Medicine/Q*` children removed
+- **9 wrong root QIDs corrected**: SoftwareEngineering (Q11661→Q80993), PhilosophyHistory (Q315→Q5891), Cybersecurity (Q151211→Q3510521), Bioinformatics (Q193635→Q128570), Geopolitics (Q79461→Q159385), DataScience (Q1156829→Q2374463), Chemistry (Q11158→Q2329), ArtHistory (Q178561→Q50637), Electronics (Q11663→Q11650)
+- **Sunburst replaces treemap**: Hierarchical view via `px.sunburst` for Synaptic Map
+- **Medicine sub-specialist bug fixed**: Q930752 correctly resolved as "medical specialty" (not "Geriatrics")
+
+### Phase 13: Super-Expert Councils (2026-05-25)
+- **22 councils created**: Static weighted-member reference tables
+- **Tables**: `super_experts` + `super_expert_members`
+- **initialize_super_experts()**: Seeds from `SUPER_EXPERTS` dict
+- **Console tab**: "🏛️ Super-Experts" with expander cards, member weights, EMA, packages
+- **Report section**: Super-experts included in `report_scheduler.py` output
+- **Councils**: EconomyFinance, ArtificialIntelligence, BiotechnologyHealth, QuantumPhysics, CybersecurityDefense, ClimateEnvironment, SpaceExploration, DataPrivacyEthics, CulturalHeritage, EnergySustainability, CryptocurrencyBlockchain, EducationTechnology, ManufacturingIndustry, Telecommunications, MaterialsScience, UrbanPlanningSmartCities, DefenseStrategy, NeuroscienceCognition, GeneralKnowledge, LanguagesLinguistics, VisualArts, PerformingArts
+
+### Phase 14: Launch System & Final Polish (2026-05-26)
+- **Auto-launch**: Console auto-starts Physics pipeline + report_scheduler on load
+- **report_scheduler.py**: Generates `Rendimiento_<ts>.txt` every 30 min
+- **launch_expertia.bat**: Streamlit via `powershell -WindowStyle Hidden`
+- **Desktop shortcut**: "Expertia Control Center.lnk" on desktop
+- **Model updates**: Mathematics→deepseek-r1:1.5b, Medicine→phi4-mini:3.8b, PhilosophyHistory→gemma3:4b, FinanceEconomics→gemma3:4b, Physics→deepseek-r1:1.5b, Cybersecurity→qwen2.5-coder:3b, Bioinformatics→phi4-mini:3.8b, Chemistry→phi4-mini:3.8b, ArtHistory→gemma3:4b, Electronics→qwen2.5-coder:3b, Astronomy→phi4-mini:3.8b
+- **Root QID corrected in code**: Physics root to Q413 (was Q11424)
+- **First commit to GitHub**: Repository pushed at https://github.com/OscarFeMa/Expertia
+
 ---
 *History document generated automatically by Cascade*

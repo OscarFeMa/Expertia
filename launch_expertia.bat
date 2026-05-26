@@ -8,8 +8,8 @@ for /f "tokens=5" %%a in ('netstat -ano ^| findstr :8501') do (
 )
 timeout /t 2 /nobreak >nul
 
-echo [Expertia] Iniciando Consola...
-start /min "Expertia Console" streamlit run expertia_console.py --server.address 0.0.0.0 --server.port 8501 --server.fileWatcherType none --server.headless true
+echo [Expertia] Iniciando Consola (oculta)...
+powershell -WindowStyle Hidden -Command "streamlit run expertia_console.py --server.address 0.0.0.0 --server.port 8501 --server.fileWatcherType none"
 
 echo        Esperando a que arranque...
 timeout /t 8 /nobreak >nul

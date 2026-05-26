@@ -65,6 +65,14 @@ SEARCH_DELAY_MAX = 4.5
 MAX_RESULTS_PER_SEARCH = 5
 SEARCH_TIMEOUT = 30
 
+# Wikipedia API fallback
+WIKIPEDIA_API_URL = "https://en.wikipedia.org/w/api.php"
+WIKIPEDIA_USER_AGENT = "Expertia/1.0 (https://github.com/OscarFeMa/Expertia) Python/3.12"
+
+# Seed URLs directory (last-resort fallback)
+SEED_DIR = STORAGE_DIR / "seed"
+SEED_DIR.mkdir(parents=True, exist_ok=True)
+
 USER_AGENTS: List[str] = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
@@ -89,14 +97,30 @@ INCLUDE_LINKS = True
 SUITABILITY_THRESHOLD = 0.85
 
 # ============================================================================
-# GROWTH CONTROL
+# SUB-SPECIALIST SPAWNING
 # ============================================================================
 
-MAX_TOTAL_EXPERTS = 30
-MAX_SPECIALISTS_PER_DOMAIN = 5
-ACTIVATION_BUFFER_THRESHOLD = 999  # Temporarily disabled
-CRITICAL_MASS_THRESHOLD = 5
-FROZEN_EXPERT_THRESHOLD_HOURS = 10
+SUBSPECIALIST_THRESHOLD = 100       # min packages per sub-QID to spawn
+MAX_SUBSPECIALISTS = 20             # absolute cap on sub-specialists
+SUBSPECIALIST_CYCLE_INTERVAL = 10   # process child every N parent cycles
+MAX_CHILDREN_PER_PARENT = 3         # max children spawned per specialist per cycle
+
+# Labels whose QIDs should never spawn as sub-specialists (catch-all drawer)
+BLOCKLIST_LABELS = frozenset({
+    "field of study", "academic discipline", "branch of science",
+    "branch of biology", "branch of geology", "social system",
+    "business", "profession", "medical specialty",
+    "scientific discipline", "academic major", "interdisciplinary science",
+})
+BLOCKLIST_LABEL_PREFIXES = frozenset({
+    "branch of ", "field of ", "subclass of ", "type of ",
+})
+
+# Wikidata API endpoints
+WIKIDATA_ENTITY_API = "https://www.wikidata.org/w/api.php"
+WIKIDATA_SPARQL_ENDPOINT = "https://query.wikidata.org/sparql"
+WIKIDATA_API_USER_AGENT = "Expertia/1.0 (incubator) Python/3.12"
+WIKIDATA_LABEL_BATCH_SIZE = 50  # max QIDs per wbgetentities request
 
 # ============================================================================
 # METRICS / MONITORING
