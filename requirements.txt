@@ -2,7 +2,7 @@
 # Python 3.10+
 
 # Web Search (Modernized)
-duckduckgo-search>=9.14.0
+duckduckgo-search>=8.1.1
 
 # HTML Parsing and Content Extraction (Updated)
 trafilatura==2.0.0
