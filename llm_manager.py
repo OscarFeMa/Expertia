@@ -16,6 +16,7 @@ import time
 import logging
 import json
 import asyncio
+import os
 from typing import Optional, List, Dict, Callable
 from dataclasses import dataclass
 from functools import wraps
@@ -159,6 +160,20 @@ class RunningModel:
 # OFFLINE VERIFICATION ENGINE
 # ============================================================================
 
+def _find_ollama_binary() -> str:
+    """Locate ollama executable in PATH or common install locations."""
+    import shutil
+    exe = shutil.which("ollama")
+    if exe:
+        return exe
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA", "")
+        candidate = os.path.join(local, "Programs", "Ollama", "ollama.exe")
+        if os.path.isfile(candidate):
+            return candidate
+    return "ollama"
+
+
 class OfflineVerificationEngine:
     """Verifies local Ollama model availability without network calls."""
     
@@ -168,28 +183,13 @@ class OfflineVerificationEngine:
         self._cache_timestamp: float = 0.0
         self._cache_ttl: float = 60.0  # Cache for 60 seconds
     
-    @staticmethod
-    def _find_ollama_binary() -> str:
-        """Locate ollama executable in PATH or common install locations."""
-        import shutil
-        exe = shutil.which("ollama")
-        if exe:
-            return exe
-        # Windows: check %LOCALAPPDATA%\Programs\Ollama
-        if os.name == "nt":
-            local = os.environ.get("LOCALAPPDATA", "")
-            candidate = os.path.join(local, "Programs", "Ollama", "ollama.exe")
-            if os.path.isfile(candidate):
-                return candidate
-        return "ollama"
-
     def _run_ollama_list(self) -> List[str]:
         """Execute `ollama list` and parse output.
         
         Returns:
             List[str]: List of available model names
         """
-        ollama_bin = self._find_ollama_binary()
+        ollama_bin = _find_ollama_binary()
         try:
             result = subprocess.run(
                 [ollama_bin, "list"],
@@ -318,7 +318,7 @@ class LLMRunner:
     
     def _get_running_models(self) -> List[RunningModel]:
         """Get list of currently running models via `ollama ps`."""
-        ollama_bin = self._find_ollama_binary()
+        ollama_bin = _find_ollama_binary()
         try:
             result = subprocess.run(
                 [ollama_bin, "ps"],
@@ -331,11 +331,10 @@ class LLMRunner:
                 logger.error(f"ollama ps failed: {result.stderr}")
                 return []
             
-            # Parse output (format: "NAME    ID    SIZE    STATUS")
             lines = result.stdout.strip().split('\n')
             running_models = []
             
-            for line in lines[1:]:  # Skip header
+            for line in lines[1:]:
                 if line.strip():
                     parts = line.split()
                     if len(parts) >= 4:
@@ -356,7 +355,7 @@ class LLMRunner:
     
     def _stop_model(self, model_name: str) -> bool:
         """Stop a running model via `ollama stop`."""
-        ollama_bin = self._find_ollama_binary()
+        ollama_bin = _find_ollama_binary()
         try:
             logger.info(f"UNLOADING model: {model_name}")
             result = subprocess.run(
@@ -382,7 +381,7 @@ class LLMRunner:
     
     def _start_model(self, model_name: str) -> bool:
         """Start a model via `ollama run` (lazy loading)."""
-        ollama_bin = self._find_ollama_binary()
+        ollama_bin = _find_ollama_binary()
         try:
             logger.info(f"LOADING model: {model_name}")
             result = subprocess.run(
