@@ -41,35 +41,11 @@ from config.settings import (
     WIKIDATA_API_USER_AGENT,
     WIKIDATA_LABEL_BATCH_SIZE,
 )
+from config.log_setup import setup_logging
 
 log_file = LOGS_DIR / f"pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler(log_file, encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
+setup_logging(log_file=log_file)
 logger = logging.getLogger(__name__)
-
-WIKIDATA_SCHEMAS = {
-    "SoftwareEngineering": {"root": "Q80993", "props": ["P31", "P279", "P306", "P400"]},
-    "Mathematics": {"root": "Q395", "props": ["P31", "P279", "P2534", "P192"]},
-    "Medicine": {"root": "Q11190", "props": ["P31", "P279", "P923", "P780", "P699"]},
-    "LegalSystem": {"root": "Q7748", "props": ["P31", "P279", "P1684", "P427"]},
-    "PhilosophyHistory": {"root": "Q5891", "props": ["P31", "P279", "P61"]},
-    "FinanceEconomics": {"root": "Q8134", "props": ["P31", "P279", "P2283", "P1441"]},
-    "Physics": {"root": "Q413", "props": ["P31", "P279", "P2067", "P2541"]},
-    "Cybersecurity": {"root": "Q3510521", "props": ["P31", "P279", "P2824"]},
-    "Bioinformatics": {"root": "Q128570", "props": ["P31", "P279", "P685"]},
-    "Geopolitics": {"root": "Q159385", "props": ["P31", "P279", "P30"]},
-    "DataScience": {"root": "Q2374463", "props": ["P31", "P279", "P2078"]},
-    "Chemistry": {"root": "Q2329", "props": ["P31", "P279", "P662", "P2067"]},
-    "ArtHistory": {"root": "Q50637", "props": ["P31", "P279", "P170", "P136"]},
-    "Electronics": {"root": "Q11650", "props": ["P31", "P279", "P306", "P400"]},
-    "Astronomy": {"root": "Q333", "props": ["P31", "P279", "P2067"]}
-}
 
 SPECIALIST_REGISTRY = [
     {"domain": "SoftwareEngineering", "model": "qwen2.5-coder:3b", "root": "Q80993", "props": ["P31", "P279", "P306", "P400"]},
@@ -88,6 +64,10 @@ SPECIALIST_REGISTRY = [
     {"domain": "Electronics", "model": "qwen2.5-coder:3b", "root": "Q11650", "props": ["P31", "P279", "P306", "P400"]},
     {"domain": "Astronomy", "model": "phi4-mini:3.8b", "root": "Q333", "props": ["P31", "P279", "P2067"]}
 ]
+
+# Derive WIKIDATA_SCHEMAS from single source of truth
+WIKIDATA_SCHEMAS = {s["domain"]: {"root": s["root"], "props": list(s["props"])}
+                     for s in SPECIALIST_REGISTRY}
 
 SUPER_EXPERTS = {
     "LanguagesLinguistics": {

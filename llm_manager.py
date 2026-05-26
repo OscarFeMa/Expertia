@@ -31,11 +31,6 @@ from config.settings import (
     LLM_MAX_TOKENS,
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger(__name__)
 
 
@@ -173,15 +168,31 @@ class OfflineVerificationEngine:
         self._cache_timestamp: float = 0.0
         self._cache_ttl: float = 60.0  # Cache for 60 seconds
     
+    @staticmethod
+    def _find_ollama_binary() -> str:
+        """Locate ollama executable in PATH or common install locations."""
+        import shutil
+        exe = shutil.which("ollama")
+        if exe:
+            return exe
+        # Windows: check %LOCALAPPDATA%\Programs\Ollama
+        if os.name == "nt":
+            local = os.environ.get("LOCALAPPDATA", "")
+            candidate = os.path.join(local, "Programs", "Ollama", "ollama.exe")
+            if os.path.isfile(candidate):
+                return candidate
+        return "ollama"
+
     def _run_ollama_list(self) -> List[str]:
         """Execute `ollama list` and parse output.
         
         Returns:
             List[str]: List of available model names
         """
+        ollama_bin = self._find_ollama_binary()
         try:
             result = subprocess.run(
-                ["ollama", "list"],
+                [ollama_bin, "list"],
                 capture_output=True,
                 text=True,
                 timeout=30
@@ -306,14 +317,11 @@ class LLMRunner:
         self.api_base_url = f"http://{self.ollama_host}:{self.ollama_port}"
     
     def _get_running_models(self) -> List[RunningModel]:
-        """Get list of currently running models via `ollama ps`.
-        
-        Returns:
-            List[RunningModel]: List of running models
-        """
+        """Get list of currently running models via `ollama ps`."""
+        ollama_bin = self._find_ollama_binary()
         try:
             result = subprocess.run(
-                ["ollama", "ps"],
+                [ollama_bin, "ps"],
                 capture_output=True,
                 text=True,
                 timeout=30
@@ -347,18 +355,12 @@ class LLMRunner:
             return []
     
     def _stop_model(self, model_name: str) -> bool:
-        """Stop a running model via `ollama stop`.
-        
-        Args:
-            model_name: Name of the model to stop
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
+        """Stop a running model via `ollama stop`."""
+        ollama_bin = self._find_ollama_binary()
         try:
             logger.info(f"UNLOADING model: {model_name}")
             result = subprocess.run(
-                ["ollama", "stop", model_name],
+                [ollama_bin, "stop", model_name],
                 capture_output=True,
                 text=True,
                 timeout=30
@@ -379,19 +381,12 @@ class LLMRunner:
             return False
     
     def _start_model(self, model_name: str) -> bool:
-        """Start a model via `ollama run` (lazy loading).
-        
-        Args:
-            model_name: Name of the model to start
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
+        """Start a model via `ollama run` (lazy loading)."""
+        ollama_bin = self._find_ollama_binary()
         try:
             logger.info(f"LOADING model: {model_name}")
-            # Use "exit" to immediately exit after loading (lazy loading)
             result = subprocess.run(
-                ["ollama", "run", model_name, "exit"],
+                [ollama_bin, "run", model_name, "exit"],
                 capture_output=True,
                 text=True,
                 timeout=120
@@ -474,6 +469,24 @@ class LLMRunner:
         logger.error(f"Failed to pull model '{model_name}' after 3 attempts")
         return False
 
+    @staticmethod
+    def _check_vram(min_free_mb: int = 1024) -> bool:
+        """Check available VRAM via pynvml. Returns True if enough VRAM is free."""
+        try:
+            import pynvml
+            pynvml.nvmlInit()
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            free_mb = info.free // (1024 ** 2)
+            logger.debug(f"VRAM: {free_mb}MB free (need {min_free_mb}MB)")
+            return free_mb >= min_free_mb
+        except ImportError:
+            logger.debug("pynvml not installed — skipping VRAM check")
+            return True
+        except Exception as e:
+            logger.debug(f"VRAM check failed: {e}")
+            return True
+
     async def ensure_model_loaded(self, model_name: str) -> bool:
         """Ensure a model is loaded in VRAM (Single-Active-Model pattern).
         
@@ -487,6 +500,15 @@ class LLMRunner:
         if self._lock is None:
             self._lock = asyncio.Lock()
         async with self._lock:
+            # VRAM watchdog — wait until enough VRAM is free
+            for attempt in range(5):
+                if self._check_vram(min_free_mb=1024):
+                    break
+                logger.warning(f"VRAM low, waiting 10s (attempt {attempt+1}/5)")
+                await asyncio.sleep(10)
+            else:
+                logger.warning("VRAM still low after 5 retries — proceeding anyway")
+
             # Verify model exists locally
             if not self.verify_model_exists(model_name):
                 self.require_model(model_name)
@@ -624,13 +646,21 @@ class LLMRunner:
         Returns:
             str: Generated response
         """
-        return asyncio.run(self.query_llm(
-            model_name=model_name,
-            prompt=prompt,
-            timeout=timeout,
-            temperature=temperature,
-            max_tokens=max_tokens
-        ))
+        try:
+            loop = asyncio.get_running_loop()
+            future = asyncio.run_coroutine_threadsafe(
+                self.query_llm(model_name=model_name, prompt=prompt,
+                               timeout=timeout, temperature=temperature,
+                               max_tokens=max_tokens),
+                loop
+            )
+            return future.result(timeout=timeout)
+        except RuntimeError:
+            return asyncio.run(self.query_llm(
+                model_name=model_name, prompt=prompt,
+                timeout=timeout, temperature=temperature,
+                max_tokens=max_tokens
+            ))
     
     async def cleanup(self) -> None:
         """Cleanup - stop current model if running and close HTTP session."""

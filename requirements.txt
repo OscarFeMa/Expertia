@@ -12,10 +12,22 @@ aiohttp>=3.10.0
 
 # Phase A: Wikidata Streaming (Zero-RAM-Bloat)
 ijson>=3.3.0
-kgtk>=2.0.0
 
 # Database Connection Pooling
 # (Using built-in sqlite3, no additional dependencies needed)
+
+# API
+fastapi>=0.110.0
+uvicorn>=0.27.0
+
+# Configuration
+pydantic-settings>=2.1.0
+
+# VRAM watchdog (optional)
+pynvml>=13.0.0
+
+# Testing
+pytest>=9.0.0
 
 # Type Hinting (included in Python 3.10+, but listed for clarity)
 # typing-extensions>=4.0.0

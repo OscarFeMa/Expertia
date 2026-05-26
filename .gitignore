@@ -119,6 +119,6 @@ storage/
 *.db-shm
 *.db-wal
 
-# Test files
-test_*.py
+# Test files (root level only)
+/test_*.py
 tmp_streamlit_test/

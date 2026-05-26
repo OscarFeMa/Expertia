@@ -25,11 +25,6 @@ from contextlib import contextmanager
 from database.db_manager import get_db_manager
 
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger(__name__)
 
 
