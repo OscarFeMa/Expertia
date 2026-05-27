@@ -191,29 +191,44 @@ def search_wikipedia(
         "srprop": "snippet|titlesnippet",
     }
     headers = {"User-Agent": WIKIPEDIA_USER_AGENT}
-    try:
-        with httpx.Client(timeout=SEARCH_TIMEOUT) as client:
-            r = client.get(WIKIPEDIA_API_URL, params=params, headers=headers)
-            r.raise_for_status()
-            data = r.json()
-        search_results = data.get("query", {}).get("search", [])
-        if not search_results:
-            logger.warning(f"[WIKI] No Wikipedia results for '{query}'")
-            return []
-        results = []
-        for s in search_results[:max_results]:
-            title = s.get("title", "")
-            page_url = f"https://{lang}.wikipedia.org/wiki/{title.replace(' ', '_')}"
-            results.append({
-                "title": title,
-                "href": page_url,
-                "body": s.get("snippet", "").replace("<span class=\"searchmatch\">", "").replace("</span>", ""),
-            })
-        logger.info(f"[WIKI] Found {len(results)} results for '{query}'")
-        return sort_results_by_trust(results, max_results)
-    except Exception as e:
-        logger.error(f"[WIKI] Search failed for '{query}': {e}")
-        raise WebScraperError(f"Wikipedia search failed: {e}")
+    last_error = None
+    for attempt in range(3):
+        try:
+            with httpx.Client(timeout=SEARCH_TIMEOUT) as client:
+                r = client.get(WIKIPEDIA_API_URL, params=params, headers=headers)
+                r.raise_for_status()
+                data = r.json()
+            search_results = data.get("query", {}).get("search", [])
+            if not search_results:
+                logger.warning(f"[WIKI] No Wikipedia results for '{query}'")
+                return []
+            results = []
+            for s in search_results[:max_results]:
+                title = s.get("title", "")
+                page_url = f"https://{lang}.wikipedia.org/wiki/{title.replace(' ', '_')}"
+                results.append({
+                    "title": title,
+                    "href": page_url,
+                    "body": s.get("snippet", "").replace("<span class=\"searchmatch\">", "").replace("</span>", ""),
+                })
+            logger.info(f"[WIKI] Found {len(results)} results for '{query}'")
+            return sort_results_by_trust(results, max_results)
+        except httpx.HTTPStatusError as e:
+            last_error = e
+            if e.response.status_code in (429, 403):
+                wait = 5 * (attempt + 1)
+                logger.warning(f"[WIKI] HTTP {e.response.status_code}, retrying in {wait}s (attempt {attempt+1}/3)")
+                time.sleep(wait)
+                continue
+            raise WebScraperError(f"Wikipedia search failed: {e}")
+        except Exception as e:
+            last_error = e
+            logger.error(f"[WIKI] Search failed for '{query}' (attempt {attempt+1}/3): {e}")
+            if attempt < 2:
+                time.sleep(3 * (attempt + 1))
+                continue
+            raise WebScraperError(f"Wikipedia search failed: {e}")
+    raise WebScraperError(f"Wikipedia search failed after 3 attempts: {last_error}")
 
 
 # ──────────────────────────────────────────────
@@ -315,7 +330,8 @@ def multi_engine_search(
 class ContentExtractor:
     def __init__(self, timeout: int = 30):
         self.timeout = timeout
-        self.client = httpx.Client(timeout=timeout)
+        self.headers = {"User-Agent": WIKIPEDIA_USER_AGENT}
+        self.client = httpx.Client(timeout=timeout, headers=self.headers)
 
     def extract_content(self, url: str) -> Optional[Dict[str, str]]:
         try:

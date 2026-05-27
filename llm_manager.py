@@ -17,6 +17,7 @@ import logging
 import json
 import asyncio
 import os
+import warnings
 from typing import Optional, List, Dict, Callable
 from dataclasses import dataclass
 from functools import wraps
@@ -195,6 +196,7 @@ class OfflineVerificationEngine:
                 [ollama_bin, "list"],
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
                 timeout=30
             )
             
@@ -324,6 +326,7 @@ class LLMRunner:
                 [ollama_bin, "ps"],
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
                 timeout=30
             )
             
@@ -362,6 +365,7 @@ class LLMRunner:
                 [ollama_bin, "stop", model_name],
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
                 timeout=30
             )
             
@@ -388,9 +392,10 @@ class LLMRunner:
                 [ollama_bin, "run", model_name, "exit"],
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
                 timeout=120
             )
-            
+
             if result.returncode == 0:
                 logger.info(f"Successfully loaded model: {model_name}")
                 return True
@@ -472,13 +477,15 @@ class LLMRunner:
     def _check_vram(min_free_mb: int = 1024) -> bool:
         """Check available VRAM via pynvml. Returns True if enough VRAM is free."""
         try:
-            import pynvml
-            pynvml.nvmlInit()
-            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            free_mb = info.free // (1024 ** 2)
-            logger.debug(f"VRAM: {free_mb}MB free (need {min_free_mb}MB)")
-            return free_mb >= min_free_mb
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", FutureWarning)
+                import pynvml
+                pynvml.nvmlInit()
+                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                free_mb = info.free // (1024 ** 2)
+                logger.debug(f"VRAM: {free_mb}MB free (need {min_free_mb}MB)")
+                return free_mb >= min_free_mb
         except ImportError:
             logger.debug("pynvml not installed — skipping VRAM check")
             return True
@@ -499,21 +506,12 @@ class LLMRunner:
         if self._lock is None:
             self._lock = asyncio.Lock()
         async with self._lock:
-            # VRAM watchdog — wait until enough VRAM is free
-            for attempt in range(5):
-                if self._check_vram(min_free_mb=1024):
-                    break
-                logger.warning(f"VRAM low, waiting 10s (attempt {attempt+1}/5)")
-                await asyncio.sleep(10)
-            else:
-                logger.warning("VRAM still low after 5 retries — proceeding anyway")
-
             # Verify model exists locally
             if not self.verify_model_exists(model_name):
                 self.require_model(model_name)
                 return False
             
-            # Check current running models
+            # Check current running models FIRST to avoid unnecessary VRAM wait
             running_models = self._get_running_models()
             
             # If the target model is already running, we're done
@@ -522,6 +520,15 @@ class LLMRunner:
                     logger.info(f"Model '{model_name}' already loaded in VRAM")
                     self.current_model = model_name
                     return True
+            
+            # VRAM watchdog — wait until enough VRAM is free (only if needed)
+            for attempt in range(5):
+                if self._check_vram(min_free_mb=1024):
+                    break
+                logger.warning(f"VRAM low, waiting 10s (attempt {attempt+1}/5)")
+                await asyncio.sleep(10)
+            else:
+                logger.warning("VRAM still low after 5 retries — proceeding anyway")
             
             # If a different model is running, stop it
             if running_models:
