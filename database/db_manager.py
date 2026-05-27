@@ -86,8 +86,11 @@ class DatabaseManager:
                 timeout=30.0
             )
             conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            conn.execute("PRAGMA cache_size=-64000;")
+            conn.execute("PRAGMA temp_store=MEMORY;")
             conn.row_factory = sqlite3.Row
-            logger.info("SQLite connection established successfully (WAL mode enabled)")
+            logger.info("SQLite connection established (WAL + perf pragmas)")
             return conn
         except sqlite3.Error as e:
             logger.error(f"Failed to establish SQLite connection: {e}")

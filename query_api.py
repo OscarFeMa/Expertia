@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 import uvicorn
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -16,8 +17,21 @@ logger = logging.getLogger(__name__)
 from database.db_manager import get_db_manager
 from llm_manager import LLMRunner
 
-app = FastAPI(title="Expertia Query API", version="0.1.0")
-llm = LLMRunner()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global llm
+    llm = LLMRunner()
+    logger.info("LLMRunner initialized")
+    yield
+    if llm:
+        if hasattr(llm, 'session') and llm.session:
+            await llm.session.aclose()
+        logger.info("LLMRunner session closed")
+
+
+app = FastAPI(title="Expertia Query API", version="0.1.0", lifespan=lifespan)
+llm: Optional[LLMRunner] = None
 
 
 class QueryRequest(BaseModel):
@@ -152,6 +166,8 @@ async def query(req: QueryRequest):
         f"Answer concisely and cite sources if possible."
     )
 
+    if llm is None:
+        raise HTTPException(status_code=503, detail="LLM not initialized")
     try:
         answer = await llm.query_llm(model_name=model, prompt=prompt, max_tokens=1024)
     except Exception as e:

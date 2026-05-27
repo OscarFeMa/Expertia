@@ -51,17 +51,28 @@ def start_orchestrator():
     log(f"PID {proc.pid}")
     return proc.pid
 
+MAX_FAILURES = 5
+BACKOFF_SECONDS = 300
+consecutive_failures = 0
+
 log("Watchdog started")
 pid = read_pid()
 if pid and is_alive(pid):
     log(f"Orchestrator already running (PID {pid})")
 else:
     pid = start_orchestrator()
+    consecutive_failures = 0
 
 while True:
     time.sleep(30)
     if not is_alive(pid):
-        log(f"ORCHESTRATOR PID {pid} DIED — restarting")
+        consecutive_failures += 1
+        log(f"ORCHESTRATOR PID {pid} DIED — restarting (failure #{consecutive_failures})")
+        if consecutive_failures >= MAX_FAILURES:
+            log(f"Circuit breaker: too many failures, backing off {BACKOFF_SECONDS}s")
+            time.sleep(BACKOFF_SECONDS)
+            consecutive_failures = 0
         pid = start_orchestrator()
     else:
+        consecutive_failures = 0
         log(f"OK (PID {pid})")
