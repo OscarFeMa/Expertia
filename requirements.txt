@@ -31,7 +31,7 @@ uvicorn>=0.27.0
 pydantic-settings>=2.1.0
 
 # VRAM watchdog (optional)
-pynvml>=13.0.0
+nvidia-ml-py>=11.0.0
 
 # Testing
 pytest>=9.0.0

@@ -10,6 +10,7 @@ import json
 import asyncio
 import gzip
 import ijson
+import re
 import argparse
 import requests
 from pathlib import Path
@@ -34,6 +35,7 @@ from config.settings import (
     MAX_SUBSPECIALISTS,
     SUBSPECIALIST_CYCLE_INTERVAL,
     MAX_CHILDREN_PER_PARENT,
+    MAX_CASCADE_ENTITIES,
     BLOCKLIST_LABELS,
     BLOCKLIST_LABEL_PREFIXES,
     WIKIDATA_ENTITY_API,
@@ -179,285 +181,10 @@ def validate_paths() -> bool:
     return all_valid
 
 
-CHECKPOINT_INTERVAL = 500_000
-MAX_CASCADE_ENTITIES = 10_000_000
-
-
-class DecimalEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, (Decimal,)):
-            return float(obj)
-        return super().default(obj)
-
-
-class ClassHierarchyCache:
-    """Tracks P279 parent-child relationships during streaming and
-    resolves transitive descendants up to depth 3 for each specialist root."""
-
-    def __init__(self, specialist_roots: Dict[int, str]):
-        self.parent_map: Dict[str, Set[str]] = {}
-        self.specialist_roots = specialist_roots
-        self._expanded_roots: Dict[int, Set[str]] = {}
-        for sid, root in specialist_roots.items():
-            self._expanded_roots[sid] = {root}
-
-    def record_link(self, child_qid: str, parent_qid: str):
-        if child_qid not in self.parent_map:
-            self.parent_map[child_qid] = set()
-        if parent_qid not in self.parent_map[child_qid]:
-            self.parent_map[child_qid].add(parent_qid)
-
-    def get_expanded_map(self) -> Dict[str, Set[int]]:
-        """Recompute and return reverse mapping: qid -> set of specialist_ids."""
-        self._recompute()
-        mapping: Dict[str, Set[int]] = {}
-        for sid, qids in self._expanded_roots.items():
-            for qid in qids:
-                mapping.setdefault(qid, set()).add(sid)
-        return mapping
-
-    def _recompute(self):
-        for sid, root in self.specialist_roots.items():
-            descendants = {root}
-            frontier = {root}
-            for _ in range(3):
-                next_frontier = set()
-                for qid in frontier:
-                    for child, parents in self.parent_map.items():
-                        if qid in parents:
-                            next_frontier.add(child)
-                frontier = next_frontier
-                descendants.update(frontier)
-                if not frontier:
-                    break
-            self._expanded_roots[sid] = descendants
-
-
-class BatchWikidataExtractor:
-    """Scans dump ONCE, matches ALL specialists, with progressive QID expansion & checkpoints."""
-
-    def __init__(self, input_path: Path, output_dir: Path,
-                 specialist_matchers: Dict[int, Dict],
-                 checkpoint_callback=None,
-                 progress_callback=None,
-                 hierarchy_cache: Optional[ClassHierarchyCache] = None):
-        self.input_path = input_path
-        self.output_dir = output_dir
-        self.specialist_matchers = specialist_matchers
-        self.checkpoint_callback = checkpoint_callback
-        self.progress_callback = progress_callback
-        self.hierarchy_cache = hierarchy_cache
-        self.entities_processed = 0
-        self.start_time = time.time()
-        self.matched_counts: Dict[int, int] = {sid: 0 for sid in specialist_matchers}
-        self.expansion_counts: Dict[int, int] = {sid: 0 for sid in specialist_matchers}
-        self._last_checkpoint = 0
-        self._last_progress_write = 0
-        self.db_manager = get_db_manager()
-
-    @contextmanager
-    def _open_gzip_stream(self):
-        try:
-            with gzip.open(self.input_path, 'rb') as f:
-                yield f
-        except Exception as e:
-            logger.error(f"Failed to open gzip stream: {e}")
-            raise
-
-    def _extract_entity_qids(self, entity: Dict) -> Set[str]:
-        qids = set()
-        for prop in ('P31', 'P279'):
-            for claim in entity.get('claims', {}).get(prop, []):
-                try:
-                    qid = claim['mainsnak']['datavalue']['value']['id']
-                    if qid:
-                        qids.add(qid)
-                except (KeyError, TypeError):
-                    pass
-        return qids
-
-    def _extract_entity_p279(self, entity: Dict) -> Set[str]:
-        """Extract only P279 (subclass of) QIDs from an entity."""
-        qids = set()
-        for claim in entity.get('claims', {}).get('P279', []):
-            try:
-                qid = claim['mainsnak']['datavalue']['value']['id']
-                if qid:
-                    qids.add(qid)
-            except (KeyError, TypeError):
-                pass
-        return qids
-
-    def _flush_buffer(self, specialist_id: int, buffer: list):
-        info = self.specialist_matchers.get(specialist_id)
-        if not info or not buffer:
-            return
-        output_file = self.output_dir / f"cartridge_{info['domain']}.json.gz"
-        try:
-            with gzip.open(output_file, 'at', encoding='utf-8') as f:
-                for entity in buffer:
-                    f.write(json.dumps(entity, cls=DecimalEncoder) + '\n')
-        except Exception as e:
-            logger.error(f"Failed to write buffer for specialist {specialist_id}: {e}")
-
-    def _flush_all_buffers(self, buffers: Dict):
-        for sid, buf in buffers.items():
-            if buf:
-                self._flush_buffer(sid, buf)
-                buf.clear()
-
-    def extract_with_timeout(
-        self,
-        timeout_hours: float = 4.0,
-        sample_size: Optional[int] = None,
-        loaded_expansions: Optional[Dict[str, Set[int]]] = None,
-    ) -> bool:
-        """Single pass with progressive QID expansion and checkpoints."""
-        timeout_seconds = timeout_hours * 3600
-        start_ts = time.time()
-
-        root_to_sids = defaultdict(list)
-        expanded_qids_map = defaultdict(set)
-        if loaded_expansions:
-            for qid, sids in loaded_expansions.items():
-                expanded_qids_map[qid].update(sids)
-        all_root_qids = set()
-
-        for sid, info in self.specialist_matchers.items():
-            root_to_sids[info['root_qid']].append(sid)
-            all_root_qids.add(info['root_qid'])
-
-        buffers = {sid: [] for sid in self.specialist_matchers}
-        discovered_expansions: Dict[int, Set[str]] = {sid: set() for sid in self.specialist_matchers}
-        self.matched_counts = {sid: 0 for sid in self.specialist_matchers}
-        self.expansion_counts = {sid: 0 for sid in self.specialist_matchers}
-
-        total_expanded_qids = len(expanded_qids_map)
-        logger.info(f"[Batch] Starting cascade extraction for {len(self.specialist_matchers)} specialists")
-        logger.info(f"[Batch] Root QIDs: {list(root_to_sids.keys())}")
-        logger.info(f"[Batch] Loaded expanded QIDs: {total_expanded_qids}")
-
-        try:
-            with self._open_gzip_stream() as f:
-                parser = ijson.items(f, 'item')
-
-                for entity in parser:
-                    if (time.time() - start_ts) > timeout_seconds:
-                        logger.critical("[Batch] TIMEOUT reached")
-                        self._flush_all_buffers(buffers)
-                        return False
-
-                    self.entities_processed += 1
-
-                    if self.entities_processed % 10000 == 0:
-                        elapsed = time.time() - start_ts
-                        total_matched = sum(self.matched_counts.values())
-                        eps = self.entities_processed / elapsed if elapsed > 0 else 0
-                        logger.info(
-                            f"[Batch] Processed: {self.entities_processed}, "
-                            f"Matched: {total_matched}, "
-                            f"Expanded QIDs: {sum(len(v) for v in discovered_expansions.values())}, "
-                            f"Elapsed: {elapsed:.1f}s ({eps:.0f}/s)"
-                        )
-                        # Real-time progress update every 50K entities
-                        if self.entities_processed - self._last_progress_write >= 50000:
-                            self._last_progress_write = self.entities_processed
-                            if self.progress_callback:
-                                self.progress_callback(
-                                    entities_processed=self.entities_processed,
-                                    elapsed=elapsed,
-                                    rate=eps,
-                                )
-
-                    if sample_size and self.entities_processed >= sample_size:
-                        logger.info(f"[Batch] Sample size reached: {sample_size}")
-                        break
-
-                    entity_qids = self._extract_entity_qids(entity)
-                    if not entity_qids:
-                        continue
-
-                    # Record P279 parent-child links in hierarchy cache
-                    entity_id = entity.get('id')
-                    if self.hierarchy_cache and entity_id:
-                        for claim in entity.get('claims', {}).get('P279', []):
-                            try:
-                                pid = claim['mainsnak']['datavalue']['value']['id']
-                                if pid:
-                                    self.hierarchy_cache.record_link(entity_id, pid)
-                            except (KeyError, TypeError):
-                                pass
-
-                    matched_sids = set()
-                    trigger_by_root = set()
-
-                    for qid in entity_qids:
-                        if qid in root_to_sids:
-                            for sid in root_to_sids[qid]:
-                                matched_sids.add(sid)
-                                trigger_by_root.add(sid)
-                        if qid in expanded_qids_map:
-                            matched_sids.update(expanded_qids_map[qid])
-
-                    # Check hierarchy cache for transitive P279 matches
-                    if self.hierarchy_cache and not matched_sids:
-                        cache_expanded = self.hierarchy_cache.get_expanded_map()
-                        for qid in entity_qids:
-                            if qid in cache_expanded:
-                                matched_sids.update(cache_expanded[qid])
-
-                    if not matched_sids:
-                        continue
-
-                    for sid in matched_sids:
-                        buffers[sid].append(entity)
-                        self.matched_counts[sid] += 1
-                        if len(buffers[sid]) >= 1000:
-                            self._flush_buffer(sid, buffers[sid])
-                            buffers[sid] = []
-
-                    if trigger_by_root:
-                        # Only use P279 (subclass of) relationships for expansion,
-                        # not P31 (instance of) — prevents cross-domain contamination
-                        entity_p279 = self._extract_entity_p279(entity)
-                        for sid in trigger_by_root:
-                            root_qid = self.specialist_matchers[sid]['root_qid']
-                            for qid in entity_p279:
-                                if qid != root_qid and qid not in all_root_qids:
-                                    if qid not in discovered_expansions[sid]:
-                                        discovered_expansions[sid].add(qid)
-                                        self.expansion_counts[sid] += 1
-
-                    # Checkpoint every CHECKPOINT_INTERVAL
-                    if self.entities_processed - self._last_checkpoint >= CHECKPOINT_INTERVAL:
-                        self._flush_all_buffers(buffers)
-                        self._last_checkpoint = self.entities_processed
-                        if self.checkpoint_callback:
-                            self.checkpoint_callback(
-                                cp_num=self.entities_processed // CHECKPOINT_INTERVAL,
-                                entities_processed=self.entities_processed,
-                                matches_per_specialist=dict(self.matched_counts),
-                                expansions_per_specialist={sid: list(qs) for sid, qs in discovered_expansions.items() if qs},
-                                elapsed=time.time() - start_ts,
-                            )
-
-                self._flush_all_buffers(buffers)
-
-            elapsed = time.time() - start_ts
-            total_matched = sum(self.matched_counts.values())
-            logger.info(f"[Batch] Cascade completed in {elapsed:.1f}s")
-            logger.info(f"[Batch] Total processed: {self.entities_processed}")
-            logger.info(f"[Batch] Total matched: {total_matched}")
-            for sid, count in self.matched_counts.items():
-                domain = self.specialist_matchers[sid]['domain']
-                added = len(discovered_expansions.get(sid, set()))
-                logger.info(f"  {domain}: {count} matches, {added} expanded QIDs")
-            return True
-
-        except Exception as e:
-            logger.error(f"[Batch] Extraction failed: {e}")
-            self._flush_all_buffers(buffers)
-            return False
+def _domain_to_keywords(domain: str) -> str:
+    """Convert CamelCase domain name to lowercase space-separated keywords."""
+    words = re.sub(r'([A-Z])', r' \1', domain).strip().split()
+    return ' '.join(w.lower() for w in words)
 
 
 class PipelineController:
@@ -1178,19 +905,20 @@ class PipelineController:
         self._log_activity(f"Iniciando {domain} (ciclo {cycle}) con {model}")
 
         # Vary queries per cycle for diverse knowledge
+        keywords = _domain_to_keywords(domain)
         cycle_queries = {
-            1: [f"{domain} latest research 2026", f"{domain} best practices",
-                f"{domain} state of the art", f"{domain} key concepts",
-                f"{domain} fundamentals explained", f"{domain} modern approaches",
-                f"{domain} essential knowledge", f"{domain} introduction"],
-            2: [f"{domain} current trends", f"{domain} challenges and solutions",
-                f"{domain} future directions", f"{domain} innovations",
-                f"{domain} cutting edge research", f"{domain} expert insights",
-                f"{domain}案例分析", f"{domain} overview"],
-            3: [f"{domain} tools and frameworks", f"{domain} implementations",
-                f"{domain} best tools 2026", f"{domain} comparison",
-                f"{domain} practical guide", f"{domain} tutorial",
-                f"{domain} advanced concepts", f"{domain} deep dive"],
+            1: [f"{keywords} latest research 2026", f"{keywords} best practices",
+                f"{keywords} state of the art", f"{keywords} key concepts",
+                f"{keywords} fundamentals explained", f"{keywords} modern approaches",
+                f"{keywords} essential knowledge", f"{keywords} introduction"],
+            2: [f"{keywords} current trends", f"{keywords} challenges and solutions",
+                f"{keywords} future directions", f"{keywords} innovations",
+                f"{keywords} cutting edge research", f"{keywords} expert insights",
+                f"{keywords}案例分析", f"{keywords} overview"],
+            3: [f"{keywords} tools and frameworks", f"{keywords} implementations",
+                f"{keywords} best tools 2026", f"{keywords} comparison",
+                f"{keywords} practical guide", f"{keywords} tutorial",
+                f"{keywords} advanced concepts", f"{keywords} deep dive"],
         }
         queries = cycle_queries.get(cycle, cycle_queries[1])
 

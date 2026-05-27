@@ -35,6 +35,7 @@ class ExpertiaSettings(BaseSettings):
 
     subspecialist_threshold: int = 100
     max_subspecialists: int = 20
+    max_cascade_entities: int = 50000
     subspecialist_cycle_interval: int = 10
     max_children_per_parent: int = 3
 
@@ -96,6 +97,7 @@ SUBSPECIALIST_THRESHOLD = _SETTINGS.subspecialist_threshold
 MAX_SUBSPECIALISTS = _SETTINGS.max_subspecialists
 SUBSPECIALIST_CYCLE_INTERVAL = _SETTINGS.subspecialist_cycle_interval
 MAX_CHILDREN_PER_PARENT = _SETTINGS.max_children_per_parent
+MAX_CASCADE_ENTITIES = _SETTINGS.max_cascade_entities
 BLOCKLIST_LABELS = _SETTINGS.blocklist_labels
 BLOCKLIST_LABEL_PREFIXES = _SETTINGS.blocklist_label_prefixes
 
