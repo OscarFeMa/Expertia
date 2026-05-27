@@ -6,6 +6,7 @@ from typing import Optional
 import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 from database.db_manager import get_db_manager
 from llm_manager import LLMRunner
+from api_router import router as api_router
 
 
 @asynccontextmanager
@@ -31,6 +33,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Expertia Query API", version="0.1.0", lifespan=lifespan)
+app.include_router(api_router)
+
+frontend_path = Path(__file__).parent / "frontend" / "control-center"
+if frontend_path.exists():
+    app.mount("/admin", StaticFiles(directory=str(frontend_path), html=True), name="admin")
+
 llm: Optional[LLMRunner] = None
 
 
