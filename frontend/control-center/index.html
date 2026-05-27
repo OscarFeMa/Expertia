@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Synaptic Archive — Expertia</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <div class="logo" onclick="app.switchTab('dashboard')">
+      <div class="logo-icon">🧠</div>
+      <div class="logo-text">Synaptic<br>Archive</div>
+    </div>
+    <nav class="nav" id="nav">
+      <div class="nav-item active" data-tab="dashboard" onclick="app.switchTab('dashboard')">
+        <span class="nav-icon">📟</span> Dashboard
+      </div>
+      <div class="nav-item" data-tab="specialists" onclick="app.switchTab('specialists')">
+        <span class="nav-icon">📚</span> Specialists
+      </div>
+      <div class="nav-item" data-tab="fleet" onclick="app.switchTab('fleet')">
+        <span class="nav-icon">⚙️</span> Fleet
+      </div>
+      <div class="nav-item" data-tab="map" onclick="app.switchTab('map')">
+        <span class="nav-icon">🔬</span> Synaptic Map
+      </div>
+      <div class="nav-item" data-tab="super-experts" onclick="app.switchTab('super-experts')">
+        <span class="nav-icon">🏛️</span> Super-Experts
+      </div>
+      <div class="nav-item" data-tab="incidents" onclick="app.switchTab('incidents')">
+        <span class="nav-icon">🔥</span> Incidents
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      <button class="theme-toggle" onclick="app.toggleTheme()" title="Toggle theme">🌓</button>
+    </div>
+  </aside>
+  <main class="main" id="main">
+    <div class="tab-content active" id="tab-dashboard"></div>
+    <div class="tab-content" id="tab-specialists"></div>
+    <div class="tab-content" id="tab-fleet"></div>
+    <div class="tab-content" id="tab-map"></div>
+    <div class="tab-content" id="tab-super-experts"></div>
+    <div class="tab-content" id="tab-incidents"></div>
+  </main>
+  <div class="status-bar" id="status-bar">
+    <span id="sb-status">Loading...</span>
+    <span id="sb-time"></span>
+  </div>
+  <script src="charts.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -18,7 +18,7 @@ import time
 import logging
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 from decimal import Decimal
 from contextlib import contextmanager
 
@@ -310,6 +310,145 @@ class WikidataStreamingExtractor:
         except Exception as e:
             logger.error(f"Failed to write entities to file: {e}")
             raise
+
+
+# ============================================================================
+# BATCH EXTRACTOR (multi-specialist single-pass)
+# ============================================================================
+
+CHECKPOINT_INTERVAL = 50000
+
+
+class ClassHierarchyCache:
+    """Cache for specialist root QID hierarchy."""
+    def __init__(self, specialist_root_qids: Dict[str, str]):
+        self.root_qids = specialist_root_qids
+
+
+class BatchWikidataExtractor:
+    """Multi-specialist single-pass Wikidata extractor.
+
+    Opens the dump once and checks each entity against all specialists'
+    target QIDs simultaneously, tracking per-specialist match counts.
+    Supports progressive QID expansion via loaded_expansions.
+    """
+    def __init__(
+        self,
+        input_path: Path,
+        output_dir: Path,
+        specialist_matchers: Dict,
+        checkpoint_callback: Optional[Callable] = None,
+        progress_callback: Optional[Callable] = None,
+        hierarchy_cache: Optional[ClassHierarchyCache] = None,
+    ):
+        self.input_path = input_path
+        self.output_dir = output_dir
+        self.specialist_matchers = specialist_matchers
+        self.checkpoint_callback = checkpoint_callback
+        self.progress_callback = progress_callback
+        self.hierarchy_cache = hierarchy_cache
+
+        self.entities_processed = 0
+        self.matched_counts: Dict[str, int] = {}
+        self._start_time = 0
+
+    def extract_with_timeout(
+        self,
+        timeout_hours: float = 4.0,
+        sample_size: Optional[int] = None,
+        loaded_expansions: Optional[Dict[str, Set[int]]] = None,
+    ) -> bool:
+        timeout_seconds = timeout_hours * 3600
+        self._start_time = time.time()
+        loaded_expansions = loaded_expansions or {}
+
+        spec_targets: Dict[str, Set[str]] = {}
+        for sid, info in self.specialist_matchers.items():
+            root_qid = info.get('root_qid')
+            if root_qid:
+                qid_set = {root_qid}
+                for qid, spec_ids in loaded_expansions.items():
+                    if sid in spec_ids:
+                        qid_set.add(qid)
+                spec_targets[sid] = qid_set
+
+        checkpoint_num = 0
+        expansions_since_checkpoint: Dict[str, Set[str]] = {}
+
+        try:
+            with gzip.open(self.input_path, 'rb') as f:
+                parser = ijson.items(f, 'item')
+
+                for entity in parser:
+                    elapsed = time.time() - self._start_time
+                    if elapsed > timeout_seconds:
+                        logger.critical("Batch extraction TIMEOUT reached")
+                        return False
+
+                    self.entities_processed += 1
+
+                    if self.entities_processed % 10000 == 0 and self.progress_callback:
+                        rate = self.entities_processed / elapsed if elapsed > 0 else 0
+                        self.progress_callback(self.entities_processed, elapsed, rate)
+
+                    if sample_size and self.entities_processed >= sample_size:
+                        break
+
+                    entity_qids = self._get_entity_qids(entity)
+                    matched_specs = set()
+                    for sid, targets in spec_targets.items():
+                        if entity_qids & targets:
+                            matched_specs.add(sid)
+
+                    for sid in matched_specs:
+                        self.matched_counts[sid] = self.matched_counts.get(sid, 0) + 1
+
+                    if matched_specs:
+                        for qid in entity_qids:
+                            for sid in matched_specs:
+                                if qid not in spec_targets.get(sid, set()):
+                                    expansions_since_checkpoint.setdefault(sid, set()).add(qid)
+
+                    if self.entities_processed % CHECKPOINT_INTERVAL == 0 and self.checkpoint_callback:
+                        checkpoint_num += 1
+                        self.checkpoint_callback(
+                            checkpoint_num,
+                            self.entities_processed,
+                            dict(self.matched_counts),
+                            {k: list(v) for k, v in expansions_since_checkpoint.items()},
+                            elapsed,
+                        )
+                        expansions_since_checkpoint.clear()
+
+            if expansions_since_checkpoint and self.checkpoint_callback:
+                checkpoint_num += 1
+                self.checkpoint_callback(
+                    checkpoint_num,
+                    self.entities_processed,
+                    dict(self.matched_counts),
+                    {k: list(v) for k, v in expansions_since_checkpoint.items()},
+                    time.time() - self._start_time,
+                )
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Batch extraction failed: {e}")
+            return False
+
+    def _get_entity_qids(self, entity: Dict) -> Set[str]:
+        """Extract all QIDs from entity claims (P31 and P279)."""
+        qids = set()
+        claims = entity.get('claims', {})
+        for prop_id in ('P31', 'P279'):
+            for claim in claims.get(prop_id, []):
+                try:
+                    qid = claim.get('mainsnak', {}).get('datavalue', {}).get('value', {}).get('id')
+                    if qid and qid.startswith('Q'):
+                        qids.add(qid)
+                except Exception:
+                    pass
+        return qids
 
 
 # ============================================================================

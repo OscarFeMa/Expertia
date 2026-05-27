@@ -2,24 +2,28 @@
 title Expertia Control Center
 cd /d "D:\proyectos\expertia\incubator-root"
 
-echo [Expertia] Limpiando puerto 8501...
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr :8501') do (
+echo [Expertia] Limpiando puerto 8011...
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :8011') do (
     taskkill /F /PID %%a >nul 2>&1
 )
 timeout /t 2 /nobreak >nul
 
-echo [Expertia] Iniciando Consola (oculta)...
-powershell -WindowStyle Hidden -Command "streamlit run expertia_console.py --server.address 0.0.0.0 --server.port 8501 --server.fileWatcherType none"
+echo [Expertia] Iniciando API + Frontend...
+start "Expertia API" /min python query_api.py
 
 echo        Esperando a que arranque...
-timeout /t 8 /nobreak >nul
+timeout /t 5 /nobreak >nul
 
 echo        Abriendo navegador...
-start "" "http://localhost:8501"
+start "" "http://localhost:8011/admin"
 echo.
-echo        Consola: http://localhost:8501
-echo        Movil:   http://192.168.1.43:8501
+echo        Admin:   http://localhost:8011/admin
+echo        API:     http://localhost:8011/api/health
+echo        Movil:   http://192.168.1.43:8011/admin
+echo.
+echo        Streamlit (fallback): http://localhost:8501
+echo        (si existe, iniciar manual: streamlit run expertia_console.py)
 echo.
 echo        Pulsa cualquier tecla para cerrar esta ventana
-echo        (la consola sigue corriendo)
+echo        (la API sigue corriendo)
 pause >nul
