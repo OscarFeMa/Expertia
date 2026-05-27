@@ -1,9 +1,11 @@
+import json
 import logging
 import os
 import re
 import subprocess
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -14,7 +16,29 @@ from database.db_manager import get_db_manager
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
+_PIPELINE_STATE_FILE = Path(__file__).parent / "pipeline_state.json"
+
 _pipeline: dict = {"pid": None, "start_time": 0, "duration_hours": 0}
+
+
+def _save_pipeline_state():
+    try:
+        _PIPELINE_STATE_FILE.write_text(json.dumps(_pipeline))
+    except Exception as e:
+        logger.warning(f"Failed to save pipeline state: {e}")
+
+
+def _load_pipeline_state():
+    try:
+        if _PIPELINE_STATE_FILE.exists():
+            data = json.loads(_PIPELINE_STATE_FILE.read_text())
+            _pipeline.update(data)
+    except Exception as e:
+        logger.warning(f"Failed to load pipeline state: {e}")
+
+
+# Restore state from disk on module load
+_load_pipeline_state()
 
 
 def _is_pid_alive(pid):
@@ -169,6 +193,7 @@ def start_pipeline(req: StartPipelineRequest):
         _pipeline["pid"] = proc.pid
         _pipeline["start_time"] = time.time()
         _pipeline["duration_hours"] = req.duration
+        _save_pipeline_state()
         logger.info(f"Pipeline started PID={proc.pid} cmd={' '.join(cmd)}")
         return {"status": "started", "pid": proc.pid}
     except Exception as e:
@@ -181,6 +206,7 @@ def stop_pipeline():
     pid = _pipeline.get("pid")
     if not pid or not _is_pid_alive(pid):
         _pipeline["pid"] = None
+        _save_pipeline_state()
         raise HTTPException(status_code=404, detail="No running pipeline found")
 
     try:
@@ -192,6 +218,7 @@ def stop_pipeline():
         else:
             os.kill(pid, 15)
         _pipeline["pid"] = None
+        _save_pipeline_state()
         logger.info(f"Pipeline PID={pid} stopped")
         return {"status": "stopped", "pid": pid}
     except Exception as e:
@@ -205,6 +232,7 @@ def get_pipeline_pid():
     alive = _is_pid_alive(pid) if pid else False
     if not alive:
         _pipeline["pid"] = None
+        _save_pipeline_state()
     uptime = time.time() - _pipeline["start_time"] if _pipeline["start_time"] and alive else 0
     return {
         "pid": pid if alive else None,
