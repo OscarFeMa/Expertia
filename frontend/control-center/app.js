@@ -18,7 +18,7 @@ class App {
   }
 
   formatRemaining(uptimeSec, durationHours) {
-    if (!durationHours || durationHours <= 0) return '--';
+    if (!durationHours || durationHours <= 0) return '∞';
     const total = durationHours * 3600;
     const left = Math.max(0, total - uptimeSec);
     const h = Math.floor(left / 3600);
@@ -31,8 +31,9 @@ class App {
     const clockEl = document.getElementById('dash-clock');
     if (clockEl) clockEl.textContent = new Date().toLocaleTimeString();
     const remEl = document.getElementById('dash-remaining');
-    if (remEl && this._lastPidInfo && this._lastPidInfo.alive && this._lastPidInfo.duration_hours) {
-      remEl.textContent = this.formatRemaining(this._lastPidInfo.uptime_seconds + Math.floor((Date.now() - this._lastFetchTime) / 1000), this._lastPidInfo.duration_hours);
+    if (remEl && this._lastPidInfo && this._lastPidInfo.alive) {
+      const uptime = this._lastPidInfo.uptime_seconds + Math.floor((Date.now() - this._lastFetchTime) / 1000);
+      remEl.textContent = this.formatRemaining(uptime, this._lastPidInfo.duration_hours);
     }
   }
 
@@ -231,7 +232,7 @@ class App {
         </div>
         <div class="header-cell">
           <div class="header-label">Remaining</div>
-          <div class="header-value sm" id="dash-remaining">${isActive && pidInfo.duration_hours ? this.formatRemaining(uptime, pidInfo.duration_hours) : '--'}</div>
+          <div class="header-value sm" id="dash-remaining">${isActive ? this.formatRemaining(uptime, pidInfo.duration_hours) : '--'}</div>
         </div>
         <div class="header-cell">
           <div class="header-label">Clock</div>
