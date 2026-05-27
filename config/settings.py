@@ -76,7 +76,6 @@ WIKIDATA_EXTRACTION_TIMEOUT_HOURS = _SETTINGS.wikidata_extraction_timeout_hours
 
 OLLAMA_HOST = _SETTINGS.ollama_host
 OLLAMA_PORT = _SETTINGS.ollama_port
-OLLAMA_BASE_URL = f"http://{_SETTINGS.ollama_host}:{_SETTINGS.ollama_port}"
 DISTILLATION_ENABLED = _SETTINGS.distillation_enabled
 DISTILLATION_MODEL = _SETTINGS.distillation_model
 LLM_TIMEOUT = _SETTINGS.llm_timeout

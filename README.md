@@ -65,7 +65,6 @@ incubator-root/
 │   └── reports/              # Reportes automáticos
 ├── orchestrator.py           # Pipeline controller principal
 ├── expertia_console.py       # Consola Streamlit "Synaptic Archive"
-├── report_scheduler.py       # Generación de reportes periódicos
 ├── web_scraper.py            # Scraper moderno (DDGS + Trafilatura)
 ├── llm_manager.py            # Gestor de modelos Ollama
 ├── dissect_wikidata.py       # Extractor Wikidata streaming (ijson+gzip)
@@ -153,7 +152,7 @@ python orchestrator.py
 2. **Phase A** (opcional): Wikidata streaming scanning con extracción progresiva
 3. **Phase B** (principal): Web scraping (DDGS) + destilación LLM + scoring EMA
 4. **Spawning** (cada 10 ciclos): Verifica QIDs candidatos, valida P279, crea sub-especialistas
-5. **Reportes**: scheduler genera `Rendimiento_<ts>.txt` cada 30 min
+5. **Reportes**: `orchestrator.py` genera gráficos EMA en `storage/reports/` al finalizar
 
 ## Configuration
 

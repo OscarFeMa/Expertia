@@ -1241,43 +1241,37 @@ async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.
                phase: str = 'full', specialist_filter: str = 'all',
                model_filter: str = 'all'):
     crash_log = LOGS_DIR / 'crash.log'
-    while True:
-        try:
-            controller = PipelineController(sample_size=sample_size, cycles_per_specialist=3)
-            await controller.run_pipeline(
-                min_duration_hours=min_duration_hours,
-                report_interval_minutes=report_interval_minutes,
-                phase=phase, specialist_filter=specialist_filter,
-                model_filter=model_filter
-            )
-            logger.info("Pipeline completed normally, restarting...")
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            import traceback
-            tb = traceback.format_exc()
-            logger.critical(f"Pipeline CRASHED: {e}\n{tb}")
-            with open(crash_log, 'a', encoding='utf-8') as f:
-                f.write(f"\n=== {datetime.now()} ===\n{e}\n{tb}\n")
-            logger.info("Restarting pipeline in 10s...")
-            await asyncio.sleep(10)
+    try:
+        controller = PipelineController(sample_size=sample_size, cycles_per_specialist=3)
+        await controller.run_pipeline(
+            min_duration_hours=min_duration_hours,
+            report_interval_minutes=report_interval_minutes,
+            phase=phase, specialist_filter=specialist_filter,
+            model_filter=model_filter
+        )
+    except asyncio.CancelledError:
+        return
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        logger.critical(f"Pipeline CRASHED: {e}\n{tb}")
+        with open(crash_log, 'a', encoding='utf-8') as f:
+            f.write(f"\n=== {datetime.now()} ===\n{e}\n{tb}\n")
 
 
 if __name__ == "__main__":
     args = parse_args()
-    while True:
-        try:
-            asyncio.run(main(
-                min_duration_hours=args.duration,
-                report_interval_minutes=30,
-                phase=args.phase,
-                specialist_filter=args.specialist,
-                model_filter=args.model
-            ))
-        except Exception as e:
-            import traceback
-            tb = traceback.format_exc()
-            with open(Path('logs') / 'crash.log', 'a', encoding='utf-8') as f:
-                f.write(f"\n=== FATAL {datetime.now()} ===\n{e}\n{tb}\n")
-            print(f"FATAL: {e}", flush=True)
-            time.sleep(10)
+    try:
+        asyncio.run(main(
+            min_duration_hours=args.duration,
+            report_interval_minutes=30,
+            phase=args.phase,
+            specialist_filter=args.specialist,
+            model_filter=args.model
+        ))
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        with open(Path('logs') / 'crash.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n=== FATAL {datetime.now()} ===\n{e}\n{tb}\n")
+        print(f"FATAL: {e}", flush=True)

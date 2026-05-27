@@ -10,7 +10,7 @@
 - **Sub-Specialist Spawning**: Validated via Wikidata P279 parent-sharing + API label resolution
 - **22 Super-Expert Councils**: Static reference tables with weighted members
 - **Synaptic Archive Console**: Streamlit UI with sunburst hierarchy, control panel, auto-refresh
-- **Report Scheduler**: Automatic `Rendimiento_<ts>.txt` every 30 min
+- **Pipeline Reports**: EMA evolution charts in `storage/reports/` on completion
 
 ### Specialist Ecosystem
 - **Total Specialists:** 15 root + 1 sub-specialist (Medicine/Geriatrics #1774)

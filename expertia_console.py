@@ -14,12 +14,11 @@ from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(page_title="Synaptic Archive — Expertia", layout="wide", page_icon="🧠")
 
-for k in ("orch_pid","orch_start_time","auto_refresh","prev_phase","last_toast_time","force_idle","auto_launched"):
+for k in ("orch_pid","orch_start_time","auto_refresh","prev_phase","last_toast_time","force_idle"):
     if k not in st.session_state:
         if k == "auto_refresh": st.session_state[k] = True
         elif k in ("last_toast_time",): st.session_state[k] = 0
         elif k == "force_idle": st.session_state[k] = False
-        elif k == "auto_launched": st.session_state[k] = False
         else: st.session_state[k] = None
 
 if st.session_state.auto_refresh:
@@ -41,7 +40,7 @@ def utc_to_local(ts):
     try:
         dt = datetime.strptime(str(ts)[:19], "%Y-%m-%d %H:%M:%S") + UTC_OFFSET
         return dt.strftime("%H:%M:%S")
-    except: return str(ts)[11:19] if len(str(ts)) >= 19 else "-"
+    except Exception: return str(ts)[11:19] if len(str(ts)) >= 19 else "-"
 
 def get_connection():
     return get_db_manager()._get_connection()
@@ -53,7 +52,7 @@ def load_pipeline_status():
     try:
         df = pd.read_sql_query("SELECT * FROM pipeline_status ORDER BY id DESC LIMIT 1", get_connection())
         return df.iloc[0].to_dict() if not df.empty else None
-    except: return None
+    except Exception: return None
 
 def load_activity_logs(limit=50, levels=None):
     try:
@@ -64,12 +63,12 @@ def load_activity_logs(limit=50, levels=None):
         where = " WHERE " + " AND ".join(parts) if parts else ""
         params.append(limit)
         return pd.read_sql_query(f"SELECT timestamp,level,message,id FROM activity_log{where} ORDER BY id DESC LIMIT ?", get_connection(), params=params)
-    except: return pd.DataFrame()
+    except Exception: return pd.DataFrame()
 
 def load_ema_history():
     try:
         return pd.read_sql_query("SELECT e.timestamp AS created_at, e.ema_score, s.domain FROM ema_history e JOIN specialist_registry s ON e.specialist_id = s.id ORDER BY e.timestamp", get_connection())
-    except: return pd.DataFrame()
+    except Exception: return pd.DataFrame()
 
 def load_ema_sparklines(domains):
     if not domains: return {}
@@ -107,7 +106,7 @@ def load_branch_events(limit=20):
         return pd.read_sql_query(
             "SELECT timestamp, message FROM activity_log WHERE message LIKE '%Germinado%' OR message LIKE '%SPAWNED%' ORDER BY id DESC LIMIT ?",
             get_connection(), params=(limit,))
-    except:
+    except Exception:
         return pd.DataFrame()
 
 def load_super_experts():
@@ -147,7 +146,7 @@ def load_blocked_branches(limit=50):
         return pd.read_sql_query(
             "SELECT timestamp, message FROM activity_log WHERE message LIKE '%Bloqueado%' OR message LIKE '%Rama externa%' ORDER BY id DESC LIMIT ?",
             get_connection(), params=(limit,))
-    except:
+    except Exception:
         return pd.DataFrame()
 
 def load_errors_by_model():
@@ -161,7 +160,7 @@ def load_errors_by_model():
                 if m in str(msg): models.append(m); matched = True; break
             if not matched: models.append('other')
         return pd.DataFrame({'model':models}).groupby('model').size().reset_index(name='count').sort_values('count', ascending=False)
-    except: return pd.DataFrame(columns=['model','count'])
+    except Exception: return pd.DataFrame(columns=['model','count'])
 
 def load_wikidata_speed():
     try:
@@ -172,16 +171,25 @@ def load_wikidata_speed():
             m = re.search(r'(\d+)\s*entities', str(msg), re.IGNORECASE)
             if m: entities.append(int(m.group(1)))
         return max(entities) if entities else None
-    except: return None
+    except Exception: return None
+
+PID_CACHE_TTL = 30
 
 def is_pid_alive(pid):
     if pid is None: return False
+    cache = st.session_state.get('_pid_alive_cache', {})
+    if cache.get('pid') == pid and time.time() - cache.get('time', 0) < PID_CACHE_TTL:
+        return cache['alive']
     try:
         if os.name == 'nt':
             r = subprocess.run(["tasklist","/FI",f"PID eq {pid}"], capture_output=True, text=True, timeout=5)
-            return str(pid) in r.stdout
-        else: os.kill(pid, 0); return True
-    except: return False
+            alive = str(pid) in r.stdout
+        else:
+            os.kill(pid, 0); alive = True
+    except Exception:
+        alive = False
+    st.session_state['_pid_alive_cache'] = {'pid': pid, 'alive': alive, 'time': time.time()}
+    return alive
 
 def get_local_models():
     try:
@@ -190,11 +198,15 @@ def get_local_models():
             lines = r.stdout.strip().split('\n')[1:]
             return [line.split()[0] for line in lines if line.strip()]
         return []
-    except: return []
+    except Exception: return []
 
 def auto_detect_orch():
+    cache = st.session_state.get('_orch_detect_cache', {})
+    if time.time() - cache.get('time', 0) < PID_CACHE_TTL:
+        return cache.get('pid')
     try:
         r = subprocess.run(["tasklist","/FI","IMAGENAME eq python.exe","/FO","CSV"], capture_output=True, text=True, timeout=5)
+        pid = None
         for line in r.stdout.split('\n'):
             if 'orchestrator.py' in line:
                 m = re.search(r'"(\d+)"', line)
@@ -204,9 +216,11 @@ def auto_detect_orch():
                         st.session_state.orch_pid = pid
                         st.session_state.orch_start_time = st.session_state.orch_start_time or time.time()
                         st.session_state.force_idle = False
-                    return pid
+                    break
+        st.session_state['_orch_detect_cache'] = {'pid': pid, 'time': time.time()}
+        return pid
+    except Exception:
         return None
-    except: return None
 
 def get_specialist_state(domain):
     try:
@@ -218,7 +232,7 @@ def get_specialist_state(domain):
         if "HTTP" in m or "trafilatura" in m: return 1
         if "Buscan" in m or "Search" in m or "DDGS" in m: return 0
         return -1
-    except: return -1
+    except Exception: return -1
 
 def process_notifications(df_logs):
     if df_logs.empty: return
@@ -354,8 +368,7 @@ h1, h2, h3, h4, h5, h6 {{ font-family:Georgia,'Times New Roman',serif !important
 * {{ font-family:'Inter','System-UI',sans-serif; }}
 ::selection {{ background:rgba(255,107,107,0.2); }}
 
-.archive-header {{ display:flex; justify-content:space-between; align-items:stretch; background:{ARCHIVE['card']}}}
-; border-bottom:1px solid {ARCHIVE['border']}; padding:8px 16px; margin-bottom:14px; }}
+.archive-header {{ display:flex; justify-content:space-between; align-items:stretch; background:{ARCHIVE['card']}; border-bottom:1px solid {ARCHIVE['border']}; padding:8px 16px; margin-bottom:14px; }}
 .archive-header .hcell {{ display:flex; flex-direction:column; justify-content:center; }}
 .arc-label {{ color:{ARCHIVE['dim']}; font-size:10px; text-transform:uppercase; letter-spacing:1.2px; }}
 .arc-value {{ color:{ARCHIVE['text']}; font-weight:700; font-family:Georgia,'Times New Roman',serif; font-size:18px; }}
@@ -451,27 +464,6 @@ status = load_pipeline_status()
 df_spec = load_specialists()
 is_active = is_pid_alive(orch_pid) and not st.session_state.force_idle
 
-# Auto-launch: si no hay pipeline ni se ha lanzado antes, arrancar Physics + reports
-if not is_active and not st.session_state.auto_launched:
-    try:
-        # Launch Physics pipeline in new window
-        proc = subprocess.Popen(
-            ["python","orchestrator.py","--phase","web","--specialist","Physics",
-             "--model","deepseek-r1:1.5b","--duration","3.0"],
-            creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
-        )
-        st.session_state.orch_pid = proc.pid
-        st.session_state.orch_start_time = time.time()
-        st.session_state.force_idle = False
-
-        # Launch report_scheduler in background (hidden)
-        subprocess.Popen(
-            ["python","report_scheduler.py"],
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-        )
-        st.session_state.auto_launched = True
-    except Exception as e:
-        pass
 p_state = status.get("status","STOPPED") if status else "STOPPED"
 
 ac = df_spec[df_spec['status']=='ACTIVE']['domain'].tolist() if not df_spec.empty else []
@@ -486,7 +478,7 @@ inject_archive_css()
 # ── Header ───────────────────────────────────────────────────────────────────
 h1, h2, h3, h4, h5, h6 = st.columns([2.2, 2, 2, 2, 1.5, 1.2])
 h1.markdown(f"<div style='font-family:Georgia,\"Times New Roman\",serif;font-size:22px;font-weight:700;color:{ARCHIVE['text']}'>🧠 Synaptic Archive</div>", unsafe_allow_html=True)
-dot = f'<span class="coral-dot"></span>' if is_active and p_state=="ACTIVE" else ""
+dot = '<span class="coral-dot"></span>' if is_active and p_state=="ACTIVE" else ""
 h2.markdown(f"<div class='arc-label'>Status</div><div class='arc-value' style='color:{STATE_COLORS.get(p_state, ARCHIVE['dim'])}'>{dot}{p_state}</div>", unsafe_allow_html=True)
 h3.markdown(f"<div class='arc-label'>Phase</div><div class='arc-value sm'>{cur_phase}</div>", unsafe_allow_html=True)
 h4.markdown(f"<div class='arc-label'>Specialist</div><div class='arc-value sm'>{status.get('current_specialist','-') if status else '-'}</div>", unsafe_allow_html=True)
@@ -662,7 +654,7 @@ with tabs[2]:
     m3.metric("🏛️ Entities", f"{ws:,}" if ws else "N/A")
     conn = get_connection()
     try: m4.metric("🔥 Incidents", f"{conn.execute('SELECT COUNT(*) FROM activity_log WHERE level IN (\"ERROR\",\"CRITICAL\")').fetchone()[0]:,}")
-    except: m4.metric("🔥 Incidents", "0")
+    except Exception: m4.metric("🔥 Incidents", "0")
     # ── Tree Visualization ────────────────────────────────────────────────
     st.subheader("🌳 Árbol de Especialización", divider=True)
     df_tree = load_specialists_tree()

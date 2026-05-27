@@ -639,7 +639,7 @@ class LLMRunner:
         timeout: int = 30,
         temperature: float = 0.7,
         max_tokens: int = 1000
-    ) -> str:
+    ) -> Optional[str]:
         """Synchronous wrapper for query_llm (for non-async contexts).
         
         Args:

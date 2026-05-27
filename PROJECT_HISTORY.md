@@ -257,12 +257,11 @@
 - **Tables**: `super_experts` + `super_expert_members`
 - **initialize_super_experts()**: Seeds from `SUPER_EXPERTS` dict
 - **Console tab**: "🏛️ Super-Experts" with expander cards, member weights, EMA, packages
-- **Report section**: Super-experts included in `report_scheduler.py` output
+- **Report section**: Super-experts included in pipeline EMA chart output
 - **Councils**: EconomyFinance, ArtificialIntelligence, BiotechnologyHealth, QuantumPhysics, CybersecurityDefense, ClimateEnvironment, SpaceExploration, DataPrivacyEthics, CulturalHeritage, EnergySustainability, CryptocurrencyBlockchain, EducationTechnology, ManufacturingIndustry, Telecommunications, MaterialsScience, UrbanPlanningSmartCities, DefenseStrategy, NeuroscienceCognition, GeneralKnowledge, LanguagesLinguistics, VisualArts, PerformingArts
 
 ### Phase 14: Launch System & Final Polish (2026-05-26)
-- **Auto-launch**: Console auto-starts Physics pipeline + report_scheduler on load
-- **report_scheduler.py**: Generates `Rendimiento_<ts>.txt` every 30 min
+- **Auto-launch**: Console auto-starts Physics pipeline on load
 - **launch_expertia.bat**: Streamlit via `powershell -WindowStyle Hidden`
 - **Desktop shortcut**: "Expertia Control Center.lnk" on desktop
 - **Model updates**: Mathematics→deepseek-r1:1.5b, Medicine→phi4-mini:3.8b, PhilosophyHistory→gemma3:4b, FinanceEconomics→gemma3:4b, Physics→deepseek-r1:1.5b, Cybersecurity→qwen2.5-coder:3b, Bioinformatics→phi4-mini:3.8b, Chemistry→phi4-mini:3.8b, ArtHistory→gemma3:4b, Electronics→qwen2.5-coder:3b, Astronomy→phi4-mini:3.8b
