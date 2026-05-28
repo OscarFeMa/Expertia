@@ -1022,7 +1022,7 @@ class PipelineController:
         ) or []
 
         history = self.db_manager.execute_query(
-            "SELECT specialist_id, ema_score, created_at FROM ema_history ORDER BY id",
+            "SELECT specialist_id, ema_score, timestamp FROM ema_history ORDER BY id",
             fetch=True
         ) or []
 
@@ -1032,7 +1032,7 @@ class PipelineController:
         time_labels = []
         for row in history:
             sid = row['specialist_id']
-            t = row['created_at'][:16] if row['created_at'] else ''
+            t = row['timestamp'][:16] if row['timestamp'] else ''
             series_raw[sid].append((t, row['ema_score']))
         for sid, pts in series_raw.items():
             time_labels = [p[0] for p in pts]
