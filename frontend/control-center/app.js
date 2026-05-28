@@ -12,6 +12,7 @@ class App {
 
   async init() {
     await this.loadHealth();
+    await this.updateSidebarStats();
     this.startAutoRefresh();
     this.updateClock();
     setInterval(() => this.updateClock(), 5000);
@@ -41,6 +42,19 @@ class App {
   updateClock() {
     const now = new Date();
     document.getElementById('sb-time').textContent = now.toLocaleTimeString();
+  }
+
+  async updateSidebarStats() {
+    const [specData, health] = await Promise.all([
+      this.fetchJSON(`${this.apiBase}/specialists`),
+      this.fetchJSON(`${this.apiBase}/health`),
+    ]);
+    const setText = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    setText('ss-specs', specData?.specialists?.length || '-');
+    setText('ss-pkgs', (health?.package_count || 0).toLocaleString());
+    setText('ss-incidents', health?.incident_count || '-');
+    setText('ss-entities', 0);
+    if (specData) this._lastSpecialists = specData.specialists;
   }
 
   startAutoRefresh() {
@@ -200,13 +214,12 @@ class App {
   // ── DASHBOARD ──────────────────────────────────────────────────────────
   async renderDashboard() {
     const el = document.getElementById('tab-dashboard');
-    const [status, specialists, logs, health, pidData, memData] = await Promise.all([
+    const [status, specialists, logs, health, pidData] = await Promise.all([
       this.fetchJSON(`${this.apiBase}/status`),
       this.fetchJSON(`${this.apiBase}/specialists`),
       this.fetchJSON(`${this.apiBase}/activity-log?limit=1`),
       this.fetchJSON(`${this.apiBase}/health`),
       this.fetchJSON(`${this.apiBase}/pipeline/pid`),
-      this.fetchJSON(`${this.apiBase}/system/memory`),
     ]);
     if (!status && !health) { el.innerHTML = '<div class="card">Error connecting to API</div>'; return; }
 
@@ -256,13 +269,6 @@ class App {
           <div class="header-label">Clock</div>
           <div class="header-value sm" id="dash-clock">${new Date().toLocaleTimeString()}</div>
         </div>
-      </div>
-
-      <div class="card-row">
-        <div class="stat-card"><div class="stat-value">${specialistsList.length}</div><div class="stat-label">Specialists</div></div>
-        <div class="stat-card"><div class="stat-value">${health?.package_count || 0}</div><div class="stat-label">Knowledge Packages</div></div>
-        <div class="stat-card"><div class="stat-value">${health?.incident_count || 0}</div><div class="stat-label">Incidents</div></div>
-        <div class="stat-card"><div class="stat-value">${s.cascade_entities || 0}</div><div class="stat-label">Cascade Entities</div></div>
       </div>
 
       <!-- Synaptic activity pulse -->
@@ -380,19 +386,6 @@ class App {
       html += `<div class="card" style="color:var(--dim)">-- silence in the library --</div>`;
     }
 
-    // RAM monitor panel
-    if (memData && !memData.error) {
-      if (this.memoryHistory.length === 0 || this.memoryHistory[this.memoryHistory.length - 1].percent !== memData.percent) {
-        this.memoryHistory.push({ percent: memData.percent, timestamp: Date.now() });
-        if (this.memoryHistory.length > 60) this.memoryHistory.shift();
-      }
-      html += `<div class="section-title" style="margin-top:16px"><h2>💾 System Memory</h2></div>
-      <div class="card-row">
-        <div id="chart-memory-gauge" style="flex:0 0 auto"></div>
-        <div id="chart-memory-history" style="flex:1;min-width:200px"></div>
-      </div>`;
-    }
-
     // Save launch form values before re-render
     const savedForm = !isActive ? {
       phase: document.getElementById('lp-phase')?.value,
@@ -418,12 +411,7 @@ class App {
         if (savedForm.dur) document.getElementById('lp-dur').value = savedForm.dur;
       }
     }
-
-    // Render RAM charts after DOM is ready
-    if (memData && !memData.error) {
-      makeMemoryGauge(memData, 'chart-memory-gauge');
-      makeMemoryHistoryChart(this.memoryHistory, 'chart-memory-history');
-    }
+    this.updateSidebarStats();
   }
 
   onLaunchSpecChange() {
@@ -703,12 +691,14 @@ class App {
   // ── SYNAPTIC MAP ────────────────────────────────────────────────────────
   async renderMap() {
     const el = document.getElementById('tab-map');
-    const [status, specData, logs, health, emaHistory] = await Promise.all([
+    const [status, specData, logs, health, emaHistory, memData, cpuData] = await Promise.all([
       this.fetchJSON(`${this.apiBase}/status`),
       this.fetchJSON(`${this.apiBase}/specialists`),
       this.fetchJSON(`${this.apiBase}/activity-log?limit=20`),
       this.fetchJSON(`${this.apiBase}/health`),
-      this.fetchJSON(`${this.apiBase}/activity-log?levels=ERROR,CRITICAL`), // placeholder, actual EMA endpoint later
+      this.fetchJSON(`${this.apiBase}/activity-log?levels=ERROR,CRITICAL`),
+      this.fetchJSON(`${this.apiBase}/system/memory`),
+      this.fetchJSON(`${this.apiBase}/system/cpu`),
     ]);
     const specialists = specData?.specialists || [];
     const activeCount = specialists.filter(sp => sp.status === 'ACTIVE').length;
@@ -717,12 +707,21 @@ class App {
     // Fetch EMA history
     const emaData = await this.fetchJSON(`${this.apiBase}/activity-log?limit=500`);
 
+    // Track memory history
+    if (memData && !memData.error) {
+      if (this.memoryHistory.length === 0 || this.memoryHistory[this.memoryHistory.length - 1].percent !== memData.percent) {
+        this.memoryHistory.push({ percent: memData.percent, timestamp: Date.now() });
+        if (this.memoryHistory.length > 60) this.memoryHistory.shift();
+      }
+    }
+
     let html = `
-      <div class="card-row">
-        <div class="stat-card"><div class="stat-value">${(health?.package_count || 0).toLocaleString()}</div><div class="stat-label">📚 Packages</div></div>
-        <div class="stat-card"><div class="stat-value">${activeCount}</div><div class="stat-label">🧠 Active</div></div>
-        <div class="stat-card"><div class="stat-value">${status?.cascade_entities || 0}</div><div class="stat-label">🏛️ Entities</div></div>
-        <div class="stat-card"><div class="stat-value">${incidentCount}</div><div class="stat-label">🔥 Incidents</div></div>
+      <div class="card-row" style="justify-content:center;gap:16px">
+        <div id="chart-memory-gauge" style="flex:0 0 auto"></div>
+        <div id="chart-cpu-gauge" style="flex:0 0 auto"></div>
+        <div class="stat-card" style="flex:1;min-width:100px"><div class="stat-value">${(health?.package_count || 0).toLocaleString()}</div><div class="stat-label">📚 Packages</div></div>
+        <div class="stat-card" style="flex:1;min-width:100px"><div class="stat-value">${activeCount}</div><div class="stat-label">🧠 Active</div></div>
+        <div class="stat-card" style="flex:1;min-width:100px"><div class="stat-value">${incidentCount}</div><div class="stat-label">🔥 Incidents</div></div>
       </div>
       <div class="chart-container-full" id="chart-waves"></div>
       <div class="grid-2">
@@ -751,6 +750,13 @@ class App {
 
     // Render charts
     setTimeout(() => {
+      if (memData && !memData.error) {
+        makeMemoryGauge(memData, 'chart-memory-gauge');
+        makeMemoryHistoryChart(this.memoryHistory, 'chart-memory-history');
+      }
+      if (cpuData && !cpuData.error) {
+        makeCpuGauge(cpuData, 'chart-cpu-gauge');
+      }
       makeWavesChart(emaData?.logs || [], 'chart-waves');
       makeSpecialistChart(specialists, 'chart-ema');
       makePackagesChart(specialists, 'chart-packages');

@@ -141,6 +141,18 @@ function makePackagesChart(specialists, containerId) {
   Plotly.purge(el); Plotly.newPlot(el, data, layout, { responsive: true, displayModeBar: false });
 }
 
+function wavesLocalMinute(ts) {
+  if (!ts) return '';
+  const d = new Date(ts + 'Z');
+  if (isNaN(d.getTime())) return ts.slice(0, 16);
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const da = String(d.getDate()).padStart(2, '0');
+  const h = String(d.getHours()).padStart(2, '0');
+  const mi = String(d.getMinutes()).padStart(2, '0');
+  return `${y}-${mo}-${da} ${h}:${mi}`;
+}
+
 function makeWavesChart(logEntries, containerId) {
   const el = document.getElementById(containerId);
   if (!el || !logEntries || !logEntries.length) return;
@@ -148,7 +160,7 @@ function makeWavesChart(logEntries, containerId) {
   logEntries.forEach(r => {
     const msg = String(r.message || '');
     const level = String(r.level || '');
-    const minute = (r.timestamp || '').slice(0, 16);
+    const minute = wavesLocalMinute(r.timestamp);
     if (!minute) return;
     if (!bins[minute]) bins[minute] = { web_search: 0, llm_query: 0, package_saved: 0, spawn: 0, error: 0 };
     if (msg.includes('Buscando')) bins[minute].web_search++;
@@ -253,6 +265,35 @@ function makeMemoryHistoryChart(history, containerId) {
     fill: 'tozeroy',
     fillcolor: '#4ECDC422',
     hovertemplate: '%{y:.1f}%<extra></extra>',
+  };
+  Plotly.purge(el); Plotly.newPlot(el, [trace], layout, { responsive: true, displayModeBar: false });
+}
+
+function makeCpuGauge(cpuData, containerId) {
+  const el = document.getElementById(containerId);
+  if (!el || !cpuData || cpuData.error) return;
+  const pct = cpuData.percent;
+  const color = pct > 80 ? '#C44536' : pct > 60 ? '#FF6B6B' : '#4ECDC4';
+  const layout = Object.assign({}, getTemplate(), {
+    width: 260, height: 190,
+    margin: { t: 30, b: 20, l: 20, r: 20 },
+  });
+  const trace = {
+    type: 'indicator',
+    mode: 'gauge+number+delta',
+    value: pct,
+    delta: { reference: 80, increasing: { color: '#C44536' } },
+    gauge: {
+      axis: { range: [0, 100], tickwidth: 1 },
+      bar: { color },
+      steps: [
+        { range: [0, 50], color: '#4ECDC422' },
+        { range: [50, 80], color: '#FF6B6B22' },
+        { range: [80, 100], color: '#C4453622' },
+      ],
+      threshold: { line: { color: 'red', width: 3 }, thickness: 0.75, value: 90 },
+    },
+    number: { suffix: '%', font: { size: 18 } },
   };
   Plotly.purge(el); Plotly.newPlot(el, [trace], layout, { responsive: true, displayModeBar: false });
 }

@@ -143,6 +143,37 @@ body {
   text-align: center;
 }
 
+.sidebar-stats {
+  padding: 8px 12px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.ss-item {
+  text-align: center;
+  padding: 4px 2px;
+}
+
+.ss-val {
+  display: block;
+  font-size: 16px;
+  font-weight: 700;
+  font-family: Georgia, 'Times New Roman', serif;
+  color: var(--text);
+  line-height: 1.2;
+}
+
+.ss-lbl {
+  display: block;
+  font-size: 7.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--dim);
+  line-height: 1.2;
+}
+
 .sidebar-footer {
   padding: 12px 16px;
   border-top: 1px solid var(--border);

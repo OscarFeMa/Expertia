@@ -338,6 +338,19 @@ def get_system_memory():
         return {"error": "psutil not installed"}
 
 
+@router.get("/system/cpu")
+def get_system_cpu():
+    try:
+        import psutil
+        return {
+            "percent": psutil.cpu_percent(interval=0.5),
+            "count": psutil.cpu_count(),
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    except ImportError:
+        return {"error": "psutil not installed"}
+
+
 @router.get("/health")
 def get_health():
     db_ok = _db().health_check()
