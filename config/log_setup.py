@@ -1,6 +1,7 @@
 import logging
 import sys
 from pathlib import Path
+from logging.handlers import RotatingFileHandler
 
 
 def setup_logging(
@@ -11,5 +12,7 @@ def setup_logging(
     handlers = [logging.StreamHandler(sys.stdout)]
     if log_file:
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+        handlers.append(RotatingFileHandler(
+            str(log_file), maxBytes=10*1024*1024, backupCount=5, encoding="utf-8"
+        ))
     logging.basicConfig(level=level, format=fmt, handlers=handlers)

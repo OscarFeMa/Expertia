@@ -6,6 +6,7 @@ class App {
     document.documentElement.setAttribute('data-theme', this.theme);
     this.activeTab = 'dashboard';
     this.dataCache = {};
+    this.memoryHistory = [];
     this.init();
   }
 
@@ -50,23 +51,31 @@ class App {
     }, 10000);
   }
 
-  async fetchJSON(url) {
+  async fetchJSON(url, timeoutMs = 30000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: controller.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.json();
     } catch (e) {
-      console.error('Fetch error:', url, e);
+      if (e.name === 'AbortError') console.error('Fetch timeout:', url);
+      else console.error('Fetch error:', url, e);
       return null;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
-  async postJSON(url, body) {
+  async postJSON(url, body, timeoutMs = 30000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body || {}),
+        signal: controller.signal,
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -74,8 +83,11 @@ class App {
       }
       return await res.json();
     } catch (e) {
-      console.error('POST error:', url, e);
+      if (e.name === 'AbortError') console.error('POST timeout:', url);
+      else console.error('POST error:', url, e);
       return { error: e.message };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -119,13 +131,18 @@ class App {
     this.refreshActiveTab();
   }
 
+  escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
   utcToLocal(ts) {
     if (!ts) return '-';
     try {
       const d = new Date(ts);
       if (isNaN(d.getTime())) return String(ts).slice(11, 19);
-      const local = new Date(d.getTime() + 2 * 60 * 60 * 1000);
-      return local.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+      return d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
     } catch {
       return String(ts).slice(11, 19) || '-';
     }
@@ -175,20 +192,21 @@ class App {
   renderLogEntry(row, highlight) {
     const ts = this.utcToLocal(row.timestamp);
     const icon = this.logIcon(row.level);
-    const msg = this.narrativeHumor(row.level, String(row.message).slice(0, 200));
+    const msg = this.escapeHtml(this.narrativeHumor(row.level, String(row.message).slice(0, 200)));
     const hl = highlight ? ' style="background:rgba(255,107,107,0.1)"' : '';
-    return `<div class="log-entry"${hl}><span class="log-ts">${ts}</span><span class="log-icon">${icon}</span><span class="log-msg">${msg}</span></div>`;
+    return `<div class="log-entry"${hl}><span class="log-ts">${this.escapeHtml(ts)}</span><span class="log-icon">${icon}</span><span class="log-msg">${msg}</span></div>`;
   }
 
   // ── DASHBOARD ──────────────────────────────────────────────────────────
   async renderDashboard() {
     const el = document.getElementById('tab-dashboard');
-    const [status, specialists, logs, health, pidData] = await Promise.all([
+    const [status, specialists, logs, health, pidData, memData] = await Promise.all([
       this.fetchJSON(`${this.apiBase}/status`),
       this.fetchJSON(`${this.apiBase}/specialists`),
       this.fetchJSON(`${this.apiBase}/activity-log?limit=1`),
       this.fetchJSON(`${this.apiBase}/health`),
       this.fetchJSON(`${this.apiBase}/pipeline/pid`),
+      this.fetchJSON(`${this.apiBase}/system/memory`),
     ]);
     if (!status && !health) { el.innerHTML = '<div class="card">Error connecting to API</div>'; return; }
 
@@ -257,7 +275,7 @@ class App {
           <div class="bar"></div><div class="bar"></div><div class="bar"></div>
           <div class="bar"></div><div class="bar"></div><div class="bar"></div>
         </div>
-        <div class="pulse-activity-text" id="pulse-activity-text">${logsList.length ? this.narrativeHumor(logsList[0].level, logsList[0].message) : ''}</div>
+        <div class="pulse-activity-text" id="pulse-activity-text">${logsList.length ? this.escapeHtml(this.narrativeHumor(logsList[0].level, logsList[0].message)) : ''}</div>
       </div>
     `;
 
@@ -304,7 +322,7 @@ class App {
       <div class="progress-info">System idle</div>`;
     } else {
       html += `<div class="card" style="display:flex;gap:12px;align-items:center">
-        <button onclick="app.stopPipeline()" style="background:var(--error);color:#fff;border-color:var(--error)">■ Stop</button>
+        <button id="lp-stop-btn" onclick="app.stopPipeline()" style="background:var(--error);color:#fff;border-color:var(--error)">■ Stop</button>
         <span style="font-size:12px;color:var(--dim)">PID: ${pid || '--'} · Uptime: ${Math.floor(uptime / 60)}m</span>
         <div id="lp-msg" style="font-size:12px;flex:1"></div>
       </div>`;
@@ -362,11 +380,49 @@ class App {
       html += `<div class="card" style="color:var(--dim)">-- silence in the library --</div>`;
     }
 
+    // RAM monitor panel
+    if (memData && !memData.error) {
+      if (this.memoryHistory.length === 0 || this.memoryHistory[this.memoryHistory.length - 1].percent !== memData.percent) {
+        this.memoryHistory.push({ percent: memData.percent, timestamp: Date.now() });
+        if (this.memoryHistory.length > 60) this.memoryHistory.shift();
+      }
+      html += `<div class="section-title" style="margin-top:16px"><h2>💾 System Memory</h2></div>
+      <div class="card-row">
+        <div id="chart-memory-gauge" style="flex:0 0 auto"></div>
+        <div id="chart-memory-history" style="flex:1;min-width:200px"></div>
+      </div>`;
+    }
+
+    // Save launch form values before re-render
+    const savedForm = !isActive ? {
+      phase: document.getElementById('lp-phase')?.value,
+      spec: document.getElementById('lp-spec')?.value,
+      model: document.getElementById('lp-model')?.value,
+      single: document.getElementById('lp-single')?.value,
+      dur: document.getElementById('lp-dur')?.value,
+    } : null;
+
     el.innerHTML = html;
 
-    // Populate model/specialist selects if launch form exists
+    // Populate model/specialist selects and restore saved values
     if (!isActive) {
       this.populateLaunchForm(specialistsList);
+      if (savedForm) {
+        if (savedForm.phase) document.getElementById('lp-phase').value = savedForm.phase;
+        if (savedForm.spec) {
+          document.getElementById('lp-spec').value = savedForm.spec;
+          this.onLaunchSpecChange();
+        }
+        if (savedForm.model) document.getElementById('lp-model').value = savedForm.model;
+        if (savedForm.single) document.getElementById('lp-single').value = savedForm.single;
+        if (savedForm.dur) document.getElementById('lp-dur').value = savedForm.dur;
+      }
+    }
+
+    // Render RAM charts after DOM is ready
+    if (memData && !memData.error) {
+      makeMemoryGauge(memData, 'chart-memory-gauge');
+      makeMemoryHistoryChart(this.memoryHistory, 'chart-memory-history');
     }
   }
 
@@ -399,38 +455,50 @@ class App {
   async startPipeline() {
     const msgEl = document.getElementById('lp-msg');
     if (!msgEl) return;
-    const phase = document.getElementById('lp-phase')?.value || 'full';
-    const specMode = document.getElementById('lp-spec')?.value || 'all';
-    let specialist = 'all';
-    let model = 'all';
-    if (specMode === 'model') model = document.getElementById('lp-model')?.value || 'all';
-    if (specMode === 'single') specialist = document.getElementById('lp-single')?.value || 'all';
-    const duration = parseFloat(document.getElementById('lp-dur')?.value) || 5.0;
+    const btn = document.querySelector('.lp-start-btn');
+    if (btn) btn.disabled = true;
+    try {
+      const phase = document.getElementById('lp-phase')?.value || 'full';
+      const specMode = document.getElementById('lp-spec')?.value || 'all';
+      let specialist = 'all';
+      let model = 'all';
+      if (specMode === 'model') model = document.getElementById('lp-model')?.value || 'all';
+      if (specMode === 'single') specialist = document.getElementById('lp-single')?.value || 'all';
+      const duration = parseFloat(document.getElementById('lp-dur')?.value) || 5.0;
 
-    msgEl.textContent = 'Starting...';
-    const result = await this.postJSON(`${this.apiBase}/pipeline/start`, { phase, specialist, model, duration });
-    if (result.error) {
-      msgEl.textContent = `❌ ${result.error}`;
-      msgEl.style.color = 'var(--error)';
-    } else {
-      msgEl.textContent = `✅ Started PID: ${result.pid}`;
-      msgEl.style.color = 'var(--inactive)';
-      setTimeout(() => this.renderDashboard(), 2000);
+      msgEl.textContent = 'Starting...';
+      const result = await this.postJSON(`${this.apiBase}/pipeline/start`, { phase, specialist, model, duration });
+      if (result.error) {
+        msgEl.textContent = `❌ ${result.error}`;
+        msgEl.style.color = 'var(--error)';
+      } else {
+        msgEl.textContent = `✅ Started PID: ${result.pid}`;
+        msgEl.style.color = 'var(--inactive)';
+        setTimeout(() => this.renderDashboard(), 2000);
+      }
+    } finally {
+      if (btn) btn.disabled = false;
     }
   }
 
   async stopPipeline() {
     const msgEl = document.getElementById('lp-msg');
     if (!msgEl) return;
-    msgEl.textContent = 'Stopping...';
-    const result = await this.postJSON(`${this.apiBase}/pipeline/stop`, {});
-    if (result.error) {
-      msgEl.textContent = `❌ ${result.error}`;
-      msgEl.style.color = 'var(--error)';
-    } else {
-      msgEl.textContent = `✅ Stopped PID: ${result.pid}`;
-      msgEl.style.color = 'var(--inactive)';
-      setTimeout(() => this.renderDashboard(), 2000);
+    const btn = document.getElementById('lp-stop-btn');
+    if (btn) btn.disabled = true;
+    try {
+      msgEl.textContent = 'Stopping...';
+      const result = await this.postJSON(`${this.apiBase}/pipeline/stop`, {});
+      if (result.error) {
+        msgEl.textContent = `❌ ${result.error}`;
+        msgEl.style.color = 'var(--error)';
+      } else {
+        msgEl.textContent = `✅ Stopped PID: ${result.pid}`;
+        msgEl.style.color = 'var(--inactive)';
+        setTimeout(() => this.renderDashboard(), 2000);
+      }
+    } finally {
+      if (btn) btn.disabled = false;
     }
   }
 
@@ -674,7 +742,7 @@ class App {
     if (branchLogs.length) {
       html += `<div class="card"><div class="section-title"><h3>🌿 Branch Genesis (${branchLogs.length} events)</h3></div>`;
       branchLogs.forEach(r => {
-        html += `<div class="log-entry"><span class="log-ts">${this.utcToLocal(r.timestamp)}</span><span class="log-icon">🌱</span><span class="log-msg">${r.message}</span></div>`;
+        html += `<div class="log-entry"><span class="log-ts">${this.escapeHtml(this.utcToLocal(r.timestamp))}</span><span class="log-icon">🌱</span><span class="log-msg">${this.escapeHtml(r.message)}</span></div>`;
       });
       html += `</div>`;
     }

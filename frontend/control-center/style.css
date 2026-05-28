@@ -752,15 +752,45 @@ pre {
   border-color: var(--border);
 }
 
-@media (max-width: 1100px) {
-  .spec-grid-3 {
-    grid-template-columns: repeat(2, 1fr);
+@media (prefers-reduced-motion: reduce) {
+  .synaptic-pulse, .pulse-dot, .wave-bars .bar {
+    animation: none !important;
+  }
+  .wave-bars.idle .bar {
+    animation: none !important;
   }
 }
 
 @media (max-width: 700px) {
   .spec-grid-3 {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .sidebar {
+    width: 48px;
+    min-width: 48px;
+  }
+  .sidebar .logo-text,
+  .sidebar .nav-label,
+  .sidebar .sb-status,
+  .sidebar .sb-clock-label {
+    display: none;
+  }
+  .sidebar .logo {
+    justify-content: center;
+    padding: 16px 0;
+  }
+  .sidebar .nav-item {
+    justify-content: center;
+    padding: 10px 0;
+  }
+  .sidebar .nav-icon {
+    margin: 0;
+  }
+  .main-content {
+    padding: 10px;
   }
 }
 

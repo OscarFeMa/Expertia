@@ -122,3 +122,6 @@ storage/
 # Test files (root level only)
 /test_*.py
 tmp_streamlit_test/
+
+# Pipeline state
+pipeline_state.json

@@ -6,6 +6,7 @@ from typing import Optional
 import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -27,12 +28,19 @@ async def lifespan(app: FastAPI):
     logger.info("LLMRunner initialized")
     yield
     if llm:
-        if hasattr(llm, 'session') and llm.session:
-            await llm.session.aclose()
+        if hasattr(llm, '_session') and llm._session:
+            await llm._session.aclose()
         logger.info("LLMRunner session closed")
 
 
 app = FastAPI(title="Expertia Query API", version="0.1.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(api_router)
 
 frontend_path = Path(__file__).parent / "frontend" / "control-center"
