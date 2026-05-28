@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Synaptic Archive — Expertia</title>
-  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" integrity="sha384-70254266402360dc5a60a6ccf25b00acbce70c5fd2bcc16bd63719aef3a949309ad16e3464074bcc7084ba59d46b98bb" crossorigin="anonymous"></script>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" crossorigin="anonymous"></script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -33,6 +33,12 @@
         <span class="nav-icon">🔥</span> Incidents
       </div>
     </nav>
+    <div class="sidebar-stats" id="sidebar-stats">
+      <div class="ss-item"><span class="ss-val" id="ss-specs">-</span><span class="ss-lbl">Specialists</span></div>
+      <div class="ss-item"><span class="ss-val" id="ss-pkgs">-</span><span class="ss-lbl">Packages</span></div>
+      <div class="ss-item"><span class="ss-val" id="ss-incidents">-</span><span class="ss-lbl">Incidents</span></div>
+      <div class="ss-item"><span class="ss-val" id="ss-entities">-</span><span class="ss-lbl">Cascade</span></div>
+    </div>
     <div class="sidebar-footer">
       <button class="theme-toggle" onclick="app.toggleTheme()" title="Toggle theme">🌓</button>
     </div>
