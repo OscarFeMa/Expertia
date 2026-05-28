@@ -79,15 +79,15 @@ SPECIALIST_REGISTRY = [
     {"domain": "Mathematics", "model": "deepseek-r1:1.5b", "root": "Q395", "props": ["P31", "P279", "P2534", "P192"]},
     {"domain": "Medicine", "model": "phi4-mini:3.8b", "root": "Q11190", "props": ["P31", "P279", "P923", "P780", "P699"]},
     {"domain": "LegalSystem", "model": "llama3.2:3b", "root": "Q7748", "props": ["P31", "P279", "P1684", "P427"]},
-    {"domain": "PhilosophyHistory", "model": "gemma3:4b", "root": "Q5891", "props": ["P31", "P279", "P61"]},
-    {"domain": "FinanceEconomics", "model": "gemma3:4b", "root": "Q8134", "props": ["P31", "P279", "P2283", "P1441"]},
+    {"domain": "PhilosophyHistory", "model": "phi4-mini:3.8b", "root": "Q5891", "props": ["P31", "P279", "P61"]},
+    {"domain": "FinanceEconomics", "model": "phi4-mini:3.8b", "root": "Q8134", "props": ["P31", "P279", "P2283", "P1441"]},
     {"domain": "Physics", "model": "deepseek-r1:1.5b", "root": "Q413", "props": ["P31", "P279", "P2067", "P2541"]},
     {"domain": "Cybersecurity", "model": "qwen2.5-coder:3b", "root": "Q3510521", "props": ["P31", "P279", "P2824"]},
     {"domain": "Bioinformatics", "model": "phi4-mini:3.8b", "root": "Q128570", "props": ["P31", "P279", "P685"]},
     {"domain": "Geopolitics", "model": "llama3.2:3b", "root": "Q159385", "props": ["P31", "P279", "P30"]},
     {"domain": "DataScience", "model": "qwen2.5-coder:3b", "root": "Q2374463", "props": ["P31", "P279", "P2078"]},
     {"domain": "Chemistry", "model": "phi4-mini:3.8b", "root": "Q2329", "props": ["P31", "P279", "P662", "P2067"]},
-    {"domain": "ArtHistory", "model": "gemma3:4b", "root": "Q50637", "props": ["P31", "P279", "P170", "P136"]},
+    {"domain": "ArtHistory", "model": "phi4-mini:3.8b", "root": "Q50637", "props": ["P31", "P279", "P170", "P136"]},
     {"domain": "Electronics", "model": "qwen2.5-coder:3b", "root": "Q11650", "props": ["P31", "P279", "P306", "P400"]},
     {"domain": "Astronomy", "model": "phi4-mini:3.8b", "root": "Q333", "props": ["P31", "P279", "P2067"]}
 ]
