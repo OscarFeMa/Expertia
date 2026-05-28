@@ -11,6 +11,8 @@ import asyncio
 import gzip
 import ijson
 import re
+import signal
+import subprocess
 import argparse
 import requests
 from pathlib import Path
@@ -19,6 +21,29 @@ from typing import Dict, List, Optional, Callable, Set
 from decimal import Decimal
 from contextlib import contextmanager
 from datetime import datetime
+
+LLM_QUERY_TIMEOUT = 180
+MAX_PHASE_B_CYCLES = 100
+VRAM_WARN_THRESHOLD_MB = 2048
+_shutdown_event = asyncio.Event()
+
+
+def check_ollama_vram() -> Optional[int]:
+    try:
+        result = subprocess.run(['ollama', 'ps'], capture_output=True, text=True, timeout=15)
+        lines = result.stdout.strip().splitlines()
+        for line in lines[1:]:
+            parts = line.split()
+            if len(parts) >= 4:
+                mem_raw = parts[3].upper()
+                if 'GB' in mem_raw:
+                    return int(float(mem_raw.replace('GB', '')) * 1024)
+                if 'MB' in mem_raw:
+                    return int(mem_raw.replace('MB', ''))
+        return None
+    except Exception as e:
+        logger.debug(f"ollama ps failed: {e}")
+        return None
 
 from database.db_manager import get_db_manager
 from llm_manager import LLMRunner
@@ -221,8 +246,8 @@ class PipelineController:
                 "INSERT INTO activity_log (level, message) VALUES (?, ?)",
                 (level, message[:500])
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to log activity: {e}")
 
     def _create_cascade_tables(self):
         self.db_manager.execute_query("""
@@ -427,6 +452,8 @@ class PipelineController:
                         result[qid] = qid
                         cached[qid] = qid
 
+        if len(cached) > 100000:
+            cached = {}
         self._label_cache = cached
         return result
 
@@ -837,8 +864,8 @@ class PipelineController:
                                 "INSERT OR IGNORE INTO qid_expansions (specialist_id, qid, discovered_at_checkpoint) VALUES (?, ?, ?)",
                                 (sid, qid, cp_num)
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning(f"Failed to save QID expansion: {e}")
                 logger.info(f"=== CHECKPOINT {cp_num}: {entities_processed:,} entities, {total_matches} matches ===")
                 self._update_pipeline_status(
                     phase=f'Phase A: Cascade (cp {cp_num})',
@@ -956,7 +983,7 @@ class PipelineController:
                                 prompt = f"{system_ctx}\n\nSummarize the following {domain} knowledge in 3 bullet points:\n\n{ct[:2000]}"
                             else:
                                 prompt = f"Summarize the following {domain} knowledge in 3 bullet points:\n\n{ct[:2000]}"
-                            dist = await self.llm_runner.query_llm(model_name=model, prompt=prompt)
+                            dist = await asyncio.wait_for(self.llm_runner.query_llm(model_name=model, prompt=prompt), timeout=LLM_QUERY_TIMEOUT)
                             logger.debug(f"Distill: {dist[:100]}...")
                         except Exception as e:
                             logger.warning(f"Distill failed for {url[:60]}: {e}")
@@ -996,7 +1023,6 @@ class PipelineController:
                 )
 
             self.metrics.record_phase_b(specialist_id=sid, domain=domain, success=total_c > 0, contents_count=total_c)
-            self.db_manager.execute_query("UPDATE specialist_registry SET status='IDLE' WHERE id=?", (sid,))
             avg_t = sum(trusts) / len(trusts) if trusts else 50.0
             logger.info(f"Phase B complete for {domain} (cycle {cycle}): {total_c} contents, {pkgs_saved} packages")
             self._log_activity(f"{domain} completado — {pkgs_saved} paquetes en ciclo {cycle}")
@@ -1005,6 +1031,8 @@ class PipelineController:
         except Exception as e:
             logger.error(f"Phase B failed for {domain}: {e}")
             return result
+        finally:
+            self.db_manager.execute_query("UPDATE specialist_registry SET status='IDLE' WHERE id=?", (sid,))
 
     async def _generate_report(self, elapsed_seconds: float):
         """Generate EMA evolution report with chart, saved to storage/reports/."""
@@ -1083,11 +1111,17 @@ class PipelineController:
                            report_interval_minutes: int = 30,
                            phase: str = 'full',
                            specialist_filter: str = 'all',
-                           model_filter: str = 'all') -> None:
+                           model_filter: str = 'all',
+                           max_duration_hours: float = 0,
+                           max_cycles: int = 0) -> None:
         logger.info("=" * 80)
         logger.info("CORAL THOUGHT ORCHESTRATOR - PIPELINE")
         logger.info(f"Phase: {phase} | Specialist: {specialist_filter} | Model: {model_filter}")
         logger.info(f"Min duration: {min_duration_hours}h | Report every {report_interval_minutes}min")
+        if max_duration_hours > 0:
+            logger.info(f"Hard max duration: {max_duration_hours}h")
+        if max_cycles > 0:
+            logger.info(f"Max Phase B cycles: {max_cycles}")
         logger.info("=" * 80 + "\n")
 
         self._start_time = time.time()
@@ -1142,14 +1176,30 @@ class PipelineController:
 
             # Phase B: Continuous loop
             if phase in ('full', 'web'):
+                loaded_vram_mb = check_ollama_vram()
+                if loaded_vram_mb is not None and loaded_vram_mb > VRAM_WARN_THRESHOLD_MB:
+                    logger.warning(f"ollama VRAM high ({loaded_vram_mb}MB > {VRAM_WARN_THRESHOLD_MB}MB) — potential OOM risk")
+
                 pipeline_start = time.time()
                 last_report_time = 0.0
                 global_cycle = 0
 
                 while True:
+                    if _shutdown_event.is_set():
+                        logger.info("Shutdown signal received. Stopping pipeline.")
+                        break
+
                     elapsed = time.time() - pipeline_start
                     if elapsed >= min_duration_hours * 3600:
                         logger.info(f"Minimum duration reached ({min_duration_hours}h). Finishing...")
+                        break
+
+                    if max_cycles > 0 and global_cycle >= max_cycles:
+                        logger.info(f"Max cycles reached ({max_cycles}). Stopping.")
+                        break
+
+                    if max_duration_hours > 0 and elapsed >= max_duration_hours * 3600:
+                        logger.info(f"Hard max duration reached ({max_duration_hours}h). Stopping.")
                         break
 
                     global_cycle += 1
@@ -1177,11 +1227,15 @@ class PipelineController:
                             phase=f'Phase B: Web + LLM ({len(group)} paralelo)', status='ACTIVE'
                         )
                         tasks = [self.run_phase_b(s, effective_cycle) for s in group]
-                        phase_b_results = await asyncio.gather(*tasks)
+                        phase_b_results = await asyncio.gather(*tasks, return_exceptions=True)
 
                         for specialist, phase_b in zip(group, phase_b_results):
                             sid, domain = specialist['id'], specialist['domain']
-                            ok = phase_a_results.get(sid, False) or phase_b['success']
+                            if isinstance(phase_b, Exception):
+                                logger.error(f"Phase B failed for {domain}: {phase_b}")
+                                self.update_ema_score(sid, False)
+                                continue
+                            ok = phase_a_results.get(sid, False) or phase_b.get('success', False)
                             self.update_ema_score(sid, ok, phase_b.get('total_length', 0), phase_b.get('avg_trust', 50))
 
                         # After Phase B completes for this specialist, check spawning
@@ -1233,21 +1287,35 @@ def parse_args():
                         help='Run only specialists using this model (default: all)')
     parser.add_argument('--duration', type=float, default=5.0,
                         help='Minimum duration in hours for Phase B (default: 5.0)')
+    parser.add_argument('--max-duration', type=float, default=0,
+                        help='Hard max duration in hours (0 = no limit)')
+    parser.add_argument('--max-cycles', type=int, default=0,
+                        help='Hard max Phase B cycles (0 = use MAX_PHASE_B_CYCLES)')
     return parser.parse_args()
+
+
+def _signal_handler(signum, frame):
+    _shutdown_event.set()
 
 
 async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.0,
                report_interval_minutes: int = 30,
                phase: str = 'full', specialist_filter: str = 'all',
-               model_filter: str = 'all'):
+               model_filter: str = 'all',
+               max_duration_hours: float = 0,
+               max_cycles: int = 0):
     crash_log = LOGS_DIR / 'crash.log'
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
     try:
         controller = PipelineController(sample_size=sample_size, cycles_per_specialist=3)
         await controller.run_pipeline(
             min_duration_hours=min_duration_hours,
             report_interval_minutes=report_interval_minutes,
             phase=phase, specialist_filter=specialist_filter,
-            model_filter=model_filter
+            model_filter=model_filter,
+            max_duration_hours=max_duration_hours,
+            max_cycles=max_cycles,
         )
     except asyncio.CancelledError:
         return
@@ -1261,17 +1329,28 @@ async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.
 
 if __name__ == "__main__":
     args = parse_args()
-    try:
-        asyncio.run(main(
-            min_duration_hours=args.duration,
-            report_interval_minutes=30,
-            phase=args.phase,
-            specialist_filter=args.specialist,
-            model_filter=args.model
-        ))
-    except Exception as e:
-        import traceback
-        tb = traceback.format_exc()
-        with open(Path('logs') / 'crash.log', 'a', encoding='utf-8') as f:
-            f.write(f"\n=== FATAL {datetime.now()} ===\n{e}\n{tb}\n")
-        print(f"FATAL: {e}", flush=True)
+    max_retries = 3
+    retry_delay = 30
+    for attempt in range(1, max_retries + 1):
+        logger.info(f"Pipeline attempt {attempt}/{max_retries}")
+        try:
+            asyncio.run(main(
+                min_duration_hours=args.duration,
+                report_interval_minutes=30,
+                phase=args.phase,
+                specialist_filter=args.specialist,
+                model_filter=args.model,
+                max_duration_hours=args.max_duration,
+                max_cycles=args.max_cycles if args.max_cycles > 0 else MAX_PHASE_B_CYCLES,
+            ))
+            break
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            with open(Path('logs') / 'crash.log', 'a', encoding='utf-8') as f:
+                f.write(f"\n=== FATAL {datetime.now()} ===\n{e}\n{tb}\n")
+            print(f"FATAL attempt {attempt}/{max_retries}: {e}", flush=True)
+            if attempt < max_retries and not _shutdown_event.is_set():
+                delay = retry_delay * (2 ** (attempt - 1))
+                logger.info(f"Retrying in {delay}s...")
+                time.sleep(delay)

@@ -4,11 +4,13 @@ import os
 import re
 import subprocess
 import time
+from threading import Lock
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Security
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 
 from database.db_manager import get_db_manager
@@ -19,6 +21,16 @@ router = APIRouter(prefix="/api")
 _PIPELINE_STATE_FILE = Path(__file__).parent / "pipeline_state.json"
 
 _pipeline: dict = {"pid": None, "start_time": 0, "duration_hours": 0}
+_pipeline_lock = Lock()
+
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+EXPERTIA_API_KEY = os.environ.get("EXPERTIA_API_KEY", "")
+
+
+def verify_api_key(x_api_key: Optional[str] = Security(_api_key_header)):
+    if EXPERTIA_API_KEY and x_api_key != EXPERTIA_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid or missing API key")
+    return x_api_key
 
 
 def _save_pipeline_state():
@@ -50,7 +62,7 @@ def _is_pid_alive(pid):
                 ["tasklist", "/FI", f"PID eq {pid}"],
                 capture_output=True, text=True, timeout=5,
             )
-            return str(pid) in r.stdout
+            return bool(re.search(rf"\b{re.escape(str(pid))}\b", r.stdout))
         else:
             os.kill(pid, 0)
             return True
@@ -173,10 +185,11 @@ class StartPipelineRequest(BaseModel):
     duration: float = 5.0
 
 
-@router.post("/pipeline/start")
+@router.post("/pipeline/start", dependencies=[Depends(verify_api_key)])
 def start_pipeline(req: StartPipelineRequest):
-    if _pipeline["pid"] and _is_pid_alive(_pipeline["pid"]):
-        raise HTTPException(status_code=409, detail="Pipeline already running")
+    with _pipeline_lock:
+        if _pipeline["pid"] and _is_pid_alive(_pipeline["pid"]):
+            raise HTTPException(status_code=409, detail="Pipeline already running")
 
     cmd = [
         "python", "orchestrator.py",
@@ -190,9 +203,10 @@ def start_pipeline(req: StartPipelineRequest):
             cmd,
             creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0,
         )
-        _pipeline["pid"] = proc.pid
-        _pipeline["start_time"] = time.time()
-        _pipeline["duration_hours"] = req.duration
+        with _pipeline_lock:
+            _pipeline["pid"] = proc.pid
+            _pipeline["start_time"] = time.time()
+            _pipeline["duration_hours"] = req.duration
         _save_pipeline_state()
         logger.info(f"Pipeline started PID={proc.pid} cmd={' '.join(cmd)}")
         return {"status": "started", "pid": proc.pid}
@@ -201,13 +215,14 @@ def start_pipeline(req: StartPipelineRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/pipeline/stop")
+@router.post("/pipeline/stop", dependencies=[Depends(verify_api_key)])
 def stop_pipeline():
-    pid = _pipeline.get("pid")
-    if not pid or not _is_pid_alive(pid):
-        _pipeline["pid"] = None
-        _save_pipeline_state()
-        raise HTTPException(status_code=404, detail="No running pipeline found")
+    with _pipeline_lock:
+        pid = _pipeline.get("pid")
+        if not pid or not _is_pid_alive(pid):
+            _pipeline["pid"] = None
+            _save_pipeline_state()
+            raise HTTPException(status_code=404, detail="No running pipeline found")
 
     try:
         if os.name == "nt":
@@ -217,7 +232,8 @@ def stop_pipeline():
             )
         else:
             os.kill(pid, 15)
-        _pipeline["pid"] = None
+        with _pipeline_lock:
+            _pipeline["pid"] = None
         _save_pipeline_state()
         logger.info(f"Pipeline PID={pid} stopped")
         return {"status": "stopped", "pid": pid}
@@ -228,17 +244,21 @@ def stop_pipeline():
 
 @router.get("/pipeline/pid")
 def get_pipeline_pid():
-    pid = _pipeline.get("pid")
+    with _pipeline_lock:
+        pid = _pipeline.get("pid")
+        start_time = _pipeline.get("start_time", 0)
+        duration_hours = _pipeline.get("duration_hours", 0)
     alive = _is_pid_alive(pid) if pid else False
     if not alive:
-        _pipeline["pid"] = None
+        with _pipeline_lock:
+            _pipeline["pid"] = None
         _save_pipeline_state()
-    uptime = time.time() - _pipeline["start_time"] if _pipeline["start_time"] and alive else 0
+    uptime = time.time() - start_time if start_time and alive else 0
     return {
         "pid": pid if alive else None,
         "alive": alive,
         "uptime_seconds": round(uptime),
-        "duration_hours": _pipeline.get("duration_hours", 0),
+        "duration_hours": duration_hours,
     }
 
 
@@ -263,7 +283,7 @@ class PullModelRequest(BaseModel):
     model: str
 
 
-@router.post("/ollama/pull")
+@router.post("/ollama/pull", dependencies=[Depends(verify_api_key)])
 def pull_model(req: PullModelRequest):
     try:
         logger.info(f"Pulling model {req.model}...")
@@ -286,7 +306,7 @@ class SpecialistUpdateRequest(BaseModel):
     model: str
 
 
-@router.patch("/specialists")
+@router.patch("/specialists", dependencies=[Depends(verify_api_key)])
 def update_specialist_model(req: SpecialistUpdateRequest):
     existing = _fetch_one(
         "SELECT id FROM specialist_registry WHERE domain = ?", (req.domain,)
@@ -299,6 +319,23 @@ def update_specialist_model(req: SpecialistUpdateRequest):
     )
     logger.info(f"Specialist {req.domain} model updated to {req.model}")
     return {"status": "ok", "domain": req.domain, "model": req.model}
+
+
+@router.get("/system/memory")
+def get_system_memory():
+    try:
+        import psutil
+        mem = psutil.virtual_memory()
+        return {
+            "total": mem.total,
+            "available": mem.available,
+            "percent": mem.percent,
+            "used": mem.used,
+            "free": mem.free,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    except ImportError:
+        return {"error": "psutil not installed"}
 
 
 @router.get("/health")

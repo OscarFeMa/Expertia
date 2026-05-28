@@ -13,7 +13,12 @@ Architecture:
 """
 
 import gzip
-import ijson
+try:
+    import ijson
+except ImportError:
+    ijson = None
+    import logging
+    logging.getLogger(__name__).critical("ijson not installed — Wikidata extraction disabled")
 import time
 import logging
 import json

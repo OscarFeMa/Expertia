@@ -53,7 +53,7 @@ function makeSpecialistChart(specialists, containerId) {
     showlegend: false,
     height: h,
   });
-  Plotly.newPlot(el, data, layout, { responsive: true, displayModeBar: false });
+  Plotly.purge(el); Plotly.newPlot(el, data, layout, { responsive: true, displayModeBar: false });
 }
 
 function makeKnowledgeChart(stats, containerId) {
@@ -82,7 +82,7 @@ function makeKnowledgeChart(stats, containerId) {
     legend: n > 6 ? { font: { size: 9 }, orientation: 'v', y: 0.5 } : undefined,
     margin: { l: 4, r: 4, t: 40, b: 4 },
   });
-  Plotly.newPlot(el, data, layout, { responsive: true, displayModeBar: false });
+  Plotly.purge(el); Plotly.newPlot(el, data, layout, { responsive: true, displayModeBar: false });
 }
 
 function makeEMALine(historyData, containerId) {
@@ -111,7 +111,7 @@ function makeEMALine(historyData, containerId) {
     showlegend: true,
     legend: { font: { size: 10 } },
   });
-  Plotly.newPlot(el, traces, layout, { responsive: true, displayModeBar: false });
+  Plotly.purge(el); Plotly.newPlot(el, traces, layout, { responsive: true, displayModeBar: false });
 }
 
 function makePackagesChart(specialists, containerId) {
@@ -138,7 +138,7 @@ function makePackagesChart(specialists, containerId) {
     showlegend: false,
     height: h,
   });
-  Plotly.newPlot(el, data, layout, { responsive: true, displayModeBar: false });
+  Plotly.purge(el); Plotly.newPlot(el, data, layout, { responsive: true, displayModeBar: false });
 }
 
 function makeWavesChart(logEntries, containerId) {
@@ -181,7 +181,7 @@ function makeWavesChart(logEntries, containerId) {
     height: 220,
     margin: { l: 12, r: 12, t: 32, b: 48 },
   });
-  Plotly.newPlot(el, traces, layout, { responsive: true, displayModeBar: false });
+  Plotly.purge(el); Plotly.newPlot(el, traces, layout, { responsive: true, displayModeBar: false });
 }
 
 function makeErrorsChart(errors, containerId) {
@@ -203,5 +203,56 @@ function makeErrorsChart(errors, containerId) {
     showlegend: false,
     xaxis: Object.assign({}, getTemplate().xaxis, { tickangle: -30 }),
   });
-  Plotly.newPlot(el, data, layout, { responsive: true, displayModeBar: false });
+  Plotly.purge(el); Plotly.newPlot(el, data, layout, { responsive: true, displayModeBar: false });
+}
+
+function makeMemoryGauge(memData, containerId) {
+  const el = document.getElementById(containerId);
+  if (!el || !memData || memData.error) return;
+  const pct = memData.percent;
+  const color = pct > 80 ? '#C44536' : pct > 60 ? '#FF6B6B' : '#4ECDC4';
+  const layout = Object.assign({}, getTemplate(), {
+    width: 260, height: 190,
+    margin: { t: 30, b: 20, l: 20, r: 20 },
+  });
+  const trace = {
+    type: 'indicator',
+    mode: 'gauge+number+delta',
+    value: pct,
+    delta: { reference: 80, increasing: { color: '#C44536' } },
+    gauge: {
+      axis: { range: [0, 100], tickwidth: 1 },
+      bar: { color },
+      steps: [
+        { range: [0, 50], color: '#4ECDC422' },
+        { range: [50, 80], color: '#FF6B6B22' },
+        { range: [80, 100], color: '#C4453622' },
+      ],
+      threshold: { line: { color: 'red', width: 3 }, thickness: 0.75, value: 90 },
+    },
+    number: { suffix: '%', font: { size: 18 } },
+  };
+  Plotly.purge(el); Plotly.newPlot(el, [trace], layout, { responsive: true, displayModeBar: false });
+}
+
+function makeMemoryHistoryChart(history, containerId) {
+  const el = document.getElementById(containerId);
+  if (!el || !history || history.length < 2) return;
+  const layout = Object.assign({}, getTemplate(), {
+    height: 140,
+    margin: { t: 10, b: 20, l: 35, r: 10 },
+    xaxis: { showgrid: false, showticklabels: false, zeroline: false },
+    yaxis: { title: '%', range: [0, 100], showgrid: true, gridcolor: getTheme() === 'dark' ? '#3D424D' : '#EAE5D9', zeroline: false },
+    showlegend: false,
+  });
+  const trace = {
+    y: history.map(d => d.percent),
+    type: 'scatter',
+    mode: 'lines',
+    line: { color: '#4ECDC4', width: 2 },
+    fill: 'tozeroy',
+    fillcolor: '#4ECDC422',
+    hovertemplate: '%{y:.1f}%<extra></extra>',
+  };
+  Plotly.purge(el); Plotly.newPlot(el, [trace], layout, { responsive: true, displayModeBar: false });
 }
