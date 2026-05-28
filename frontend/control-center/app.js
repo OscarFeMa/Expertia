@@ -719,9 +719,6 @@ class App {
       <div class="card-row" style="justify-content:center;gap:16px">
         <div id="chart-memory-gauge" style="flex:0 0 auto"></div>
         <div id="chart-cpu-gauge" style="flex:0 0 auto"></div>
-        <div class="stat-card" style="flex:1;min-width:100px"><div class="stat-value">${(health?.package_count || 0).toLocaleString()}</div><div class="stat-label">📚 Packages</div></div>
-        <div class="stat-card" style="flex:1;min-width:100px"><div class="stat-value">${activeCount}</div><div class="stat-label">🧠 Active</div></div>
-        <div class="stat-card" style="flex:1;min-width:100px"><div class="stat-value">${incidentCount}</div><div class="stat-label">🔥 Incidents</div></div>
       </div>
       <div class="chart-container-full" id="chart-waves"></div>
       <div class="grid-2">
