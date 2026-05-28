@@ -141,6 +141,49 @@ function makePackagesChart(specialists, containerId) {
   Plotly.newPlot(el, data, layout, { responsive: true, displayModeBar: false });
 }
 
+function makeWavesChart(logEntries, containerId) {
+  const el = document.getElementById(containerId);
+  if (!el || !logEntries || !logEntries.length) return;
+  const bins = {};
+  logEntries.forEach(r => {
+    const msg = String(r.message || '');
+    const level = String(r.level || '');
+    const minute = (r.timestamp || '').slice(0, 16);
+    if (!minute) return;
+    if (!bins[minute]) bins[minute] = { web_search: 0, llm_query: 0, package_saved: 0, spawn: 0, error: 0 };
+    if (msg.includes('Buscando')) bins[minute].web_search++;
+    else if (msg.includes('Destilando')) bins[minute].llm_query++;
+    else if (msg.includes('Package guardado')) bins[minute].package_saved++;
+    else if (msg.includes('Germinado') || msg.includes('SPAWNED')) bins[minute].spawn++;
+    if (level === 'ERROR' || level === 'CRITICAL') bins[minute].error++;
+  });
+  const minutes = Object.keys(bins).sort();
+  if (!minutes.length) return;
+  const categories = [
+    { key: 'llm_query', label: 'LLM Queries', color: 'rgba(78, 205, 196, 0.85)' },
+    { key: 'web_search', label: 'Web Searches', color: 'rgba(232, 183, 48, 0.75)' },
+    { key: 'package_saved', label: 'Packages Saved', color: 'rgba(0, 184, 212, 0.7)' },
+    { key: 'spawn', label: 'Spawning', color: 'rgba(133, 212, 176, 0.7)' },
+    { key: 'error', label: 'Errors', color: 'rgba(196, 69, 54, 0.7)' },
+  ];
+  const traces = categories.map(cat => ({
+    type: 'scatter', mode: 'none', name: cat.label,
+    x: minutes, y: minutes.map(m => bins[m][cat.key]),
+    stackgroup: 'one', fillcolor: cat.color, line: { width: 0 },
+    hovertemplate: '%{x}<br>' + cat.label + ': %{y}<extra></extra>',
+  }));
+  const layout = Object.assign({}, getTemplate(), {
+    title: '\u{1F30A} Activity Waves (Real-time)',
+    yaxis: Object.assign({}, getTemplate().yaxis, { title: 'Events / min' }),
+    xaxis: Object.assign({}, getTemplate().xaxis, { title: 'Time' }),
+    hovermode: 'x unified', showlegend: true,
+    legend: { font: { size: 10 }, orientation: 'h', y: -0.25 },
+    height: 220,
+    margin: { l: 12, r: 12, t: 32, b: 48 },
+  });
+  Plotly.newPlot(el, traces, layout, { responsive: true, displayModeBar: false });
+}
+
 function makeErrorsChart(errors, containerId) {
   const el = document.getElementById(containerId);
   if (!el || !errors.length) return;

@@ -831,6 +831,12 @@ pre {
   background: var(--hover-bg);
 }
 
+.chart-container-full {
+  width: 100%;
+  min-height: 220px;
+  margin-bottom: 14px;
+}
+
 .chart-container-sm {
   width: 100%;
   min-height: 180px;

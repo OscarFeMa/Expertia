@@ -656,6 +656,7 @@ class App {
         <div class="stat-card"><div class="stat-value">${status?.cascade_entities || 0}</div><div class="stat-label">🏛️ Entities</div></div>
         <div class="stat-card"><div class="stat-value">${incidentCount}</div><div class="stat-label">🔥 Incidents</div></div>
       </div>
+      <div class="chart-container-full" id="chart-waves"></div>
       <div class="grid-2">
         <div class="chart-container" id="chart-ema"></div>
         <div class="chart-container" id="chart-packages"></div>
@@ -682,10 +683,10 @@ class App {
 
     // Render charts
     setTimeout(() => {
+      makeWavesChart(emaData?.logs || [], 'chart-waves');
       makeSpecialistChart(specialists, 'chart-ema');
       makePackagesChart(specialists, 'chart-packages');
       this.renderKnowledgeChart();
-      // Try to render EMA history if we have ema_history data
       const emaRecords = emaData?.logs?.filter(r => String(r.message).includes('EMA')) || [];
       if (emaRecords.length) {
         const emaHistory = emaRecords.map(r => ({
