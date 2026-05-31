@@ -4,8 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Synaptic Archive — Expertia</title>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" crossorigin="anonymous"></script>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
   <aside class="sidebar" id="sidebar">
@@ -29,6 +32,9 @@
       <div class="nav-item" data-tab="super-experts" onclick="app.switchTab('super-experts')">
         <span class="nav-icon">🏛️</span> Super-Experts
       </div>
+      <div class="nav-item" data-tab="certified" onclick="app.switchTab('certified')">
+        <span class="nav-icon">🏆</span> Certified
+      </div>
       <div class="nav-item" data-tab="incidents" onclick="app.switchTab('incidents')">
         <span class="nav-icon">🔥</span> Incidents
       </div>
@@ -37,7 +43,10 @@
       <div class="ss-item"><span class="ss-val" id="ss-specs">-</span><span class="ss-lbl">Specialists</span></div>
       <div class="ss-item"><span class="ss-val" id="ss-pkgs">-</span><span class="ss-lbl">Packages</span></div>
       <div class="ss-item"><span class="ss-val" id="ss-incidents">-</span><span class="ss-lbl">Incidents</span></div>
-      <div class="ss-item"><span class="ss-val" id="ss-entities">-</span><span class="ss-lbl">Cascade</span></div>
+      <div class="ss-item"><span class="ss-val" id="ss-reliable">-</span><span class="ss-lbl">Fiables</span></div>
+    </div>
+    <div class="sidebar-kill">
+      <button class="kill-btn" onclick="app.killAll()" title="Kill all Expertia processes">⏹ Kill All</button>
     </div>
     <div class="sidebar-footer">
       <button class="theme-toggle" onclick="app.toggleTheme()" title="Toggle theme">🌓</button>
@@ -49,6 +58,7 @@
     <div class="tab-content" id="tab-fleet"></div>
     <div class="tab-content" id="tab-map"></div>
     <div class="tab-content" id="tab-super-experts"></div>
+    <div class="tab-content" id="tab-certified"></div>
     <div class="tab-content" id="tab-incidents"></div>
   </main>
   <div class="status-bar" id="status-bar">
@@ -56,6 +66,6 @@
     <span id="sb-time"></span>
   </div>
   <script src="charts.js"></script>
-  <script src="app.js"></script>
+  <script src="app.js?v=1"></script>
 </body>
 </html>

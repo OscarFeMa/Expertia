@@ -1,14 +1,17 @@
 """
 Watchdog: keeps orchestrator alive by PID file.
 Checks every 30s. Restarts if dead.
+Will NOT restart if pipeline completed normally (PID file cleaned up)
+or if intentionally stopped via API (pipeline_state.json pid is null).
 """
-import subprocess, time, os
+import subprocess, time, os, json
 from pathlib import Path
 from datetime import datetime
 
 BASE = Path(__file__).parent
 LOG = BASE / 'logs' / 'watchdog.log'
 PIDFILE = BASE / 'logs' / 'orchestrator.pid'
+STATE_FILE = BASE / 'pipeline_state.json'
 
 LOG.parent.mkdir(parents=True, exist_ok=True)
 
@@ -38,6 +41,21 @@ def is_alive(pid):
     except:
         return False
 
+def was_intentional_stop():
+    """Return True if the pipeline was intentionally stopped or completed normally."""
+    # Check pipeline_state.json — if pid is null, API stop or kill timer fired
+    if STATE_FILE.exists():
+        try:
+            state = json.loads(STATE_FILE.read_text())
+            if state.get("pid") is None:
+                return True
+        except:
+            pass
+    # Check PID file — if missing, orchestrator cleaned up on normal exit
+    if not PIDFILE.exists():
+        return True
+    return False
+
 def start_orchestrator():
     log("Starting orchestrator...")
     proc = subprocess.Popen(
@@ -66,6 +84,9 @@ else:
 while True:
     time.sleep(30)
     if not is_alive(pid):
+        if was_intentional_stop():
+            log(f"Orchestrator PID {pid} exited intentionally — watchdog shutting down")
+            break
         consecutive_failures += 1
         log(f"ORCHESTRATOR PID {pid} DIED — restarting (failure #{consecutive_failures})")
         if consecutive_failures >= MAX_FAILURES:
@@ -75,4 +96,3 @@ while True:
         pid = start_orchestrator()
     else:
         consecutive_failures = 0
-        log(f"OK (PID {pid})")

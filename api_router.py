@@ -4,16 +4,19 @@ import os
 import re
 import subprocess
 import time
-from threading import Lock
+import asyncio
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Security
+from fastapi.responses import StreamingResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 
-from database.db_manager import get_db_manager
+from database.db_manager import DatabaseManager, get_db_manager
+from tools.spawn_specialist import spawn_child, get_expansions_for_specialist, get_qualified_specialists
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -21,7 +24,8 @@ router = APIRouter(prefix="/api")
 _PIPELINE_STATE_FILE = Path(__file__).parent / "pipeline_state.json"
 
 _pipeline: dict = {"pid": None, "start_time": 0, "duration_hours": 0}
-_pipeline_lock = Lock()
+_pipeline_lock = threading.Lock()
+_kill_timer: Optional[threading.Timer] = None
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 EXPERTIA_API_KEY = os.environ.get("EXPERTIA_API_KEY", "")
@@ -35,9 +39,32 @@ def verify_api_key(x_api_key: Optional[str] = Security(_api_key_header)):
 
 def _save_pipeline_state():
     try:
-        _PIPELINE_STATE_FILE.write_text(json.dumps(_pipeline))
+        state = dict(_pipeline)
+        _PIPELINE_STATE_FILE.write_text(json.dumps(state))
     except Exception as e:
         logger.warning(f"Failed to save pipeline state: {e}")
+
+
+def _schedule_kill_timer():
+    global _kill_timer
+    end_epoch = _pipeline.get("end_epoch")
+    pid = _pipeline.get("pid")
+    if not end_epoch or not pid:
+        return
+    now = time.time()
+    remaining = end_epoch - now
+    if remaining <= 0:
+        logger.info(f"Pipeline PID={pid} exceeded its duration on reload — cleaning up")
+        _pipeline["pid"] = None
+        _pipeline["end_epoch"] = None
+        _save_pipeline_state()
+        return
+    if _kill_timer is not None:
+        _kill_timer.cancel()
+    _kill_timer = threading.Timer(remaining, _kill_pipeline, [pid])
+    _kill_timer.daemon = True
+    _kill_timer.start()
+    logger.info(f"Kill timer restored: PID={pid}, {remaining:.0f}s remaining")
 
 
 def _load_pipeline_state():
@@ -45,6 +72,7 @@ def _load_pipeline_state():
         if _PIPELINE_STATE_FILE.exists():
             data = json.loads(_PIPELINE_STATE_FILE.read_text())
             _pipeline.update(data)
+            _schedule_kill_timer()
     except Exception as e:
         logger.warning(f"Failed to load pipeline state: {e}")
 
@@ -114,9 +142,62 @@ def get_status():
 def get_specialists():
     rows = _fetch_all(
         "SELECT id, domain, model, root_qid, ema_score, tier, packages_absorbed, "
+        "COALESCE(weighted_fail, 0) as weighted_fail, "
         "status, parent_id, qid_path, created_at, updated_at "
         "FROM specialist_registry ORDER BY parent_id IS NOT NULL, COALESCE(parent_id,id), domain"
     )
+
+    # Batched: cycle_history aggregates for ALL specialists (1 query)
+    ch_agg = _fetch_all(
+        "SELECT specialist_id, COUNT(*) as total, "
+        "SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) as fails "
+        "FROM cycle_history GROUP BY specialist_id"
+    )
+    ch_map = {r["specialist_id"]: r for r in ch_agg}
+
+    # Batched: racha_25 (last 25 per specialist) via window function (1 query)
+    ch_raw = _fetch_all(
+        "SELECT specialist_id, success FROM ("
+        "  SELECT specialist_id, success, "
+        "  ROW_NUMBER() OVER (PARTITION BY specialist_id ORDER BY id DESC) as rn "
+        "  FROM cycle_history"
+        ") WHERE rn <= 25 ORDER BY specialist_id, rn"
+    )
+    racha_map = {}
+    for r in ch_raw:
+        sid = r["specialist_id"]
+        if sid not in racha_map:
+            racha_map[sid] = []
+        racha_map[sid].append(r["success"])
+
+    # Batched: ema_history counts for fallback (specialists without cycle_history)
+    ema_agg = _fetch_all(
+        "SELECT specialist_id, COUNT(*) as cnt FROM ema_history GROUP BY specialist_id"
+    )
+    ema_map = {r["specialist_id"]: r["cnt"] for r in ema_agg}
+
+    for r in rows:
+        tier = r.get("tier", 0) or 0
+        r["is_reliable"] = 1 if tier >= 2 else 0
+        sid = r["id"]
+
+        if sid in ch_map:
+            total = ch_map[sid]["total"]
+            fails = ch_map[sid]["fails"] or 0
+            successes = racha_map.get(sid, [])
+            racha_25 = sum(1 for s in successes if s) / len(successes) if successes else 0.0
+            r["fail_rate"] = round(fails / total, 4)
+            r["racha_25"] = round(racha_25, 4)
+            r["total_cycles"] = total
+            r["failures"] = fails
+        else:
+            total = ema_map.get(sid, 0)
+            wf = r.get("weighted_fail", 0)
+            r["fail_rate"] = round(wf / max(total, 1), 4) if total > 0 else 0
+            r["racha_25"] = 0.0
+            r["total_cycles"] = total
+            r["failures"] = int(wf)
+
     return {"specialists": rows}
 
 
@@ -191,28 +272,61 @@ def start_pipeline(req: StartPipelineRequest):
         if _pipeline["pid"] and _is_pid_alive(_pipeline["pid"]):
             raise HTTPException(status_code=409, detail="Pipeline already running")
 
+    duration_hours = req.duration
+    if req.phase == 'nurture':
+        duration_hours = 99999  # nurture runs until manual stop
+
     cmd = [
         "python", "orchestrator.py",
         "--phase", req.phase,
         "--specialist", req.specialist,
         "--model", req.model,
-        "--duration", str(req.duration),
+        "--duration", str(duration_hours),
+        "--max-duration", str(duration_hours),
     ]
     try:
         proc = subprocess.Popen(
             cmd,
-            creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         with _pipeline_lock:
+            now = time.time()
             _pipeline["pid"] = proc.pid
-            _pipeline["start_time"] = time.time()
-            _pipeline["duration_hours"] = req.duration
+            _pipeline["start_time"] = now
+            _pipeline["duration_hours"] = duration_hours
+            _pipeline["end_epoch"] = now + duration_hours * 3600
+
+            if req.phase != 'nurture':
+                _schedule_kill_timer()
+
         _save_pipeline_state()
         logger.info(f"Pipeline started PID={proc.pid} cmd={' '.join(cmd)}")
+        kill_after_s = duration_hours * 3600
+        logger.info(f"Kill timer set for {duration_hours}h ({kill_after_s}s)")
         return {"status": "started", "pid": proc.pid}
     except Exception as e:
         logger.error(f"Failed to start pipeline: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _kill_pipeline(pid: int):
+    logger.warning(f"Kill timer fired — pipeline PID {pid} exceeded max duration")
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True, timeout=5,
+            )
+        else:
+            os.kill(pid, 15)
+        with _pipeline_lock:
+            if _pipeline.get("pid") == pid:
+                _pipeline["pid"] = None
+                _pipeline["end_epoch"] = None
+        _save_pipeline_state()
+        logger.info(f"Pipeline PID={pid} force-killed by timer")
+    except Exception as e:
+        logger.error(f"Failed to kill pipeline PID={pid}: {e}")
 
 
 @router.post("/pipeline/stop", dependencies=[Depends(verify_api_key)])
@@ -224,6 +338,11 @@ def stop_pipeline():
             _save_pipeline_state()
             raise HTTPException(status_code=404, detail="No running pipeline found")
 
+        global _kill_timer
+        if _kill_timer is not None:
+            _kill_timer.cancel()
+            _kill_timer = None
+
     try:
         if os.name == "nt":
             subprocess.run(
@@ -234,6 +353,7 @@ def stop_pipeline():
             os.kill(pid, 15)
         with _pipeline_lock:
             _pipeline["pid"] = None
+            _pipeline["end_epoch"] = None
         _save_pipeline_state()
         logger.info(f"Pipeline PID={pid} stopped")
         return {"status": "stopped", "pid": pid}
@@ -252,6 +372,7 @@ def get_pipeline_pid():
     if not alive:
         with _pipeline_lock:
             _pipeline["pid"] = None
+            _pipeline["end_epoch"] = None
         _save_pipeline_state()
     uptime = time.time() - start_time if start_time and alive else 0
     return {
@@ -377,3 +498,81 @@ def get_health():
         "incident_count": incident_count,
         "timestamp": datetime.utcnow().isoformat(),
     }
+
+
+@router.post("/kill", dependencies=[Depends(verify_api_key)])
+def kill_all():
+    # Stop pipeline first
+    with _pipeline_lock:
+        pid = _pipeline.get("pid")
+        if pid and _is_pid_alive(pid):
+            try:
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=5)
+                else:
+                    os.kill(pid, 15)
+                logger.warning(f"Killed pipeline PID={pid} via kill-all")
+            except Exception as e:
+                logger.error(f"Failed to kill pipeline PID={pid}: {e}")
+        _pipeline["pid"] = None
+        _pipeline["end_epoch"] = None
+    _save_pipeline_state()
+
+    global _kill_timer
+    if _kill_timer is not None:
+        _kill_timer.cancel()
+        _kill_timer = None
+
+    # Schedule self-destruct (kill the API process after responding)
+    def _suicide():
+        import os as _os
+        _os._exit(0)
+
+    threading.Timer(0.5, _suicide).start()
+    logger.warning("Kill-all invoked — API shutting down in 0.5s")
+    return {"status": "killed", "message": "All processes stopped. API shutting down."}
+
+
+class SpawnRequest(BaseModel):
+    qids: List[str]
+    model: str
+
+
+@router.get("/qualified-specialists")
+def get_qualified():
+    db = get_db_manager()
+    return {"specialists": get_qualified_specialists(db)}
+
+
+@router.get("/specialists/{specialist_id}/expansions")
+def get_expansions(specialist_id: int):
+    db = get_db_manager()
+    expansions = get_expansions_for_specialist(db, specialist_id)
+    return {"expansions": expansions}
+
+
+@router.post("/specialists/{specialist_id}/spawn", dependencies=[Depends(verify_api_key)])
+async def spawn_specialists(specialist_id: int, req: SpawnRequest):
+    db = get_db_manager()
+    parent = db.execute_query(
+        "SELECT id, domain FROM specialist_registry WHERE id=?", (specialist_id,), fetch=True
+    )
+    if not parent:
+        raise HTTPException(status_code=404, detail="Specialist not found")
+
+    async def event_stream():
+        results = []
+        total = len(req.qids)
+        for i, qid in enumerate(req.qids):
+            yield f"data: {json.dumps({'type': 'progress', 'qid': qid, 'current': i+1, 'total': total})}\n\n"
+            await asyncio.sleep(0)
+            result = spawn_child(db, specialist_id, qid, req.model,
+                                 on_log=lambda lvl, msg: None)
+            results.append({'qid': qid, **result})
+            if result['success']:
+                yield f"data: {json.dumps({'type': 'done', 'qid': qid, 'domain': result['domain']})}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'error', 'qid': qid, 'error': result['error']})}\n\n"
+        yield f"data: {json.dumps({'type': 'complete', 'results': results})}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")

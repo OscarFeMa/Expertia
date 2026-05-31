@@ -7,6 +7,7 @@ class App {
     this.activeTab = 'dashboard';
     this.dataCache = {};
     this.memoryHistory = [];
+    this.apiKey = localStorage.getItem('expertia-api-key') || '';
     this.init();
   }
 
@@ -50,11 +51,12 @@ class App {
       this.fetchJSON(`${this.apiBase}/health`),
     ]);
     const setText = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
-    setText('ss-specs', specData?.specialists?.length || '-');
+    const specs = specData?.specialists || [];
+    setText('ss-specs', specs.length || '-');
     setText('ss-pkgs', (health?.package_count || 0).toLocaleString());
     setText('ss-incidents', health?.incident_count || '-');
-    setText('ss-entities', 0);
-    if (specData) this._lastSpecialists = specData.specialists;
+    setText('ss-reliable', specs.filter(s => s.is_reliable).length + '/' + specs.length);
+    if (specData) this._lastSpecialists = specs;
   }
 
   startAutoRefresh() {
@@ -85,9 +87,11 @@ class App {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (this.apiKey) headers['X-API-Key'] = this.apiKey;
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(body || {}),
         signal: controller.signal,
       });
@@ -127,15 +131,31 @@ class App {
     this.activeTab = tab;
     document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.tab === tab));
     document.querySelectorAll('.tab-content').forEach(el => el.classList.toggle('active', el.id === `tab-${tab}`));
-    // Render immediately on switch (will not re-render on auto-refresh)
     switch (tab) {
       case 'dashboard': this.renderDashboard(); break;
       case 'specialists': this.renderSpecialists(); break;
       case 'fleet': this.renderFleet(); break;
       case 'map': this.renderMap(); break;
       case 'super-experts': this.renderSuperExperts(); break;
+      case 'certified': this.renderCertified(); break;
       case 'incidents': this.renderIncidents(); break;
     }
+  }
+
+  clickReliable(domain) {
+    this._highlightDomain = domain;
+    this.switchTab('certified');
+  }
+
+  killAll() {
+    const btn = document.querySelector('.kill-btn');
+    if (btn) { btn.textContent = '⏹ Killing...'; btn.disabled = true; }
+    this.postJSON(`${this.apiBase}/kill`, {}).then(r => {
+      alert('All processes killed. API shutting down.');
+    }).catch(() => {
+      // API killed itself — that's expected
+      alert('Kill signal sent. API is shutting down.');
+    });
   }
 
   toggleTheme() {
@@ -197,6 +217,22 @@ class App {
       'model': (a, b) => a.model.localeCompare(b.model),
     };
     return sortMap[key] || sortMap['domain-asc'];
+  }
+
+  tierIcon(tier) {
+    if (tier === 4) return '<span class="tier-legend" title="Legend">👑</span>';
+    if (tier === 3) return '<span class="tier-gold" title="Gold">⭐⭐</span>';
+    if (tier === 2) return '<span class="tier-silver" title="Silver">⭐</span>';
+    if (tier === 1) return '<span class="tier-bronze" title="Bronze">◆</span>';
+    return '';
+  }
+
+  tierBorder(tier) {
+    if (tier === 4) return 'spec-card-legend';
+    if (tier === 3) return 'spec-card-gold';
+    if (tier === 2) return 'spec-card-silver';
+    if (tier === 1) return 'spec-card-bronze';
+    return '';
   }
 
   logIcon(level) {
@@ -294,6 +330,7 @@ class App {
               <option value="full">Full Cascade</option>
               <option value="cascade">Cascade</option>
               <option value="web">Web + LLM</option>
+              <option value="nurture">🌱 Nurture</option>
             </select>
             <div class="launch-phase-desc" id="lp-phase-desc">Cascade → Web → LLM</div>
           </div>
@@ -365,8 +402,13 @@ class App {
     roots.forEach(r => {
       const badge = badgeMap[r.status] || 'badge-idle';
       const bc = colorMap[r.status] || '#6B7A8A';
-      html += `<div class="spec-card spec-card-${r.status === 'ACTIVE' ? 'active' : r.status === 'ERROR' ? 'error' : 'idle'}">
-        <div class="spec-card-inner"><span class="spec-name">${r.domain}</span><span class="spec-badge ${badge}" style="background:${bc}22;color:${bc}">${r.status}</span></div>
+      const tier_class = this.tierBorder(r.tier);
+      const ticon = this.tierIcon(r.tier);
+      const base_class = `spec-card spec-card-${r.status === 'ACTIVE' ? 'active' : r.status === 'ERROR' ? 'error' : 'idle'}`;
+      const card_class = tier_class ? `${base_class} ${tier_class}` : base_class;
+      const reliable = r.tier >= 2;
+      html += `<div class="${card_class}"${reliable ? ` onclick="app.clickReliable('${r.domain}')" title="Click to view stats"` : ''}>
+        <div class="spec-card-inner"><span class="spec-name">${r.domain} ${ticon}</span><span class="spec-badge ${badge}" style="background:${bc}22;color:${bc}">${r.status}</span></div>
         <div class="spec-meta">📦 ${r.packages_absorbed} · 📈 ${r.ema_score?.toFixed(3)} · 🎯 ${r.model}</div>`;
       (childMap[r.id] || []).sort(childSort).forEach(c => {
         html += `<div class="spec-meta" style="margin-top:2px;padding-top:2px;border-top:1px dashed var(--border)">
@@ -420,13 +462,27 @@ class App {
     document.getElementById('lp-single-container').style.display = v === 'single' ? 'block' : 'none';
   }
 
+  _toggleNurtureMode(isNurture) {
+    const elIds = ['lp-spec', 'lp-model', 'lp-single', 'lp-dur'];
+    elIds.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.disabled = isNurture;
+    });
+    document.getElementById('lp-model-container').style.display = isNurture ? 'none' : (document.getElementById('lp-spec')?.value === 'model' ? 'block' : 'none');
+    document.getElementById('lp-single-container').style.display = isNurture ? 'none' : (document.getElementById('lp-spec')?.value === 'single' ? 'block' : 'none');
+  }
+
   populateLaunchForm(specialists) {
     const phaseSel = document.getElementById('lp-phase');
     if (phaseSel) {
       phaseSel.onchange = () => {
-        const desc = { full: 'Cascade → Web → LLM', cascade: 'Wikidata scan only', web: 'Web search + LLM loop' };
+        const isNurture = phaseSel.value === 'nurture';
+        const desc = { full: 'Cascade → Web → LLM', cascade: 'Wikidata scan only', web: 'Web search + LLM loop', nurture: 'Raise low EMA → 0.96 one by one' };
         document.getElementById('lp-phase-desc').textContent = desc[phaseSel.value] || '';
+        this._toggleNurtureMode(isNurture);
       };
+      // Apply on initial load if nurture was previously saved
+      this._toggleNurtureMode(phaseSel.value === 'nurture');
     }
     const modelSel = document.getElementById('lp-model');
     if (modelSel) {
@@ -447,12 +503,13 @@ class App {
     if (btn) btn.disabled = true;
     try {
       const phase = document.getElementById('lp-phase')?.value || 'full';
-      const specMode = document.getElementById('lp-spec')?.value || 'all';
-      let specialist = 'all';
-      let model = 'all';
-      if (specMode === 'model') model = document.getElementById('lp-model')?.value || 'all';
-      if (specMode === 'single') specialist = document.getElementById('lp-single')?.value || 'all';
-      const duration = parseFloat(document.getElementById('lp-dur')?.value) || 5.0;
+      let specialist = 'all', model = 'all', duration = 5.0;
+      if (phase !== 'nurture') {
+        const specMode = document.getElementById('lp-spec')?.value || 'all';
+        if (specMode === 'model') model = document.getElementById('lp-model')?.value || 'all';
+        if (specMode === 'single') specialist = document.getElementById('lp-single')?.value || 'all';
+        duration = parseFloat(document.getElementById('lp-dur')?.value) || 5.0;
+      }
 
       msgEl.textContent = 'Starting...';
       const result = await this.postJSON(`${this.apiBase}/pipeline/start`, { phase, specialist, model, duration });
@@ -493,8 +550,12 @@ class App {
   // ── SPECIALISTS ─────────────────────────────────────────────────────────
   async renderSpecialists() {
     const el = document.getElementById('tab-specialists');
-    const data = await this.fetchJSON(`${this.apiBase}/specialists`);
+    const [data, qualifiedData] = await Promise.all([
+      this.fetchJSON(`${this.apiBase}/specialists`),
+      this.fetchJSON(`${this.apiBase}/qualified-specialists`),
+    ]);
     const list = data?.specialists || [];
+    const qualified = qualifiedData?.specialists || [];
     let html = `<div class="section-title"><h2>📚 Specialist Registry</h2></div>`;
     html += `<div class="filter-bar">
       <input type="text" id="spec-search" placeholder="🔍 filter by domain or model..." oninput="app.filterSpecialists()">
@@ -510,9 +571,137 @@ class App {
         <option value="model">Model</option>
       </select>
     </div><div id="spec-table"></div>`;
+
+    if (qualified.length > 0) {
+      html += `<div class="section-title" style="margin-top:16px"><h2>✨ Spawn Sub-Specialist</h2></div>
+        <div class="card">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+            <label style="font-size:12px">Parent:</label>
+            <select id="spawn-parent" onchange="app.onSpawnParentChange()" style="flex:1;min-width:180px">
+              ${qualified.map(s => `<option value="${s.id}" data-model="${s.model}">${s.domain} (${s.packages_absorbed} pkgs, EMA ${s.ema_score?.toFixed(3)})</option>`).join('')}
+            </select>
+          </div>
+          <div id="spawn-expansions" style="max-height:200px;overflow-y:auto;margin-bottom:8px;font-size:12px">
+            <span class="dim">Select a qualified specialist to load expansions...</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <label style="font-size:12px">Model:</label>
+            <input type="text" id="spawn-model" style="flex:1;min-width:120px">
+            <button id="spawn-btn" onclick="app.spawnSubSpecialists()" disabled class="primary">▶ Spawn Selected</button>
+          </div>
+          <div id="spawn-log" style="margin-top:8px;max-height:200px;overflow-y:auto;font-size:11px;font-family:monospace;background:var(--bg);padding:4px;border-radius:4px"></div>
+        </div>`;
+    }
+
     el.innerHTML = html;
     this.allSpecialistsData = list;
     this.filterSpecialists();
+    if (qualified.length > 0) this.onSpawnParentChange();
+  }
+
+  async onSpawnParentChange() {
+    const sel = document.getElementById('spawn-parent');
+    if (!sel) return;
+    const sid = sel.value;
+    const opt = sel.options[sel.selectedIndex];
+    document.getElementById('spawn-model').value = opt?.dataset?.model || '';
+    const data = await this.fetchJSON(`${this.apiBase}/specialists/${sid}/expansions`);
+    const expansions = data?.expansions || [];
+    const container = document.getElementById('spawn-expansions');
+    const btn = document.getElementById('spawn-btn');
+    if (expansions.length === 0) {
+      container.innerHTML = '<span class="dim">No QID expansions available for this specialist</span>';
+      btn.disabled = true;
+      return;
+    }
+    const existing = await this.fetchJSON(`${this.apiBase}/specialists`);
+    const existingQids = new Set((existing?.specialists || []).filter(s => s.parent_id == sid).map(s => s.root_qid));
+    let html = '<table style="width:100%;border-collapse:collapse">';
+    html += '<tr style="font-weight:600"><td style="padding:2px 6px"><input type="checkbox" id="spawn-select-all" onchange="app.toggleAllSpawn()" checked></td><td style="padding:2px 6px">QID</td><td style="padding:2px 6px">Label</td><td style="padding:2px 6px">Status</td></tr>';
+    let validCount = 0;
+    expansions.forEach(e => {
+      const alreadyExists = existingQids.has(e.qid);
+      const valid = e.valid_p279 && !e.blocklisted && !alreadyExists;
+      if (valid) validCount++;
+      const status = alreadyExists ? '⚠ already exists' :
+        !e.valid_p279 ? '✗ P279 fail' :
+        e.blocklisted ? '✗ blocklisted' : '✓ valid';
+      const color = alreadyExists ? '#FFA500' : !e.valid_p279 || e.blocklisted ? 'var(--error)' : 'var(--active)';
+      html += `<tr>
+        <td style="padding:2px 6px"><input type="checkbox" class="spawn-qid-cb" value="${e.qid}" ${valid ? 'checked' : 'disabled'}></td>
+        <td style="padding:2px 6px;font-family:monospace">${e.qid}</td>
+        <td style="padding:2px 6px">${e.label}</td>
+        <td style="padding:2px 6px;color:${color}">${status}</td>
+      </tr>`;
+    });
+    html += '</table>';
+    container.innerHTML = html;
+    btn.disabled = validCount === 0;
+    if (validCount === 0) document.getElementById('spawn-log').innerHTML = '<span class="dim">No valid QIDs available to spawn</span>';
+  }
+
+  toggleAllSpawn() {
+    const checked = document.getElementById('spawn-select-all')?.checked || false;
+    document.querySelectorAll('.spawn-qid-cb:not(:disabled)').forEach(cb => cb.checked = checked);
+  }
+
+  async spawnSubSpecialists() {
+    const sel = document.getElementById('spawn-parent');
+    const sid = parseInt(sel?.value);
+    const model = document.getElementById('spawn-model')?.value?.trim();
+    const qids = [...document.querySelectorAll('.spawn-qid-cb:checked')].map(cb => cb.value);
+    if (!sid || !model || qids.length === 0) return;
+    const btn = document.getElementById('spawn-btn');
+    const logEl = document.getElementById('spawn-log');
+    btn.disabled = true;
+    logEl.innerHTML = '<span style="color:var(--active)">Starting spawn...</span>';
+    try {
+      const res = await fetch(`${this.apiBase}/specialists/${sid}/spawn`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': this.apiKey || '' },
+        body: JSON.stringify({ qids, model }),
+      });
+      if (!res.ok) {
+        logEl.innerHTML = `<span style="color:var(--error)">HTTP ${res.status}: ${res.statusText}</span>`;
+        return;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      logEl.innerHTML = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const data = JSON.parse(line.slice(6));
+          if (data.type === 'progress') {
+            logEl.innerHTML += `<div style="color:var(--dim)">[${data.current}/${data.total}] Validating ${data.qid}...</div>`;
+          } else if (data.type === 'done') {
+            logEl.innerHTML += `<div style="color:var(--active)">✓ ${data.domain} created</div>`;
+          } else if (data.type === 'error') {
+            logEl.innerHTML += `<div style="color:var(--error)">✗ ${data.qid}: ${data.error}</div>`;
+          }
+        }
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+      const finalLine = buffer ? buffer.replace('data:', '').trim() : '';
+      if (finalLine) {
+        try {
+          const fin = JSON.parse(finalLine);
+          if (fin.type === 'complete') logEl.innerHTML += '<div style="color:var(--info);font-weight:600">✓ Spawn complete</div>';
+        } catch (_) {}
+      }
+      logEl.scrollTop = logEl.scrollHeight;
+      this.renderSpecialists();
+    } catch (e) {
+      logEl.innerHTML += `<div style="color:var(--error)">Error: ${e.message}</div>`;
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   filterSpecialists() {
@@ -550,8 +739,12 @@ class App {
     let html = '<div class="spec-grid-3">';
     roots.forEach(r => {
       const bc = colorMap[r.status] || '#6B7A8A';
-      html += `<div class="spec-card spec-card-${r.status === 'ACTIVE' ? 'active' : r.status === 'ERROR' ? 'error' : 'idle'}">
-        <div class="spec-card-inner"><span class="spec-name">${r.domain}</span><span class="spec-badge ${badgeMap[r.status] || 'badge-idle'}" style="background:${bc}22;color:${bc}">${r.status}</span></div>
+      const tier_class = this.tierBorder(r.tier);
+      const ticon = this.tierIcon(r.tier);
+      const base_class = `spec-card spec-card-${r.status === 'ACTIVE' ? 'active' : r.status === 'ERROR' ? 'error' : 'idle'}`;
+      const card_class = tier_class ? `${base_class} ${tier_class}` : base_class;
+      html += `<div class="${card_class}">
+        <div class="spec-card-inner"><span class="spec-name">${r.domain} ${ticon}</span><span class="spec-badge ${badgeMap[r.status] || 'badge-idle'}" style="background:${bc}22;color:${bc}">${r.status}</span></div>
         <div class="spec-meta">📦 ${r.packages_absorbed} · 📈 ${r.ema_score?.toFixed(3)} · 🎯 ${r.model}</div>`;
       (childMap[r.id] || []).forEach(c => {
         html += `<div class="spec-meta" style="margin-top:2px;padding-top:2px;border-top:1px dashed var(--border)">
@@ -565,6 +758,97 @@ class App {
 
     if (roots.length === 0) html = '<div class="card" style="color:var(--dim)">No specialists found</div>';
     document.getElementById('spec-table').innerHTML = html;
+  }
+
+  // ── CERTIFIED ───────────────────────────────────────────────────────────
+  async renderCertified() {
+    const el = document.getElementById('tab-certified');
+    const specData = await this.fetchJSON(`${this.apiBase}/specialists`);
+    const specialists = specData?.specialists || [];
+    const certified = specialists.filter(s => s.is_reliable && !s.parent_id);
+
+    if (certified.length === 0) {
+      el.innerHTML = `<div class="section-title"><h2>🏆 Certified Experts</h2></div>
+        <div class="card" style="text-align:center;padding:40px;color:var(--dim)">
+          <div style="font-size:48px;margin-bottom:12px">🏆</div>
+          <div style="font-size:18px;font-weight:600">No certified experts yet</div>
+          <div style="font-size:13px;margin-top:6px">Specialists must reach Silver tier or higher to appear here</div>
+        </div>`;
+      return;
+    }
+
+    let html = `<div class="section-title"><h2>🏆 Certified Experts</h2></div>
+      <div style="margin-bottom:10px;color:var(--dim);font-size:13px">${certified.length} reliable specialist${certified.length > 1 ? 's' : ''}</div>`;
+
+    certified.sort((a, b) => (b.ema_score || 0) - (a.ema_score || 0));
+
+    html += `<table class="cert-table">
+      <thead><tr>
+        <th>Tier</th>
+        <th>Specialist</th>
+        <th>Puntuación</th>
+        <th>Paquetes</th>
+        <th>Tasa Fallo</th>
+        <th>Racha 25</th>
+        <th>Modelo</th>
+      </tr></thead><tbody>`;
+
+    const tierOrder = {4: 'Legend', 3: 'Gold', 2: 'Silver', 1: 'Bronze'};
+    certified.forEach(s => {
+      const ticon = this.tierIcon(s.tier);
+      const tier_name = tierOrder[s.tier] || 'Unknown';
+      const pts = s.tier === 4 ? '100.000' : `${Math.floor(s.ema_score * 100000).toLocaleString()}/100.000`;
+      const racha = s.racha_25 != null ? (s.racha_25 * 100).toFixed(1) + '%' : '-';
+      const fail_rate = s.fail_rate != null ? (s.fail_rate * 100).toFixed(2) + '%' : '-';
+      html += `<tr class="cert-row-${tier_name.toLowerCase()}">
+        <td class="cert-tier">${ticon} <span class="tier-label-${tier_name.toLowerCase()}">${tier_name}</span></td>
+        <td class="cert-name">${s.domain}</td>
+        <td class="cert-pts">${pts}</td>
+        <td>${s.packages_absorbed?.toLocaleString() || '-'}</td>
+        <td class="${parseFloat(fail_rate) < 5 ? 'cert-good' : 'cert-bad'}">${fail_rate}</td>
+        <td class="${parseFloat(racha) >= 90 ? 'cert-good' : 'cert-bad'}">${racha}</td>
+        <td class="cert-model">${s.model || '-'}</td>
+      </tr>`;
+    });
+
+    html += `</tbody></table>`;
+
+    // Summary stats
+    const legendCount = certified.filter(s => s.tier === 4).length;
+    const goldCount = certified.filter(s => s.tier === 3).length;
+    const silverCount = certified.filter(s => s.tier === 2).length;
+    const bronzeCount = certified.filter(s => s.tier === 1).length;
+    html += `<div class="cert-summary">
+      <div class="cert-summary-item"><span class="tier-label-legend">👑 Legend</span> ${legendCount}</div>
+      <div class="cert-summary-item"><span class="tier-label-gold">⭐⭐ Gold</span> ${goldCount}</div>
+      <div class="cert-summary-item"><span class="tier-label-silver">⭐ Silver</span> ${silverCount}</div>
+      <div class="cert-summary-item"><span class="tier-label-bronze">◆ Bronze</span> ${bronzeCount}</div>
+    </div>`;
+
+    el.innerHTML = html;
+
+    this._highlightRowIfNeeded(el);
+  }
+
+  _highlightRowIfNeeded(el) {
+    const domain = this._highlightDomain;
+    if (!domain) return;
+    this._highlightDomain = null;
+    const rows = el.querySelectorAll('.cert-table tbody tr');
+    for (const row of rows) {
+      const nameCell = row.querySelector('.cert-name');
+      if (nameCell && nameCell.textContent.trim() === domain) {
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        row.style.transition = 'background 0.8s ease, box-shadow 0.8s ease';
+        row.style.background = 'rgba(218,165,32,0.25)';
+        row.style.boxShadow = '0 0 16px rgba(218,165,32,0.5)';
+        setTimeout(() => {
+          row.style.background = '';
+          row.style.boxShadow = '';
+        }, 3000);
+        break;
+      }
+    }
   }
 
   // ── FLEET ───────────────────────────────────────────────────────────────
@@ -621,10 +905,24 @@ class App {
           <button onclick="app.updateSpecialistModel()" class="primary">Update</button>
           <div id="fleet-msg" style="margin-top:6px;font-size:12px"></div>
         </div>
+        <div class="card">
+          <h3>API Key (for auth-protected endpoints)</h3>
+          <input type="password" id="fleet-apikey" value="${this.apiKey}" style="width:100%" placeholder="Leave empty if auth disabled">
+          <button onclick="app.saveApiKey()" style="margin-top:4px" class="primary">Save</button>
+          <div id="fleet-apikey-msg" style="margin-top:4px;font-size:12px"></div>
+        </div>
       </div>
     `;
     el.innerHTML = html;
     this.onFleetSpecChange();
+  }
+
+  saveApiKey() {
+    const val = document.getElementById('fleet-apikey')?.value || '';
+    this.apiKey = val;
+    localStorage.setItem('expertia-api-key', val);
+    const msg = document.getElementById('fleet-apikey-msg');
+    if (msg) { msg.textContent = '✓ Saved'; msg.style.color = 'var(--active)'; setTimeout(() => msg.textContent = '', 2000); }
   }
 
   async pullModel(model) {
