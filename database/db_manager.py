@@ -89,6 +89,8 @@ class DatabaseManager:
             conn.execute("PRAGMA synchronous=NORMAL;")
             conn.execute("PRAGMA cache_size=-64000;")
             conn.execute("PRAGMA temp_store=MEMORY;")
+            conn.execute("PRAGMA busy_timeout=5000;")
+            conn.execute("PRAGMA mmap_size=268435456;")
             conn.row_factory = sqlite3.Row
             logger.info("SQLite connection established (WAL + perf pragmas)")
             return conn
@@ -267,6 +269,8 @@ class DatabaseManager:
                         root_qid TEXT NOT NULL,
                         properties TEXT NOT NULL,
                         ema_score REAL DEFAULT 0.10,
+                        weighted_success REAL DEFAULT 0.0,
+                        weighted_fail REAL DEFAULT 0.0,
                         tier INTEGER DEFAULT 3,
                         packages_absorbed INTEGER DEFAULT 0,
                         status TEXT DEFAULT 'IDLE',
@@ -317,6 +321,20 @@ class DatabaseManager:
                     )
                 """)
                 
+                # Create cycle_history table for per-cycle tracking (success/fail, quality, racha_25)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS cycle_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        specialist_id INTEGER NOT NULL,
+                        success INTEGER NOT NULL,
+                        quality REAL DEFAULT 0.0,
+                        ema_before REAL,
+                        ema_after REAL,
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (specialist_id) REFERENCES specialist_registry(id)
+                    )
+                """)
+                
                 # Create indexes
                 cursor.execute("""
                     CREATE INDEX IF NOT EXISTS idx_specialist_domain
@@ -346,10 +364,17 @@ class DatabaseManager:
                     ON ema_history(specialist_id, timestamp)
                 """)
                 
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_cycle_specialist
+                    ON cycle_history(specialist_id, id)
+                """)
+                
                 # Migration: add columns if upgrading from old schema
                 for col_sql in [
                     "ALTER TABLE specialist_registry ADD COLUMN parent_id INTEGER DEFAULT NULL REFERENCES specialist_registry(id)",
                     "ALTER TABLE specialist_registry ADD COLUMN qid_path TEXT DEFAULT NULL",
+                    "ALTER TABLE specialist_registry ADD COLUMN weighted_success REAL DEFAULT 0.0",
+                    "ALTER TABLE specialist_registry ADD COLUMN weighted_fail REAL DEFAULT 0.0",
                     "ALTER TABLE knowledge_packages ADD COLUMN qid TEXT DEFAULT NULL",
                     "ALTER TABLE knowledge_packages ADD COLUMN subdomain_path TEXT DEFAULT NULL",
                 ]:
@@ -357,6 +382,12 @@ class DatabaseManager:
                         cursor.execute(col_sql)
                     except sqlite3.OperationalError:
                         pass
+
+                # Migration: reset legacy tier default (3 -> 0) to match new enum
+                try:
+                    cursor.execute("UPDATE specialist_registry SET tier = 0 WHERE tier = 3")
+                except sqlite3.OperationalError:
+                    pass
 
                 self._get_connection().commit()
                 logger.info("Specialist tables initialized successfully")

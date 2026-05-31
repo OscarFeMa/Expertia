@@ -14,6 +14,7 @@ import re
 import signal
 import subprocess
 import argparse
+import math
 import requests
 from pathlib import Path
 from collections import defaultdict
@@ -23,9 +24,45 @@ from contextlib import contextmanager
 from datetime import datetime
 
 LLM_QUERY_TIMEOUT = 180
+PHASE_B_PER_SPECIALIST_TIMEOUT = 3600  # 60 min max per specialist per cycle
 MAX_PHASE_B_CYCLES = 100
 VRAM_WARN_THRESHOLD_MB = 2048
 _shutdown_event = asyncio.Event()
+
+# ── Tier System ──────────────────────────────────────────────────────────────
+TIER_NONE = 0
+TIER_BRONZE = 1
+TIER_SILVER = 2
+TIER_GOLD = 3
+TIER_LEGEND = 4
+
+TIER_NAMES = {
+    TIER_NONE: "None",
+    TIER_BRONZE: "Bronze",
+    TIER_SILVER: "Silver",
+    TIER_GOLD: "Gold",
+    TIER_LEGEND: "Legend",
+}
+
+FAILURE_PENALTIES = {
+    TIER_NONE: 0.965,
+    TIER_BRONZE: 0.96,
+    TIER_SILVER: 0.98,
+    TIER_GOLD: 0.99,
+    TIER_LEGEND: 0.99,
+}
+
+TIER_CRITERIA = {
+    TIER_BRONZE: {"ema": 0.90, "quality": 0.70, "fail_rate": 0.10, "packages": 500},
+    TIER_SILVER: {"ema": 0.95, "quality": 0.85, "fail_rate": 0.05, "packages": 1000},
+    TIER_GOLD: {"ema": 0.98, "quality": 0.90, "fail_rate": 0.02, "packages": 5000},
+}
+
+LEGEND_EMA_MIN = 0.9999
+LEGEND_CYCLES_CLEAN = 10
+
+NURTURE_TARGET_EMA = 0.96
+NURTURE_CYCLE_TIMEOUT = 900  # 15 min per specialist cycle
 
 
 def check_ollama_vram() -> Optional[int]:
@@ -237,6 +274,18 @@ class PipelineController:
                     message TEXT NOT NULL
                 )
             """)
+            self.db_manager.execute_query("""
+                CREATE TABLE IF NOT EXISTS cycle_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    specialist_id INTEGER NOT NULL,
+                    success INTEGER NOT NULL,
+                    quality REAL DEFAULT 0.0,
+                    ema_before REAL,
+                    ema_after REAL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (specialist_id) REFERENCES specialist_registry(id)
+                )
+            """)
         except Exception as e:
             logger.debug(f"Activity table init: {e}")
 
@@ -305,13 +354,13 @@ class PipelineController:
                            (domain, model, root_qid, properties, ema_score, tier, status, parent_id, qid_path)
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (specialist['domain'], specialist['model'], specialist['root'],
-                         json.dumps(specialist['props']), 0.10, 3, 'IDLE', None, None)
+                         json.dumps(specialist['props']), 0.10, TIER_NONE, 'IDLE', None, None)
                     )
                     self.db_manager.execute_query(
                         """UPDATE specialist_registry 
-                           SET model = ?, root_qid = ?, properties = ?, tier = ?
+                           SET model = ?, root_qid = ?, properties = ?
                            WHERE domain = ?""",
-                        (specialist['model'], specialist['root'], json.dumps(specialist['props']), 3, specialist['domain'])
+                        (specialist['model'], specialist['root'], json.dumps(specialist['props']), specialist['domain'])
                     )
                     logger.info(f"Initialized specialist: {specialist['domain']}")
                 except Exception as e:
@@ -381,34 +430,166 @@ class PipelineController:
         except Exception as e:
             logger.debug(f"Status update failed: {e}")
 
-    def update_ema_score(self, specialist_id: int, success: bool, content_length: int = 0, trust_score: int = 50):
+    def _compute_tier(self, specialist_id: int, ema: float, current_tier: int) -> int:
+        try:
+            row = self.db_manager.execute_query(
+                "SELECT weighted_success, weighted_fail, packages_absorbed FROM specialist_registry WHERE id = ?",
+                (specialist_id,), fetch=True
+            )
+            if not row:
+                return TIER_NONE
+            ws = row[0].get('weighted_success', 0.0) or 0.0
+            wf = row[0].get('weighted_fail', 0.0) or 0.0
+            packages = row[0].get('packages_absorbed', 0) or 0
+
+            ch = self.db_manager.execute_query(
+                """SELECT COUNT(*) as total,
+                          COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END), 0) as fails,
+                          COALESCE(AVG(CASE WHEN success=1 THEN quality ELSE NULL END), 0) as avg_q
+                   FROM cycle_history WHERE specialist_id = ?""",
+                (specialist_id,), fetch=True
+            )
+
+            if ch and ch[0]['total'] > 0:
+                total_cycles = ch[0]['total']
+                failures = ch[0]['fails']
+                avg_quality = ch[0]['avg_q'] or 0.0
+            else:
+                ema_count = self.db_manager.execute_query(
+                    "SELECT COUNT(*) as cnt FROM ema_history WHERE specialist_id = ?",
+                    (specialist_id,), fetch=True
+                )
+                total_cycles = ema_count[0]['cnt'] if ema_count else max(int(wf + ws), 1)
+                failures = int(wf)
+                successes = max(total_cycles - failures, 1)
+                avg_quality = ws / successes
+
+            fail_rate = failures / max(1, total_cycles)
+
+            if current_tier == TIER_LEGEND:
+                if ema >= LEGEND_EMA_MIN:
+                    clean = self._clean_cycle_count(specialist_id)
+                    if clean >= LEGEND_CYCLES_CLEAN:
+                        return TIER_LEGEND
+                return TIER_GOLD
+
+            if ema >= TIER_CRITERIA[TIER_GOLD]["ema"] and avg_quality >= TIER_CRITERIA[TIER_GOLD]["quality"] and fail_rate < TIER_CRITERIA[TIER_GOLD]["fail_rate"] and packages >= TIER_CRITERIA[TIER_GOLD]["packages"]:
+                return TIER_GOLD
+            if ema >= TIER_CRITERIA[TIER_SILVER]["ema"] and avg_quality >= TIER_CRITERIA[TIER_SILVER]["quality"] and fail_rate < TIER_CRITERIA[TIER_SILVER]["fail_rate"] and packages >= TIER_CRITERIA[TIER_SILVER]["packages"]:
+                return TIER_SILVER
+            if ema >= TIER_CRITERIA[TIER_BRONZE]["ema"] and avg_quality >= TIER_CRITERIA[TIER_BRONZE]["quality"] and fail_rate < TIER_CRITERIA[TIER_BRONZE]["fail_rate"] and packages >= TIER_CRITERIA[TIER_BRONZE]["packages"]:
+                return TIER_BRONZE
+            return TIER_NONE
+        except Exception as e:
+            logger.error(f"Tier computation failed for {specialist_id}: {e}")
+            return current_tier
+
+    def _get_racha_25(self, specialist_id: int) -> float:
+        try:
+            rows = self.db_manager.execute_query(
+                "SELECT success FROM cycle_history WHERE specialist_id = ? ORDER BY id DESC LIMIT 25",
+                (specialist_id,), fetch=True
+            )
+            if not rows or len(rows) == 0:
+                return 0.0
+            successes = sum(1 for r in rows if r['success'])
+            return successes / len(rows)
+        except Exception as e:
+            logger.debug(f"Racha 25 failed: {e}")
+            return 0.0
+
+    def _clean_cycle_count(self, specialist_id: int) -> int:
+        try:
+            rows = self.db_manager.execute_query(
+                "SELECT success FROM cycle_history WHERE specialist_id = ? ORDER BY id DESC LIMIT ?",
+                (specialist_id, LEGEND_CYCLES_CLEAN), fetch=True
+            )
+            if not rows:
+                return 0
+            count = 0
+            for r in rows:
+                if r['success']:
+                    count += 1
+                else:
+                    break
+            return count
+        except Exception as e:
+            logger.debug(f"Clean cycle count failed: {e}")
+            return 0
+
+    def update_ema_score(self, specialist_id: int, success: bool, content_length: int = 0,
+                         trust_score: int = 50, contents_count: int = 0, packages_saved: int = 0):
         try:
             result = self.db_manager.execute_query(
-                "SELECT ema_score FROM specialist_registry WHERE id = ?", (specialist_id,), fetch=True
+                "SELECT ema_score, weighted_success, weighted_fail, tier FROM specialist_registry WHERE id = ?",
+                (specialist_id,), fetch=True
             )
             if not result:
                 return
-            current_ema = result[0]['ema_score']
-            alpha = 0.05
+            row = result[0]
+            current_ema = row['ema_score']
+            ws = row.get('weighted_success', 0.0) or 0.0
+            wf = row.get('weighted_fail', 0.0) or 0.0
+            current_tier = row.get('tier', TIER_NONE) or TIER_NONE
+
             if success:
-                if content_length > 0:
-                    length_factor = min(content_length / 1000.0, 1.0)
+                if content_length > 0 and contents_count > 0:
+                    size_factor = 1.0 - math.exp(-content_length / 5000)
+                    coverage_factor = min(contents_count / 10.0, 1.0)
                     trust_factor = trust_score / 100.0
-                    quality = 0.6 * length_factor + 0.4 * trust_factor
+                    efficiency = min(packages_saved / max(contents_count, 1), 1.0)
+                    quality = 0.25 * size_factor + 0.25 * coverage_factor + 0.25 * trust_factor + 0.25 * efficiency
                 else:
-                    quality = 0.15
+                    quality = 0.1
+                ws += quality
+                alpha = 0.08
+                new_ema = current_ema + alpha * quality * (1.0 - current_ema)
             else:
                 quality = 0.0
-            new_ema = alpha * quality + (1.0 - alpha) * current_ema
+                wf += 1.0
+                penalty = FAILURE_PENALTIES.get(current_tier, 0.94)
+                new_ema = current_ema * penalty
+
             self.db_manager.execute_query(
-                "UPDATE specialist_registry SET ema_score=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (new_ema, specialist_id)
+                "UPDATE specialist_registry SET ema_score=?, weighted_success=?, weighted_fail=?, "
+                "updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (new_ema, ws, wf, specialist_id)
             )
             self.db_manager.execute_query(
                 "INSERT INTO ema_history (specialist_id, ema_score) VALUES (?, ?)",
                 (specialist_id, new_ema)
             )
-            logger.info(f"EMA {specialist_id}: {current_ema:.3f} -> {new_ema:.3f} (quality:{quality:.2f})")
+            self.db_manager.execute_query(
+                "INSERT INTO cycle_history (specialist_id, success, quality, ema_before, ema_after) VALUES (?, ?, ?, ?, ?)",
+                (specialist_id, 1 if success else 0, quality, current_ema, new_ema)
+            )
+
+            new_tier = self._compute_tier(specialist_id, new_ema, current_tier)
+            if new_tier != current_tier:
+                self.db_manager.execute_query(
+                    "UPDATE specialist_registry SET tier = ? WHERE id = ?",
+                    (new_tier, specialist_id)
+                )
+                tier_change = f" TIER: {TIER_NAMES[current_tier]} -> {TIER_NAMES[new_tier]}"
+                if new_tier < current_tier:
+                    logger.warning(f"TIER DOWN: specialist {specialist_id} {TIER_NAMES[current_tier]} -> {TIER_NAMES[new_tier]}")
+            else:
+                tier_change = ""
+
+            if new_tier == TIER_LEGEND:
+                display_ema = 100000
+            else:
+                display_ema = int(new_ema * 100000)
+            racha = self._get_racha_25(specialist_id)
+            logger.info(
+                f"EMA {specialist_id}: {current_ema:.4f} -> {new_ema:.4f} "
+                f"({display_ema:,}/100.000) [{TIER_NAMES[new_tier]}] "
+                f"racha_25:{racha*100:.1f}% quality:{quality:.2f}{tier_change}"
+            )
+
+            drop_ratio = (new_ema - current_ema) / max(current_ema, 0.001)
+            if drop_ratio < -0.10:
+                logger.critical(f"EMA DROP >10%: specialist {specialist_id} {current_ema:.4f} -> {new_ema:.4f}")
         except Exception as e:
             logger.error(f"Failed to update EMA: {e}")
 
@@ -649,7 +830,7 @@ class PipelineController:
                     """INSERT INTO specialist_registry 
                        (domain, model, root_qid, properties, ema_score, tier, status, parent_id, qid_path)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (child_domain, parent['model'], qid, parent['properties'], 0.10, 3, 'IDLE', parent['id'], child_path)
+                    (child_domain, parent['model'], qid, parent['properties'], 0.10, TIER_NONE, 'IDLE', parent['id'], child_path)
                 )
                 spawned_this_cycle += 1
                 logger.info(f"SPAWNED sub-specialist: {child_domain} (QID: {qid}, parent: {parent['domain']})")
@@ -965,7 +1146,10 @@ class PipelineController:
             for query in queries:
                 self._log_activity(f"{domain} > Buscando: \"{query[:60]}\"")
                 try:
-                    results = await self.web_scraper.search_and_extract(query=query, max_results=5, domain=domain)
+                    results = await asyncio.wait_for(
+                        self.web_scraper.search_and_extract(query=query, max_results=5, domain=domain),
+                        timeout=120,
+                    )
                     total_c += len(results)
                     self._log_activity(f"{domain} > {len(results)} resultados para \"{query[:40]}\"")
                     for content in results:
@@ -987,6 +1171,8 @@ class PipelineController:
                             logger.debug(f"Distill: {dist[:100]}...")
                         except Exception as e:
                             logger.warning(f"Distill failed for {url[:60]}: {e}")
+                            continue
+                        if not domain:
                             continue
                         # Save knowledge package (DB + file)
                         if dist and url:
@@ -1045,7 +1231,7 @@ class PipelineController:
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
 
         specialists = self.db_manager.execute_query(
-            "SELECT id, domain, model, ema_score, packages_absorbed FROM specialist_registry ORDER BY ema_score DESC",
+            "SELECT id, domain, model, ema_score, packages_absorbed, tier FROM specialist_registry ORDER BY ema_score DESC",
             fetch=True
         ) or []
 
@@ -1065,7 +1251,7 @@ class PipelineController:
         for sid, pts in series_raw.items():
             time_labels = [p[0] for p in pts]
 
-        # Chart: combined EMA evolution
+        # Chart: combined EMA evolution (×100.000 scale)
         plt.figure(figsize=(14, 8))
         colors = plt.cm.tab20.colors + plt.cm.tab20b.colors
         for i, s in enumerate(specialists):
@@ -1074,14 +1260,16 @@ class PipelineController:
             if len(pts) < 2:
                 continue
             times = [p[0] for p in pts]
-            vals = [p[1] for p in pts]
-            label = f"{s['domain']} ({s['ema_score']:.3f})"
+            vals = [p[1] * 100000 for p in pts]
+            tier_val = s['tier'] or TIER_NONE
+            display_pts = "100.000" if tier_val == TIER_LEGEND else f"{int(s['ema_score']*100000):,}"
+            label = f"{s['domain']} ({display_pts}) [{TIER_NAMES.get(tier_val, '?')}]"
             plt.plot(range(len(vals)), vals, color=colors[i % len(colors)],
                      marker='o', markersize=3, linewidth=1.2, label=label)
 
-        plt.title(f'EMA Evolution — {ts}', fontsize=14)
-        plt.xlabel('Observation #')
-        plt.ylabel('EMA Score')
+        plt.title(f'Puntuación EMA — {ts}', fontsize=14)
+        plt.xlabel('Ciclo #')
+        plt.ylabel('Puntuación /100.000')
         plt.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=7)
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
@@ -1093,11 +1281,20 @@ class PipelineController:
         lines = [f"# Pipeline Report — {ts}\n"]
         lines.append(f"**Elapsed:** {elapsed_seconds/3600:.2f}h ({elapsed_seconds/60:.1f} min)\n")
         lines.append(f"**Total history records:** {len(history)}\n")
-        lines.append(f"\n## EMA Scores\n")
-        lines.append(f"| # | Domain | Model | EMA | Packages |")
-        lines.append(f"|---|--------|-------|-----|----------|")
+        lines.append(f"\n## Puntuaciones\n")
+        lines.append(f"| # | Domain | Model | Puntuación | Tier | Racha 25 | Paquetes |")
+        lines.append(f"|---|--------|-------|------------|------|----------|----------|")
         for i, s in enumerate(specialists, 1):
-            lines.append(f"| {i} | {s['domain']} | {s['model']} | {s['ema_score']:.3f} | {s['packages_absorbed']} |")
+            sid = s['id']
+            tier_val = s['tier'] or TIER_NONE
+            if tier_val == TIER_LEGEND:
+                pts_str = "100.000"
+            else:
+                pts_str = f"{int(s['ema_score'] * 100000):,}/100.000"
+            racha = self._get_racha_25(sid)
+            tier_name = TIER_NAMES.get(tier_val, 'None')
+            racha_str = f"{racha*100:.1f}%" if racha > 0 else "-"
+            lines.append(f"| {i} | {s['domain']} | {s['model']} | {pts_str} | {tier_name} | {racha_str} | {s['packages_absorbed']} |")
 
         lines.append(f"\n## Charts\n")
         lines.append(f"![EMA Evolution](ema_evolution_{ts}.png)\n")
@@ -1105,6 +1302,132 @@ class PipelineController:
         report_path = report_dir / f'report_{ts}.md'
         report_path.write_text('\n'.join(lines), encoding='utf-8')
         logger.info(f"Report saved: {report_path}")
+
+    async def _run_nurture_mode(self, all_specialists: list, pipeline_start: float,
+                                 min_duration_hours: float, max_duration_hours: float,
+                                 max_cycles: int, report_interval_minutes: int):
+        logger.info("=" * 80)
+        logger.info(f"NURTURE MODE — raising specialists to EMA ≥ {NURTURE_TARGET_EMA} one by one")
+        logger.info("=" * 80)
+
+        global_cycle = 0
+        last_report_time = 0.0
+        current_target = None
+
+        while True:
+            if _shutdown_event.is_set():
+                logger.info("Shutdown signal received. Stopping nurture.")
+                break
+
+            elapsed = time.time() - pipeline_start
+            if elapsed >= min_duration_hours * 3600:
+                logger.info(f"Minimum duration reached ({min_duration_hours}h). Finishing nurture...")
+                break
+
+            if max_cycles > 0 and global_cycle >= max_cycles:
+                logger.info(f"Max cycles reached ({max_cycles}). Stopping nurture.")
+                break
+
+            if max_duration_hours > 0 and elapsed >= max_duration_hours * 3600:
+                logger.info(f"Hard max duration reached ({max_duration_hours}h). Stopping nurture.")
+                break
+
+            # Check if current target reached the goal
+            if current_target is not None:
+                row = self.db_manager.execute_query(
+                    "SELECT ema_score FROM specialist_registry WHERE id=?",
+                    (current_target['sid'],), fetch=True
+                )
+                if row and row[0]['ema_score'] >= NURTURE_TARGET_EMA:
+                    logger.info(
+                        f"{current_target['domain']} reached EMA {row[0]['ema_score']:.4f} ≥ "
+                        f"{NURTURE_TARGET_EMA} — moving to next"
+                    )
+                    current_target = None
+
+            # Pick next target (lowest EMA below threshold)
+            if current_target is None:
+                target = self.db_manager.execute_query(
+                    "SELECT id, domain, model, ema_score FROM specialist_registry "
+                    "WHERE parent_id IS NULL AND ema_score < ? "
+                    "ORDER BY ema_score ASC LIMIT 1",
+                    (NURTURE_TARGET_EMA,), fetch=True
+                )
+                if not target:
+                    logger.info("ALL SPECIALISTS HAVE REACHED EMA >= %.4f — nurture complete!" % NURTURE_TARGET_EMA)
+                    self._update_pipeline_status(status='COMPLETED', phase='Nurture mode completado')
+                    break
+                current_target = {
+                    'sid': target[0]['id'],
+                    'domain': target[0]['domain'],
+                    'model': target[0]['model'],
+                }
+                model_ready = await self.llm_runner.ensure_model_ready(current_target['model'])
+                if not model_ready:
+                    logger.error(
+                        f"Model {current_target['model']} unavailable for "
+                        f"{current_target['domain']} — skipping"
+                    )
+                    current_target = None
+                    continue
+
+            sid = current_target['sid']
+            domain = current_target['domain']
+            model = current_target['model']
+
+            row = self.db_manager.execute_query(
+                "SELECT ema_score FROM specialist_registry WHERE id=?", (sid,), fetch=True
+            )
+            current_ema = row[0]['ema_score'] if row else 0.0
+
+            global_cycle += 1
+            effective_cycle = ((global_cycle - 1) % 3) + 1
+
+            self._update_pipeline_status(
+                specialist=domain, model=model, cycle=global_cycle, total_cycles=999,
+                phase=f'Nurture: {domain} (EMA {current_ema:.4f} → {NURTURE_TARGET_EMA})', status='ACTIVE'
+            )
+            logger.info(f"Nurture cycle {global_cycle}: {domain} (EMA={current_ema:.4f}, model={model})")
+
+            spec_row = self.db_manager.execute_query(
+                "SELECT * FROM specialist_registry WHERE id=?", (sid,), fetch=True
+            )
+            if not spec_row:
+                continue
+            specialist = spec_row[0]
+
+            try:
+                phase_b = await asyncio.wait_for(
+                    self.run_phase_b(specialist, effective_cycle),
+                    timeout=NURTURE_CYCLE_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"Nurture cycle timed out for {domain} — retrying without penalty")
+                continue
+            except Exception as e:
+                logger.error(f"Nurture cycle failed for {domain}: {e}")
+                self.update_ema_score(sid, False)
+                continue
+
+            ok = phase_b.get('success', False)
+            self.update_ema_score(
+                sid, ok,
+                phase_b.get('total_length', 0),
+                phase_b.get('avg_trust', 50),
+                phase_b.get('contents_count', 0),
+                phase_b.get('packages_saved', 0),
+            )
+
+            after = self.db_manager.execute_query(
+                "SELECT ema_score FROM specialist_registry WHERE id=?", (sid,), fetch=True
+            )
+            new_ema = after[0]['ema_score'] if after else current_ema
+            logger.info(f"Nurture progress: {domain} EMA {current_ema:.4f} → {new_ema:.4f}")
+
+            new_elapsed = time.time() - pipeline_start
+            if new_elapsed - last_report_time >= report_interval_minutes * 60:
+                await self._generate_report(new_elapsed)
+                last_report_time = new_elapsed
 
     async def run_pipeline(self, sample_size: Optional[int] = None,
                            min_duration_hours: float = 5.0,
@@ -1126,6 +1449,12 @@ class PipelineController:
 
         self._start_time = time.time()
         self._update_pipeline_status(status='INIT', phase='Initializing...')
+
+        # Snapshot EMA before pipeline to detect massive drops
+        ema_rows = self.db_manager.execute_query(
+            "SELECT id, ema_score FROM specialist_registry", fetch=True
+        ) or []
+        self._ema_snapshot = {r['id']: r['ema_score'] for r in ema_rows}
 
         if not validate_paths():
             self._update_pipeline_status(status='ERROR', phase='Path validation failed')
@@ -1174,6 +1503,17 @@ class PipelineController:
             else:
                 logger.info("Phase A skipped (--phase=web)")
 
+            # Phase B: Nurture mode (one by one)
+            if phase == 'nurture':
+                pipeline_start = time.time()
+                await self._run_nurture_mode(
+                    all_specialists, pipeline_start,
+                    min_duration_hours=min_duration_hours,
+                    max_duration_hours=max_duration_hours,
+                    max_cycles=max_cycles,
+                    report_interval_minutes=report_interval_minutes,
+                )
+
             # Phase B: Continuous loop
             if phase in ('full', 'web'):
                 loaded_vram_mb = check_ollama_vram()
@@ -1206,6 +1546,14 @@ class PipelineController:
                     effective_cycle = ((global_cycle - 1) % 3) + 1
 
                     for model_name in sorted_models:
+                        elapsed = time.time() - pipeline_start
+                        if elapsed >= min_duration_hours * 3600:
+                            logger.info(f"Time limit reached mid-cycle. Stopping further groups.")
+                            break
+                        if max_duration_hours > 0 and elapsed >= max_duration_hours * 3600:
+                            logger.info(f"Hard max duration reached mid-cycle. Stopping.")
+                            break
+
                         group = model_groups[model_name]
                         if global_cycle == 1:
                             self._update_pipeline_status(status='CHECKING_MODEL', phase=f'Verifying model: {model_name}')
@@ -1226,7 +1574,7 @@ class PipelineController:
                             model=model_name, cycle=global_cycle, total_cycles=999,
                             phase=f'Phase B: Web + LLM ({len(group)} paralelo)', status='ACTIVE'
                         )
-                        tasks = [self.run_phase_b(s, effective_cycle) for s in group]
+                        tasks = [asyncio.wait_for(self.run_phase_b(s, effective_cycle), timeout=PHASE_B_PER_SPECIALIST_TIMEOUT) for s in group]
                         phase_b_results = await asyncio.gather(*tasks, return_exceptions=True)
 
                         for specialist, phase_b in zip(group, phase_b_results):
@@ -1236,12 +1584,15 @@ class PipelineController:
                                 self.update_ema_score(sid, False)
                                 continue
                             ok = phase_a_results.get(sid, False) or phase_b.get('success', False)
-                            self.update_ema_score(sid, ok, phase_b.get('total_length', 0), phase_b.get('avg_trust', 50))
+                            self.update_ema_score(
+                                sid, ok,
+                                phase_b.get('total_length', 0),
+                                phase_b.get('avg_trust', 50),
+                                phase_b.get('contents_count', 0),
+                                phase_b.get('packages_saved', 0),
+                            )
 
-                        # After Phase B completes for this specialist, check spawning
-                        for specialist in group:
-                            if global_cycle % SUBSPECIALIST_CYCLE_INTERVAL == 0:
-                                self._check_subspecialist_spawning(specialist['id'])
+                        # Auto-spawning disabled — use manual spawn tool (tools/spawn_specialist.py)
 
                     new_elapsed = time.time() - pipeline_start
                     if new_elapsed - last_report_time >= report_interval_minutes * 60:
@@ -1268,6 +1619,23 @@ class PipelineController:
             await self.llm_runner.cleanup()
             self.web_scraper.cleanup()
 
+        # Check for massive EMA drops — auto-rollback safeguard
+        if hasattr(self, '_ema_snapshot'):
+            ema_rows = self.db_manager.execute_query(
+                "SELECT id, ema_score FROM specialist_registry", fetch=True
+            ) or []
+            for r in ema_rows:
+                sid = r['id']
+                if sid in self._ema_snapshot:
+                    prev = self._ema_snapshot[sid]
+                    curr = r['ema_score']
+                    if curr < prev * 0.85:
+                        logger.critical(f"AUTO-ROLLBACK: specialist {sid} dropped {prev:.4f} -> {curr:.4f}")
+                        self.db_manager.execute_query(
+                            "UPDATE specialist_registry SET ema_score=? WHERE id=?",
+                            (prev, sid)
+                        )
+
         final_elapsed = time.time() - self._start_time
         await self._generate_report(final_elapsed)
         self.metrics.print_summary()
@@ -1279,7 +1647,7 @@ class PipelineController:
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Expertia Pipeline Orchestrator')
-    parser.add_argument('--phase', choices=['full', 'cascade', 'web'], default='full',
+    parser.add_argument('--phase', choices=['full', 'cascade', 'web', 'nurture'], default='full',
                         help='Pipeline phase to run (default: full)')
     parser.add_argument('--specialist', type=str, default='all',
                         help='Run only this specialist domain (default: all)')
@@ -1296,6 +1664,8 @@ def parse_args():
 
 def _signal_handler(signum, frame):
     _shutdown_event.set()
+    import threading
+    threading.Timer(5.0, os._exit, [0]).start()
 
 
 async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.0,
@@ -1305,8 +1675,12 @@ async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.
                max_duration_hours: float = 0,
                max_cycles: int = 0):
     crash_log = LOGS_DIR / 'crash.log'
+    if PHASE_B_PER_SPECIALIST_TIMEOUT < 600:
+        logger.warning(f"PHASE_B_PER_SPECIALIST_TIMEOUT={PHASE_B_PER_SPECIALIST_TIMEOUT}s es muy bajo — usar >= 600s")
+
     signal.signal(signal.SIGINT, _signal_handler)
-    signal.signal(signal.SIGTERM, _signal_handler)
+    if hasattr(signal, 'SIGTERM'):
+        signal.signal(signal.SIGTERM, _signal_handler)
     try:
         controller = PipelineController(sample_size=sample_size, cycles_per_specialist=3)
         await controller.run_pipeline(
@@ -1329,7 +1703,7 @@ async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.
 
 if __name__ == "__main__":
     args = parse_args()
-    max_retries = 3
+    max_retries = 1
     retry_delay = 30
     for attempt in range(1, max_retries + 1):
         logger.info(f"Pipeline attempt {attempt}/{max_retries}")
@@ -1354,3 +1728,12 @@ if __name__ == "__main__":
                 delay = retry_delay * (2 ** (attempt - 1))
                 logger.info(f"Retrying in {delay}s...")
                 time.sleep(delay)
+
+    # Clean up PID file so watchdog knows exit was intentional
+    pidfile = Path('logs') / 'orchestrator.pid'
+    try:
+        if pidfile.exists():
+            pidfile.unlink()
+            logger.info("PID file cleaned up — normal exit")
+    except Exception:
+        pass
