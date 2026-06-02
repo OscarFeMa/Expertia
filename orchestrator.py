@@ -79,7 +79,8 @@ def estimate_tokens(text: str) -> int:
 
 def check_ollama_vram() -> Optional[int]:
     try:
-        result = subprocess.run(['ollama', 'ps'], capture_output=True, text=True, timeout=15)
+        result = subprocess.run(['ollama', 'ps'], capture_output=True, text=True, timeout=15,
+                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         lines = result.stdout.strip().splitlines()
         for line in lines[1:]:
             parts = line.split()

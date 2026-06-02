@@ -197,7 +197,8 @@ class OfflineVerificationEngine:
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
-                timeout=30
+                timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
             )
             
             if result.returncode != 0:
@@ -327,7 +328,8 @@ class LLMRunner:
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
-                timeout=30
+                timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
             )
             
             if result.returncode != 0:
@@ -366,7 +368,8 @@ class LLMRunner:
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
-                timeout=30
+                timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
             )
             
             if result.returncode == 0:
@@ -393,7 +396,8 @@ class LLMRunner:
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
-                timeout=120
+                timeout=120,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
             )
 
             if result.returncode == 0:
