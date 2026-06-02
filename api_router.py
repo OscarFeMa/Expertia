@@ -119,6 +119,7 @@ def _is_pid_alive(pid):
             r = subprocess.run(
                 ["tasklist", "/FI", f"PID eq {pid}"],
                 capture_output=True, text=True, timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
             )
             return bool(re.search(rf"\b{re.escape(str(pid))}\b", r.stdout))
         else:
@@ -349,6 +350,7 @@ def _kill_pipeline(pid: int):
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
                 capture_output=True, timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
         else:
             os.kill(pid, 15)
@@ -381,6 +383,7 @@ def stop_pipeline():
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
                 capture_output=True, timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
         else:
             os.kill(pid, 15)
@@ -422,6 +425,7 @@ def get_ollama_models():
         r = subprocess.run(
             ["ollama", "list"],
             capture_output=True, text=True, timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
         )
         if r.returncode != 0:
             return {"models": []}
@@ -444,6 +448,7 @@ def pull_model(req: PullModelRequest):
         r = subprocess.run(
             ["ollama", "pull", req.model],
             capture_output=True, text=True, timeout=600,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
         )
         if r.returncode != 0:
             raise HTTPException(status_code=500, detail=r.stderr.strip() or "Pull failed")
@@ -564,7 +569,11 @@ def kill_all():
         if pid and _is_pid_alive(pid):
             try:
                 if os.name == "nt":
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=5)
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(pid)],
+                        capture_output=True, timeout=5,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
                 else:
                     os.kill(pid, 15)
                 logger.warning(f"Killed pipeline PID={pid} via kill-all")
@@ -785,7 +794,8 @@ def wikidata_stop():
 
     try:
         if os.name == "nt":
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=5)
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=5,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
         else:
             os.kill(pid, 15)
         with _wikidata_lock:

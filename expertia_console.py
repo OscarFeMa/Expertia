@@ -182,7 +182,8 @@ def is_pid_alive(pid):
         return cache['alive']
     try:
         if os.name == 'nt':
-            r = subprocess.run(["tasklist","/FI",f"PID eq {pid}"], capture_output=True, text=True, timeout=5)
+            r = subprocess.run(["tasklist","/FI",f"PID eq {pid}"], capture_output=True, text=True, timeout=5,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
             alive = str(pid) in r.stdout
         else:
             os.kill(pid, 0); alive = True
@@ -193,7 +194,8 @@ def is_pid_alive(pid):
 
 def get_local_models():
     try:
-        r = subprocess.run(["ollama","list"], capture_output=True, text=True, timeout=10)
+        r = subprocess.run(["ollama","list"], capture_output=True, text=True, timeout=10,
+                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         if r.returncode == 0:
             lines = r.stdout.strip().split('\n')[1:]
             return [line.split()[0] for line in lines if line.strip()]
@@ -205,7 +207,8 @@ def auto_detect_orch():
     if time.time() - cache.get('time', 0) < PID_CACHE_TTL:
         return cache.get('pid')
     try:
-        r = subprocess.run(["tasklist","/FI","IMAGENAME eq python.exe","/FO","CSV"], capture_output=True, text=True, timeout=5)
+        r = subprocess.run(["tasklist","/FI","IMAGENAME eq python.exe","/FO","CSV"], capture_output=True, text=True, timeout=5,
+                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         pid = None
         for line in r.stdout.split('\n'):
             if 'orchestrator.py' in line:
@@ -531,7 +534,8 @@ with tabs[0]:
                     if target:
                         for attempt in range(3):
                             if os.name == 'nt':
-                                subprocess.run(["taskkill","/F","/T","/PID",str(target)], capture_output=True, timeout=5)
+                                subprocess.run(["taskkill","/F","/T","/PID",str(target)], capture_output=True, timeout=5,
+                                               creationflags=subprocess.CREATE_NO_WINDOW)
                             else:
                                 os.kill(target, signal.SIGTERM)
                             time.sleep(1)
@@ -618,7 +622,8 @@ with tabs[1]:
                     if st.button(f"📥 Pull {m}", key=f"dl_{m}"):
                         with st.spinner(f"Pulling {m}..."):
                             try:
-                                subprocess.run(["ollama","pull",m], check=True)
+                                subprocess.run(["ollama","pull",m], check=True,
+                                               creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
                                 st.success(f"OK {m}"); st.rerun()
                             except Exception as e: st.error(f"FAIL: {e}")
             else: st.success("All models present")
