@@ -59,7 +59,7 @@ def was_intentional_stop():
 def start_orchestrator():
     log("Starting orchestrator...")
     proc = subprocess.Popen(
-        ['python', 'orchestrator.py'],
+        ['pythonw', 'orchestrator.py'],
         cwd=str(BASE),
         creationflags=subprocess.CREATE_NO_WINDOW,
         stdout=open(BASE / 'logs' / 'orchestrator_stdout.log', 'a'),
