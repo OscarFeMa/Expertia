@@ -518,9 +518,9 @@ with tabs[0]:
         cs, ce = st.columns([1, 1])
         with cs:
             if st.button("▶ Start", type="primary", key="start_orch", disabled=is_active, width='stretch'):
-                cmd = ["python","orchestrator.py","--phase",phase,"--specialist",sf,"--model",mf,"--duration",str(dh)]
+                cmd = ["pythonw","orchestrator.py","--phase",phase,"--specialist",sf,"--model",mf,"--duration",str(dh)]
                 try:
-                    proc = subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0)
+                    proc = subprocess.Popen(cmd, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
                     st.session_state.orch_pid = proc.pid; st.session_state.orch_start_time = time.time()
                     st.session_state.force_idle = False; st.success(f"PID: {proc.pid}"); st.rerun()
                 except Exception as e: st.error(f"FAIL: {e}")

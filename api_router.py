@@ -311,7 +311,7 @@ def start_pipeline(req: StartPipelineRequest):
             duration_hours = 99999  # nurture runs until manual stop
 
         cmd = [
-            "python", "orchestrator.py",
+            "pythonw", "orchestrator.py",
             "--phase", req.phase,
             "--specialist", req.specialist,
             "--model", req.model,
@@ -729,7 +729,7 @@ def wikidata_download(req: WikidataDownloadRequest = None):
             raise HTTPException(status_code=409, detail="Wikidata download already running")
 
         use_full = bool(req and req.phase == 'full')
-        cmd = ["python", "tools/update_wikidata.py"]
+        cmd = ["pythonw", "tools/update_wikidata.py"]
         if use_full:
             cmd.append("--full")
 
@@ -758,7 +758,7 @@ def wikidata_feed():
         if _wikidata_process.get("pid") and _is_pid_alive(_wikidata_process["pid"]):
             raise HTTPException(status_code=409, detail="Wikidata process already running")
 
-        cmd = ["python", "orchestrator.py", "--phase", "feed", "--duration", "0.1"]
+        cmd = ["pythonw", "orchestrator.py", "--phase", "feed", "--duration", "0.1"]
 
         try:
             proc = subprocess.Popen(
