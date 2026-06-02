@@ -139,6 +139,7 @@ class App {
       case 'super-experts': this.renderSuperExperts(); break;
       case 'certified': this.renderCertified(); break;
       case 'incidents': this.renderIncidents(); break;
+      case 'wikidata': this.renderWikidata(); break;
     }
   }
 
@@ -148,12 +149,12 @@ class App {
   }
 
   killAll() {
+    if (!confirm('Kill all processes? This will stop the pipeline and API.')) return;
     const btn = document.querySelector('.kill-btn');
     if (btn) { btn.textContent = '⏹ Killing...'; btn.disabled = true; }
     this.postJSON(`${this.apiBase}/kill`, {}).then(r => {
       alert('All processes killed. API shutting down.');
     }).catch(() => {
-      // API killed itself — that's expected
       alert('Kill signal sent. API is shutting down.');
     });
   }
@@ -406,14 +407,14 @@ class App {
       const ticon = this.tierIcon(r.tier);
       const base_class = `spec-card spec-card-${r.status === 'ACTIVE' ? 'active' : r.status === 'ERROR' ? 'error' : 'idle'}`;
       const card_class = tier_class ? `${base_class} ${tier_class}` : base_class;
-      const reliable = r.tier >= 2;
-      html += `<div class="${card_class}"${reliable ? ` onclick="app.clickReliable('${r.domain}')" title="Click to view stats"` : ''}>
-        <div class="spec-card-inner"><span class="spec-name">${r.domain} ${ticon}</span><span class="spec-badge ${badge}" style="background:${bc}22;color:${bc}">${r.status}</span></div>
-        <div class="spec-meta">📦 ${r.packages_absorbed} · 📈 ${r.ema_score?.toFixed(3)} · 🎯 ${r.model}</div>`;
+      const reliable = r.tier >= 1;
+      html += `<div class="${card_class}"${reliable ? ` data-domain="${this.escapeHtml(r.domain)}" onclick="app.clickReliable(this.dataset.domain)" title="Click to view stats"` : ''}>
+        <div class="spec-card-inner"><span class="spec-name">${this.escapeHtml(r.domain)} ${ticon}</span><span class="spec-badge ${badge}" style="background:${bc}22;color:${bc}">${this.escapeHtml(r.status)}</span></div>
+        <div class="spec-meta">📦 ${r.packages_absorbed} · 📈 ${r.ema_score != null ? r.ema_score.toFixed(3) : '—'} · 🎯 ${this.escapeHtml(r.model || '')}</div>`;
       (childMap[r.id] || []).sort(childSort).forEach(c => {
         html += `<div class="spec-meta" style="margin-top:2px;padding-top:2px;border-top:1px dashed var(--border)">
-          └─ ${c.domain} · 📦${c.packages_absorbed} · 📈${c.ema_score?.toFixed(2)} · 🎯${c.model}
-          <span class="spec-badge ${badgeMap[c.status] || 'badge-idle'}" style="background:${colorMap[c.status]}22;color:${colorMap[c.status]};font-size:9px;padding:0 4px;margin-left:4px">${c.status}</span>
+          └─ ${this.escapeHtml(c.domain)} · 📦${c.packages_absorbed} · 📈${c.ema_score != null ? c.ema_score.toFixed(2) : '—'} · 🎯 ${this.escapeHtml(c.model || '')}
+          <span class="spec-badge ${badgeMap[c.status] || 'badge-idle'}" style="background:${colorMap[c.status]}22;color:${colorMap[c.status]};font-size:9px;padding:0 4px;margin-left:4px">${this.escapeHtml(c.status || '')}</span>
         </div>`;
       });
       html += `</div>`;
@@ -487,12 +488,12 @@ class App {
     const modelSel = document.getElementById('lp-model');
     if (modelSel) {
       const models = [...new Set(specialists.map(s => s.model))];
-      modelSel.innerHTML = '<option value="all">all</option>' + models.map(m => `<option value="${m}">${m}</option>`).join('');
+      modelSel.innerHTML = '<option value="all">all</option>' + models.map(m => `<option value="${this.escapeHtml(m)}">${this.escapeHtml(m)}</option>`).join('');
     }
     const singleSel = document.getElementById('lp-single');
     if (singleSel) {
       const domains = specialists.filter(s => !s.parent_id).map(s => s.domain);
-      singleSel.innerHTML = domains.map(d => `<option value="${d}">${d}</option>`).join('');
+      singleSel.innerHTML = domains.map(d => `<option value="${this.escapeHtml(d)}">${this.escapeHtml(d)}</option>`).join('');
     }
   }
 
@@ -578,7 +579,7 @@ class App {
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
             <label style="font-size:12px">Parent:</label>
             <select id="spawn-parent" onchange="app.onSpawnParentChange()" style="flex:1;min-width:180px">
-              ${qualified.map(s => `<option value="${s.id}" data-model="${s.model}">${s.domain} (${s.packages_absorbed} pkgs, EMA ${s.ema_score?.toFixed(3)})</option>`).join('')}
+              ${qualified.map(s => `<option value="${s.id}" data-model="${this.escapeHtml(s.model || '')}">${this.escapeHtml(s.domain)} (${s.packages_absorbed} pkgs, EMA ${s.ema_score != null ? s.ema_score.toFixed(3) : '—'})</option>`).join('')}
             </select>
           </div>
           <div id="spawn-expansions" style="max-height:200px;overflow-y:auto;margin-bottom:8px;font-size:12px">
@@ -677,13 +678,14 @@ class App {
         buffer = lines.pop() || '';
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue;
-          const data = JSON.parse(line.slice(6));
+          let data;
+          try { data = JSON.parse(line.slice(6)); } catch { continue; }
           if (data.type === 'progress') {
-            logEl.innerHTML += `<div style="color:var(--dim)">[${data.current}/${data.total}] Validating ${data.qid}...</div>`;
+            logEl.innerHTML += `<div style="color:var(--dim)">[${data.current}/${data.total}] Validating ${this.escapeHtml(String(data.qid || ''))}...</div>`;
           } else if (data.type === 'done') {
-            logEl.innerHTML += `<div style="color:var(--active)">✓ ${data.domain} created</div>`;
+            logEl.innerHTML += `<div style="color:var(--active)">✓ ${this.escapeHtml(String(data.domain || ''))} created</div>`;
           } else if (data.type === 'error') {
-            logEl.innerHTML += `<div style="color:var(--error)">✗ ${data.qid}: ${data.error}</div>`;
+            logEl.innerHTML += `<div style="color:var(--error)">✗ ${this.escapeHtml(String(data.qid || ''))}: ${this.escapeHtml(String(data.error || ''))}</div>`;
           }
         }
         logEl.scrollTop = logEl.scrollHeight;
@@ -802,12 +804,12 @@ class App {
       const fail_rate = s.fail_rate != null ? (s.fail_rate * 100).toFixed(2) + '%' : '-';
       html += `<tr class="cert-row-${tier_name.toLowerCase()}">
         <td class="cert-tier">${ticon} <span class="tier-label-${tier_name.toLowerCase()}">${tier_name}</span></td>
-        <td class="cert-name">${s.domain}</td>
+        <td class="cert-name">${this.escapeHtml(s.domain || '')}</td>
         <td class="cert-pts">${pts}</td>
         <td>${s.packages_absorbed?.toLocaleString() || '-'}</td>
         <td class="${parseFloat(fail_rate) < 5 ? 'cert-good' : 'cert-bad'}">${fail_rate}</td>
         <td class="${parseFloat(racha) >= 90 ? 'cert-good' : 'cert-bad'}">${racha}</td>
-        <td class="cert-model">${s.model || '-'}</td>
+        <td class="cert-model">${this.escapeHtml(s.model || '-')}</td>
       </tr>`;
     });
 
@@ -875,8 +877,8 @@ class App {
           <h3>Missing Models</h3>
           ${missingModels.length ? missingModels.map(m =>
             `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)">
-              <code>${m}</code>
-              <button onclick="app.pullModel('${m}')" class="primary" style="font-size:11px;padding:3px 10px">📥 Pull</button>
+              <code>${this.escapeHtml(m)}</code>
+              <button data-model="${this.escapeHtml(m)}" onclick="app.pullModel(this.dataset.model)" class="primary" style="font-size:11px;padding:3px 10px">📥 Pull</button>
             </div>`
           ).join('') : '<div style="color:var(--inactive);font-size:13px">All models present</div>'}
           <div id="fleet-pull-msg" style="margin-top:6px;font-size:12px"></div>
@@ -892,7 +894,7 @@ class App {
           <div style="margin-bottom:8px">
             <label style="font-size:12px;color:var(--dim)">Specialist</label>
             <select id="fleet-spec" onchange="app.onFleetSpecChange()">
-              ${specialists.filter(s => !s.parent_id).map(s => `<option value="${s.domain}">${s.domain}</option>`).join('')}
+              ${specialists.filter(s => !s.parent_id).map(s => `<option value="${this.escapeHtml(s.domain)}">${this.escapeHtml(s.domain)}</option>`).join('')}
             </select>
           </div>
           <div style="margin-bottom:8px">
@@ -958,9 +960,11 @@ class App {
     const msgEl = document.getElementById('fleet-msg');
     if (!domain || !newModel) { msgEl.textContent = 'Fill all fields'; return; }
     try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (this.apiKey) headers['X-API-Key'] = this.apiKey;
       const res = await fetch(`${this.apiBase}/specialists`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ domain, model: newModel }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1101,16 +1105,16 @@ class App {
       list.forEach(se => {
         html += `<div class="se-expander">
           <div class="se-header" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
-            <span>🏛️ ${se.domain}</span>
-            <span style="font-size:11px;color:var(--dim);font-weight:400">${se.member_count} members · 📈 ${se.weighted_ema?.toFixed(3)} · 📦 ${se.total_packages?.toLocaleString()}</span>
+            <span>🏛️ ${this.escapeHtml(se.domain || '')}</span>
+            <span style="font-size:11px;color:var(--dim);font-weight:400">${se.member_count} members · 📈 ${se.weighted_ema != null ? se.weighted_ema.toFixed(3) : '—'} · 📦 ${se.total_packages?.toLocaleString()}</span>
           </div>
           <div class="se-body" style="display:none">
-            <div style="font-size:12px;color:var(--dim);margin-bottom:6px">${se.description || ''}</div>`;
+            <div style="font-size:12px;color:var(--dim);margin-bottom:6px">${this.escapeHtml(se.description || '')}</div>`;
         if (se.members && se.members.length) {
           html += `<table><tr><th>Specialist</th><th>Weight</th><th>EMA</th><th>Packages</th><th>Bar</th></tr>`;
           se.members.forEach(m => {
             const pct = (m.weight * 100).toFixed(0);
-            html += `<tr><td style="font-weight:600">${m.domain}</td><td>${pct}%</td><td>${m.ema_score?.toFixed(3)}</td><td>${m.packages_absorbed}</td><td><div style="height:8px;width:${Math.max(2, pct)}px;background:var(--active);border-radius:2px;display:inline-block"></div></td></tr>`;
+            html += `<tr><td style="font-weight:600">${this.escapeHtml(m.domain || '')}</td><td>${pct}%</td><td>${m.ema_score != null ? m.ema_score.toFixed(3) : '—'}</td><td>${m.packages_absorbed}</td><td><div style="height:8px;width:${Math.max(2, pct)}px;background:var(--active);border-radius:2px;display:inline-block"></div></td></tr>`;
           });
           html += `</table>`;
         } else {
@@ -1182,6 +1186,152 @@ class App {
     const hidden = more.style.display === 'none';
     more.style.display = hidden ? 'block' : 'none';
     btn.textContent = hidden ? 'Hide' : `Show ${more.children.length} more incidents`;
+  }
+
+  // ── WIKIDATA ───────────────────────────────────────────────────────────
+  async renderWikidata() {
+    const el = document.getElementById('tab-wikidata');
+    const status = await this.fetchJSON(`${this.apiBase}/wikidata/status`);
+
+    if (!status) {
+      el.innerHTML = '<div class="card">Error connecting to API</div>';
+      return;
+    }
+
+    const pending = status.total_pendientes || 0;
+    const dlDays = status.dias_sin_descargar;
+    const feedDays = status.dias_pendientes_alimentar;
+    const dlRunning = status.download_running || false;
+    const running = status.download_running ? '🟢 Downloading...' : '⏹ Idle';
+
+    const dlDisplay = dlDays !== null && dlDays !== undefined
+      ? `${dlDays.toFixed(1)} days` : '— never downloaded';
+    const feedDisplay = feedDays !== null && feedDays !== undefined
+      ? `${feedDays.toFixed(1)} days` : '—';
+
+    const pendingByDomain = status.pendientes_por_dominio || {};
+    const domainEntries = Object.entries(pendingByDomain).sort((a, b) => b[1] - a[1]);
+    const maxP = Math.max(...domainEntries.map(e => e[1]), 1);
+
+    let domainBars = '';
+    for (const [domain, count] of domainEntries) {
+      const pct = (count / maxP * 100).toFixed(0);
+      domainBars += `
+        <div class="wd-domain-row">
+          <span class="wd-domain-name">${this.escapeHtml(domain)}</span>
+          <div class="wd-bar-wrap">
+            <div class="wd-bar" style="width:${pct}%"></div>
+          </div>
+          <span class="wd-domain-count">${count}</span>
+        </div>`;
+    }
+    if (!domainBars) {
+      domainBars = '<div style="color:var(--dim);padding:8px">All packages absorbed — nothing pending</div>';
+    }
+
+    const lastDl = status.ultima_descarga ? this.utcToLocal(status.ultima_descarga) : '—';
+    const lastFeed = status.ultima_alimentacion ? this.utcToLocal(status.ultima_alimentacion) : '—';
+
+    let progressHtml = '';
+    if (dlRunning && status.current_domain) {
+      progressHtml = `
+        <div class="card" style="text-align:center;padding:12px;background:#1a3a2a;border-color:#2ecc71">
+          <div style="font-size:13px;color:#2ecc71">⬇ Descargando: <strong>${this.escapeHtml(status.current_domain)}</strong></div>
+          <div style="font-size:24px;font-weight:700;color:#fff;margin:4px 0">${status.packages_downloaded || 0}</div>
+          <div style="font-size:12px;color:var(--dim)">paquetes descargados hasta ahora</div>
+        </div>`;
+    } else if (dlRunning) {
+      progressHtml = `
+        <div class="card" style="text-align:center;padding:12px;background:#1a3a2a;border-color:#2ecc71">
+          <div style="font-size:13px;color:#2ecc71">⬇ Descargando...</div>
+          <div style="font-size:24px;font-weight:700;color:#fff;margin:4px 0">${status.packages_downloaded || 0}</div>
+          <div style="font-size:12px;color:var(--dim)">paquetes descargados hasta ahora</div>
+        </div>`;
+    }
+
+    el.innerHTML = `
+      <div class="header-bar">
+        <div class="header-cell">
+          <div class="header-label">Last Download</div>
+          <div class="header-value sm">${this.escapeHtml(lastDl)}</div>
+        </div>
+        <div class="header-cell">
+          <div class="header-label">Last Feed</div>
+          <div class="header-value sm">${this.escapeHtml(lastFeed)}</div>
+        </div>
+        <div class="header-cell">
+          <div class="header-label">Process</div>
+          <div class="header-value sm">${running}</div>
+        </div>
+      </div>
+
+      ${progressHtml}
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0">
+        <div class="card" style="text-align:center;padding:24px">
+          <div style="font-size:36px;font-weight:700;color:${dlDays !== null && dlDays > 2 ? '#FF6B6B' : '#4ECDC4'}">${dlDisplay}</div>
+          <div style="color:var(--dim);margin-top:8px">Días sin descargar</div>
+          <div style="font-size:12px;color:var(--dim)">Última: ${this.escapeHtml(lastDl)}</div>
+        </div>
+        <div class="card" style="text-align:center;padding:24px">
+          <div style="font-size:36px;font-weight:700;color:${pending > 0 ? '#FFA500' : '#4ECDC4'}">${pending > 0 ? feedDisplay : '0'}</div>
+          <div style="color:var(--dim);margin-top:8px">Días pendientes de alimentar</div>
+          <div style="font-size:12px;color:var(--dim)">${pending} packages sin absorber</div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:12px;margin:12px 0">
+        <button class="wd-btn" onclick="app.wikidataDownload()" ${dlRunning ? 'disabled' : ''}>
+          📥 Descargar ahora
+        </button>
+        <button class="wd-btn" onclick="app.wikidataFeed()" ${dlRunning ? 'disabled' : ''}>
+          🧠 Alimentar ahora
+        </button>
+        <button class="wd-btn wd-btn-stop" onclick="app.wikidataStop()" ${!dlRunning ? 'disabled' : ''}>
+          ⏹ Detener
+        </button>
+      </div>
+
+      <div class="section-title" style="margin-top:20px"><h2>Paquetes pendientes por especialista</h2></div>
+      <div class="card">${domainBars}</div>
+    `;
+
+    if (this._wdPollTimer) {
+      clearTimeout(this._wdPollTimer);
+      this._wdPollTimer = null;
+    }
+    if (dlRunning) {
+      this._wdPollTimer = setTimeout(() => this.renderWikidata(), 3000);
+    }
+  }
+
+  async wikidataDownload() {
+    const btn = document.querySelector('.wd-btn:first-child');
+    if (btn) { btn.textContent = '📥 Descargando...'; btn.disabled = true; }
+    const r = await this.postJSON(`${this.apiBase}/wikidata/download`, {});
+    if (r && r.status === 'started') {
+      setTimeout(() => this.renderWikidata(), 500);
+    }
+  }
+
+  async wikidataFeed() {
+    const btns = document.querySelectorAll('.wd-btn');
+    if (btns[1]) { btns[1].textContent = '🧠 Alimentando...'; btns[1].disabled = true; }
+    const r = await this.postJSON(`${this.apiBase}/wikidata/feed`, {});
+    if (r && r.status === 'started') {
+      setTimeout(() => this.renderWikidata(), 500);
+    }
+  }
+
+  async wikidataStop() {
+    if (this._wdPollTimer) {
+      clearTimeout(this._wdPollTimer);
+      this._wdPollTimer = null;
+    }
+    const r = await this.postJSON(`${this.apiBase}/wikidata/stop`, {});
+    if (r && r.status === 'stopped') {
+      this.renderWikidata();
+    }
   }
 }
 

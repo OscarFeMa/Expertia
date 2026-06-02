@@ -18,6 +18,17 @@ from typing import List, Dict, Optional
 from pathlib import Path
 
 from ddgs import DDGS
+
+# Low-quality sources to exclude from scraping results
+EXCLUDED_DOMAINS = {
+    'en.wikipedia.org', 'www.wikipedia.org', 'wikipedia.org',
+    'www.britannica.com', 'britannica.com',
+    'www.geeksforgeeks.org',
+    'www.bbc.co.uk/bitesize',
+    'plato.stanford.edu',
+    'mathworld.wolfram.com',
+    'www.mdpi.com',
+}
 import trafilatura
 from trafilatura import extract
 
@@ -159,7 +170,16 @@ def search_duckduckgo(
         if not results:
             logger.warning(f"[DDGS] No results for '{query}'")
             return []
-        logger.info(f"[DDGS] Found {len(results)} results for '{query}'")
+        # Filter out excluded domains
+        from urllib.parse import urlparse
+        filtered = []
+        for r in results:
+            host = urlparse(r.get('href', '')).hostname or ''
+            if host in EXCLUDED_DOMAINS or any(host.endswith('.' + d) for d in EXCLUDED_DOMAINS):
+                continue
+            filtered.append(r)
+        results = filtered[:max_results]
+        logger.info(f"[DDGS] Found {len(results)} results (filtered from {len(search_results)}) for '{query}'")
         valid_results = filter_valid_urls(results)
         return sort_results_by_trust(valid_results, max_results)
     except (RateLimitError, ScraperTimeoutError):
@@ -417,7 +437,7 @@ class ModernWebScraper:
                 try:
                     content = await asyncio.to_thread(self.content_extractor.extract_content, url)
                     if content:
-                        self._store_content(content, query)
+                        self._store_content(content, query, domain=domain or 'general')
                         return content
                 except (RateLimitError, ScraperTimeoutError, WebScraperError) as e:
                     logger.warning(f"Skipping {url}: {e}")
@@ -430,13 +450,22 @@ class ModernWebScraper:
         logger.info(f"Extracted content from {len(extracted_contents)} URLs")
         return extracted_contents
 
-    def _store_content(self, content: Dict[str, str], query: str) -> None:
+    def _store_content(self, content: Dict[str, str], query: str, domain: str = 'general') -> None:
+        url = content.get('url', '')
+        text = content.get('content', '')
+        if not text or len(text.strip()) < 200:
+            return
+        lower_text = text.lower()
+        garbage = ['cookie', 'sign in', 'javascript is disabled', 'loading',
+                    'captcha', 'access denied', 'page not found']
+        if any(p in lower_text for p in garbage):
+            return
         try:
             self.db_manager.execute_query(
                 """INSERT INTO knowledge_packages
                    (topic, source_url, domain, structured_knowledge, created_at)
                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)""",
-                (query, content.get('url', ''), 'general', content.get('content', ''))
+                (query, url, domain, text)
             )
         except Exception as e:
             logger.error(f"Failed to store content: {e}")

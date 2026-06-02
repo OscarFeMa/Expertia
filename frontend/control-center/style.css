@@ -1097,3 +1097,62 @@ pre {
   min-height: 180px;
   margin-bottom: 14px;
 }
+
+/* ── Wikidata Tab ────────────────────────────────────────────────────────── */
+.wd-btn {
+  padding: 10px 20px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.15s, opacity 0.15s;
+}
+.wd-btn:hover:not(:disabled) {
+  background: var(--hover-bg);
+}
+.wd-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.wd-btn-stop {
+  border-color: var(--error);
+  color: var(--error);
+}
+.wd-domain-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.wd-domain-row:last-child {
+  border-bottom: none;
+}
+.wd-domain-name {
+  width: 180px;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wd-bar-wrap {
+  flex: 1;
+  height: 18px;
+  background: var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.wd-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--inactive), var(--active));
+  border-radius: 4px;
+  transition: width 0.3s;
+}
+.wd-domain-count {
+  width: 50px;
+  text-align: right;
+  font-size: 13px;
+  font-weight: 600;
+}

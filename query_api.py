@@ -26,6 +26,13 @@ async def lifespan(app: FastAPI):
     global llm
     llm = LLMRunner()
     logger.info("LLMRunner initialized")
+    # Reset stale ACTIVE statuses from crashed pipelines
+    try:
+        db = get_db_manager()
+        db.execute_query("UPDATE specialist_registry SET status = 'IDLE' WHERE status = 'ACTIVE'")
+        logger.info("Reset stale ACTIVE specialist statuses")
+    except Exception as e:
+        logger.warning(f"Failed to reset stale ACTIVE: {e}")
     yield
     if llm:
         if hasattr(llm, '_session') and llm._session:
@@ -36,9 +43,14 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Expertia Query API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:8011",
+        "http://localhost:8080",
+        "http://127.0.0.1:8011",
+        "http://127.0.0.1:8080",
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 app.include_router(api_router)
@@ -131,25 +143,51 @@ def _find_best_domain(question: str) -> tuple[str, str]:
 
 def _fetch_context(domain: str, question: str, max_chars: int = 2000) -> list[str]:
     db = _get_db()
-    rows = db.execute_query(
-        """SELECT structured_knowledge FROM knowledge_packages
-           WHERE domain = ? ORDER BY id DESC LIMIT 5""",
-        (domain,),
-        fetch=True,
-    ) or []
     contexts = []
-    total = 0
-    for r in rows:
-        text = (r.get("structured_knowledge") or "")[:800]
-        if not text:
-            continue
-        if total + len(text) > max_chars:
-            break
-        contexts.append(text)
-        total += len(text)
+
+    # Try FTS5 keyword search first (table may not exist yet)
+    keywords = [w for w in question.split() if len(w) > 3]
+    if keywords:
+        try:
+            fts_query = " OR ".join(keywords[:5])
+            rows = db.execute_query(
+                """SELECT kp.structured_knowledge FROM knowledge_packages_fts fts
+                   JOIN knowledge_packages kp ON kp.id = fts.rowid
+                   JOIN specialist_registry sr ON sr.domain = kp.domain
+                   WHERE knowledge_packages_fts MATCH ? AND sr.tier >= 1
+                   LIMIT 5""",
+                (fts_query,),
+                fetch=True,
+            ) or []
+            for r in rows:
+                text = (r.get("structured_knowledge") or "")[:800]
+                if text:
+                    contexts.append(text)
+        except Exception:
+            pass  # FTS5 table doesn't exist yet, fall through to recency
+
+    # Fallback to recency if FTS returned nothing
+    if not contexts:
+        rows = db.execute_query(
+            """SELECT kp.structured_knowledge FROM knowledge_packages kp
+               JOIN specialist_registry sr ON sr.domain = kp.domain
+               WHERE kp.domain = ? AND sr.tier >= 1
+               ORDER BY kp.id DESC LIMIT 5""",
+            (domain,),
+            fetch=True,
+        ) or []
+        for r in rows:
+            text = (r.get("structured_knowledge") or "")[:800]
+            if text:
+                contexts.append(text)
+
+    # Final fallback: any domain, tier >= 1
     if not contexts:
         rows2 = db.execute_query(
-            "SELECT structured_knowledge FROM knowledge_packages ORDER BY id DESC LIMIT 3",
+            """SELECT kp.structured_knowledge FROM knowledge_packages kp
+               JOIN specialist_registry sr ON sr.domain = kp.domain
+               WHERE sr.tier >= 1
+               ORDER BY kp.id DESC LIMIT 3""",
             fetch=True,
         )
         for r in rows2 or []:
