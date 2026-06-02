@@ -8,26 +8,26 @@ import time
 import logging
 import json
 import asyncio
-import gzip
-import ijson
+import os
 import re
 import signal
 import subprocess
 import argparse
 import math
 import requests
+import threading
 from pathlib import Path
 from collections import defaultdict
 from typing import Dict, List, Optional, Callable, Set
-from decimal import Decimal
-from contextlib import contextmanager
 from datetime import datetime
+
+from dissect_wikidata import ClassHierarchyCache, BatchWikidataExtractor, CHECKPOINT_INTERVAL
 
 LLM_QUERY_TIMEOUT = 180
 PHASE_B_PER_SPECIALIST_TIMEOUT = 3600  # 60 min max per specialist per cycle
 MAX_PHASE_B_CYCLES = 100
 VRAM_WARN_THRESHOLD_MB = 2048
-_shutdown_event = asyncio.Event()
+_shutdown_event = threading.Event()
 
 # ── Tier System ──────────────────────────────────────────────────────────────
 TIER_NONE = 0
@@ -46,23 +46,35 @@ TIER_NAMES = {
 
 FAILURE_PENALTIES = {
     TIER_NONE: 0.965,
-    TIER_BRONZE: 0.96,
+    TIER_BRONZE: 0.97,
     TIER_SILVER: 0.98,
     TIER_GOLD: 0.99,
     TIER_LEGEND: 0.99,
 }
 
 TIER_CRITERIA = {
-    TIER_BRONZE: {"ema": 0.90, "quality": 0.70, "fail_rate": 0.10, "packages": 500},
-    TIER_SILVER: {"ema": 0.95, "quality": 0.85, "fail_rate": 0.05, "packages": 1000},
-    TIER_GOLD: {"ema": 0.98, "quality": 0.90, "fail_rate": 0.02, "packages": 5000},
+    TIER_BRONZE: {"ema": 0.92, "quality": 0.60, "fail_rate": 0.15, "packages": 200},
+    TIER_SILVER: {"ema": 0.95, "quality": 0.75, "fail_rate": 0.08, "packages": 500},
+    TIER_GOLD: {"ema": 0.97, "quality": 0.85, "fail_rate": 0.03, "packages": 1500},
 }
 
-LEGEND_EMA_MIN = 0.9999
-LEGEND_CYCLES_CLEAN = 10
+LEGEND_EMA_MIN = 0.999
+LEGEND_CYCLES_CLEAN = 50
 
 NURTURE_TARGET_EMA = 0.96
 NURTURE_CYCLE_TIMEOUT = 900  # 15 min per specialist cycle
+
+# Minimum real Phase B cycles required for tier promotion
+MIN_CYCLES_FOR_BRONZE = 3
+MIN_CYCLES_FOR_SILVER = 10
+MIN_CYCLES_FOR_GOLD = 25
+
+
+def estimate_tokens(text: str) -> int:
+    """Estimate token count from text. Roughly 1 token per 4 chars for English."""
+    if not text:
+        return 0
+    return max(1, len(text) // 4)
 
 
 def check_ollama_vram() -> Optional[int]:
@@ -473,16 +485,17 @@ class PipelineController:
                         return TIER_LEGEND
                 return TIER_GOLD
 
-            if ema >= TIER_CRITERIA[TIER_GOLD]["ema"] and avg_quality >= TIER_CRITERIA[TIER_GOLD]["quality"] and fail_rate < TIER_CRITERIA[TIER_GOLD]["fail_rate"] and packages >= TIER_CRITERIA[TIER_GOLD]["packages"]:
+            # Minimum real Phase B cycles required for tier promotion
+            if ema >= TIER_CRITERIA[TIER_GOLD]["ema"] and avg_quality >= TIER_CRITERIA[TIER_GOLD]["quality"] and fail_rate < TIER_CRITERIA[TIER_GOLD]["fail_rate"] and packages >= TIER_CRITERIA[TIER_GOLD]["packages"] and total_cycles >= MIN_CYCLES_FOR_GOLD:
                 return TIER_GOLD
-            if ema >= TIER_CRITERIA[TIER_SILVER]["ema"] and avg_quality >= TIER_CRITERIA[TIER_SILVER]["quality"] and fail_rate < TIER_CRITERIA[TIER_SILVER]["fail_rate"] and packages >= TIER_CRITERIA[TIER_SILVER]["packages"]:
+            if ema >= TIER_CRITERIA[TIER_SILVER]["ema"] and avg_quality >= TIER_CRITERIA[TIER_SILVER]["quality"] and fail_rate < TIER_CRITERIA[TIER_SILVER]["fail_rate"] and packages >= TIER_CRITERIA[TIER_SILVER]["packages"] and total_cycles >= MIN_CYCLES_FOR_SILVER:
                 return TIER_SILVER
-            if ema >= TIER_CRITERIA[TIER_BRONZE]["ema"] and avg_quality >= TIER_CRITERIA[TIER_BRONZE]["quality"] and fail_rate < TIER_CRITERIA[TIER_BRONZE]["fail_rate"] and packages >= TIER_CRITERIA[TIER_BRONZE]["packages"]:
+            if ema >= TIER_CRITERIA[TIER_BRONZE]["ema"] and avg_quality >= TIER_CRITERIA[TIER_BRONZE]["quality"] and fail_rate < TIER_CRITERIA[TIER_BRONZE]["fail_rate"] and packages >= TIER_CRITERIA[TIER_BRONZE]["packages"] and total_cycles >= MIN_CYCLES_FOR_BRONZE:
                 return TIER_BRONZE
             return TIER_NONE
         except Exception as e:
             logger.error(f"Tier computation failed for {specialist_id}: {e}")
-            return current_tier
+            return TIER_NONE
 
     def _get_racha_25(self, specialist_id: int) -> float:
         try:
@@ -518,7 +531,8 @@ class PipelineController:
             return 0
 
     def update_ema_score(self, specialist_id: int, success: bool, content_length: int = 0,
-                         trust_score: int = 50, contents_count: int = 0, packages_saved: int = 0):
+                         trust_score: int = 50, contents_count: int = 0, packages_saved: int = 0,
+                         is_feed: bool = False):
         try:
             result = self.db_manager.execute_query(
                 "SELECT ema_score, weighted_success, weighted_fail, tier FROM specialist_registry WHERE id = ?",
@@ -541,7 +555,9 @@ class PipelineController:
                     quality = 0.25 * size_factor + 0.25 * coverage_factor + 0.25 * trust_factor + 0.25 * efficiency
                 else:
                     quality = 0.1
-                ws += quality
+                # Feed updates: do NOT increment weighted_success (tier criteria)
+                if not is_feed:
+                    ws += quality
                 alpha = 0.08
                 new_ema = current_ema + alpha * quality * (1.0 - current_ema)
             else:
@@ -657,6 +673,8 @@ class PipelineController:
         try:
             # Shortcut: early return for small batches already cached
             cache = getattr(self, '_p279_cache', {})
+            if len(cache) > 100000:
+                cache = dict(list(cache.items())[-50000:])
             target_root_p279 = self._fetch_p279_parents(root_qid, cache)
 
             if not target_root_p279:
@@ -949,6 +967,10 @@ class PipelineController:
         if not members:
             return []
 
+        # Extract keywords from question for relevance scoring
+        question_lower = question.lower()
+        keywords = [w for w in re.split(r'\W+', question_lower) if len(w) > 3]
+
         results = []
         for m in members:
             try:
@@ -958,12 +980,16 @@ class PipelineController:
                     WHERE domain = ?
                     ORDER BY created_at DESC
                     LIMIT ?
-                """, (m['domain'], top_k), fetch=True) or []
+                """, (m['domain'], top_k * 2), fetch=True) or []
                 for pkg in pkgs:
+                    # Keyword relevance scoring
+                    text = (pkg.get('topic', '') + ' ' + pkg.get('structured_knowledge', '')).lower()
+                    relevance = sum(1 for kw in keywords if kw in text) / max(len(keywords), 1)
                     results.append({
                         'specialist': m['domain'],
                         'weight': m['weight'],
                         'ema': m['ema_score'],
+                        'relevance': relevance,
                         'topic': pkg['topic'],
                         'knowledge': pkg['structured_knowledge'],
                         'source': pkg['source_url'],
@@ -972,9 +998,9 @@ class PipelineController:
             except Exception as e:
                 logger.debug(f"Query super-expert member {m['domain']}: {e}")
 
-        # Sort by weight desc, then EMA desc
-        results.sort(key=lambda r: (r['weight'], r['ema']), reverse=True)
-        return results
+        # Sort by relevance * weight * EMA
+        results.sort(key=lambda r: (r['relevance'] * r['weight'] * r['ema']), reverse=True)
+        return results[:top_k]
 
     @staticmethod
     def _make_schema_matcher(schema: Dict) -> Callable[[Dict], bool]:
@@ -1122,7 +1148,7 @@ class PipelineController:
             2: [f"{keywords} current trends", f"{keywords} challenges and solutions",
                 f"{keywords} future directions", f"{keywords} innovations",
                 f"{keywords} cutting edge research", f"{keywords} expert insights",
-                f"{keywords}案例分析", f"{keywords} overview"],
+                f"{keywords} case studies", f"{keywords} overview"],
             3: [f"{keywords} tools and frameworks", f"{keywords} implementations",
                 f"{keywords} best tools 2026", f"{keywords} comparison",
                 f"{keywords} practical guide", f"{keywords} tutorial",
@@ -1154,9 +1180,13 @@ class PipelineController:
                     self._log_activity(f"{domain} > {len(results)} resultados para \"{query[:40]}\"")
                     for content in results:
                         ct = content.get('content', '')
-                        if not ct:
+                        if not ct or len(ct.strip()) < 200:
                             continue
-                        total_l += len(ct)
+                        # Reject garbage content before distilling
+                        ct_lower = ct.lower()
+                        if any(p in ct_lower for p in ['cookie', 'sign in', 'javascript is disabled', 'captcha', 'loading spinner']):
+                            continue
+                        total_l += estimate_tokens(ct)
                         trust = content.get('trust_score', 50)
                         trusts.append(trust)
                         url = content.get('url', '') or content.get('source', '')
@@ -1173,6 +1203,10 @@ class PipelineController:
                             logger.warning(f"Distill failed for {url[:60]}: {e}")
                             continue
                         if not domain:
+                            continue
+                        # Quality gate: reject empty or too short distillations
+                        if not dist or len(dist.strip()) < 10:
+                            logger.debug(f"Distill too short ({len(dist or '')} chars), skipping")
                             continue
                         # Save knowledge package (DB + file)
                         if dist and url:
@@ -1369,6 +1403,7 @@ class PipelineController:
                         f"{current_target['domain']} — skipping"
                     )
                     current_target = None
+                    await asyncio.sleep(30)
                     continue
 
             sid = current_target['sid']
@@ -1428,6 +1463,61 @@ class PipelineController:
             if new_elapsed - last_report_time >= report_interval_minutes * 60:
                 await self._generate_report(new_elapsed)
                 last_report_time = new_elapsed
+
+    async def _run_wikidata_feed(self, all_specialists: list):
+        logger.info("=" * 80)
+        logger.info("WIKIDATA FEED MODE — absorbing pending Wikidata packages")
+        logger.info("=" * 80)
+
+        total_absorbed = 0
+        for specialist in all_specialists:
+            sid = specialist['id']
+            domain = specialist['domain']
+
+            pending = self.db_manager.execute_query(
+                """SELECT COUNT(*) AS cnt
+                   FROM knowledge_packages
+                   WHERE domain = ? AND qid IS NOT NULL AND absorbed_at IS NULL""",
+                (domain,), fetch=True
+            )
+            cnt = pending[0]['cnt'] if pending else 0
+            if cnt == 0:
+                logger.info(f"[Feed] {domain}: no pending packages")
+                continue
+
+            try:
+                self.db_manager.execute_query(
+                    """UPDATE knowledge_packages
+                       SET absorbed_at = CURRENT_TIMESTAMP
+                       WHERE domain = ? AND qid IS NOT NULL AND absorbed_at IS NULL""",
+                    (domain,)
+                )
+
+                self.db_manager.execute_query(
+                    """UPDATE specialist_registry
+                       SET feed_packages = feed_packages + ?,
+                           last_wikidata_feed = CURRENT_TIMESTAMP
+                       WHERE id = ?""",
+                    (cnt, sid)
+                )
+
+                # Feed mode: update EMA but do NOT count toward weighted_success (tier criteria)
+                effective_cnt = max(cnt, 10)
+                self.update_ema_score(
+                    specialist_id=sid, success=True,
+                    content_length=10000, trust_score=95,
+                    contents_count=effective_cnt, packages_saved=effective_cnt,
+                    is_feed=True,
+                )
+
+                total_absorbed += cnt
+                logger.info(f"[Feed] {domain}: absorbed {cnt} packages, EMA updated")
+            except Exception as e:
+                logger.error(f"[Feed] {domain}: error {e}")
+
+        logger.info(f"Feed complete: {total_absorbed} packages absorbed")
+        if total_absorbed == 0:
+            logger.info("No pending packages — nothing to do")
 
     async def run_pipeline(self, sample_size: Optional[int] = None,
                            min_duration_hours: float = 5.0,
@@ -1502,6 +1592,10 @@ class PipelineController:
                     phase_a_results = await self.run_phase_a_cascade(all_specialists, max_entities)
             else:
                 logger.info("Phase A skipped (--phase=web)")
+
+            # Phase: Feed mode (consume pending Wikidata packages)
+            if phase == 'feed':
+                await self._run_wikidata_feed(all_specialists)
 
             # Phase B: Nurture mode (one by one)
             if phase == 'nurture':
@@ -1647,7 +1741,7 @@ class PipelineController:
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Expertia Pipeline Orchestrator')
-    parser.add_argument('--phase', choices=['full', 'cascade', 'web', 'nurture'], default='full',
+    parser.add_argument('--phase', choices=['full', 'cascade', 'web', 'nurture', 'feed'], default='full',
                         help='Pipeline phase to run (default: full)')
     parser.add_argument('--specialist', type=str, default='all',
                         help='Run only this specialist domain (default: all)')
@@ -1664,7 +1758,6 @@ def parse_args():
 
 def _signal_handler(signum, frame):
     _shutdown_event.set()
-    import threading
     threading.Timer(5.0, os._exit, [0]).start()
 
 
@@ -1682,6 +1775,12 @@ async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.
     if hasattr(signal, 'SIGTERM'):
         signal.signal(signal.SIGTERM, _signal_handler)
     try:
+        if phase == 'nurture':
+            max_cycles = 0  # nurture runs until all specialists reach 0.96 — no cycle limit
+        if phase == 'feed':
+            max_cycles = 1  # feed is a single pass, not a loop
+            if min_duration_hours >= 5.0:
+                min_duration_hours = 0.1  # don't wait 5 hours for nothing
         controller = PipelineController(sample_size=sample_size, cycles_per_specialist=3)
         await controller.run_pipeline(
             min_duration_hours=min_duration_hours,

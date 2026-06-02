@@ -39,7 +39,7 @@ class TestRunPhaseB:
         controller.llm_runner.ensure_model_loaded = AsyncMock(return_value=True)
         controller.llm_runner.query_llm = AsyncMock(return_value="Distilled knowledge point")
         controller.web_scraper.search_and_extract = AsyncMock(return_value=[
-            {"content": "Some test content about the domain", "trust_score": 80, "url": "http://test.com/article"},
+            {"content": "This is a detailed article about physics covering quantum mechanics, thermodynamics, and relativity. " * 5, "trust_score": 80, "url": "http://test.com/article"},
         ])
         controller.db_manager.execute_query = MagicMock()
 

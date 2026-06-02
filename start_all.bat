@@ -1,4 +1,5 @@
 @echo off
-start /min pythonw.exe web_dashboard.py
-timeout /t 3 >nul
-start /min pythonw.exe watchdog.py
+cd /d "%~dp0"
+start /min pythonw.exe query_api.py
+timeout /t 5 >nul
+start /min pythonw.exe orchestrator.py --phase nurture

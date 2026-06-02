@@ -217,6 +217,11 @@ class DatabaseManager:
         Returns:
             Row count
         """
+        VALID_TABLES = {"specialist_registry", "knowledge_packages", "cartridge_offsets",
+                        "super_experts", "super_expert_members", "wikidata_sync_log"}
+        if table_name not in VALID_TABLES:
+            logger.error(f"Invalid table name: {table_name}")
+            return 0
         with self.get_cursor() as cursor:
             try:
                 cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
@@ -310,6 +315,37 @@ class DatabaseManager:
                     )
                 """)
                 
+                # Create FTS5 index for keyword search on knowledge_packages
+                cursor.execute("""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_packages_fts USING fts5(
+                        topic, structured_knowledge, domain,
+                        content='knowledge_packages',
+                        content_rowid='id'
+                    )
+                """)
+                
+                # Triggers to keep FTS5 index in sync
+                cursor.execute("""
+                    CREATE TRIGGER IF NOT EXISTS kp_ai AFTER INSERT ON knowledge_packages BEGIN
+                        INSERT INTO knowledge_packages_fts(rowid, topic, structured_knowledge, domain)
+                        VALUES (new.id, new.topic, new.structured_knowledge, new.domain);
+                    END
+                """)
+                cursor.execute("""
+                    CREATE TRIGGER IF NOT EXISTS kp_ad AFTER DELETE ON knowledge_packages BEGIN
+                        INSERT INTO knowledge_packages_fts(knowledge_packages_fts, rowid, topic, structured_knowledge, domain)
+                        VALUES ('delete', old.id, old.topic, old.structured_knowledge, old.domain);
+                    END
+                """)
+                cursor.execute("""
+                    CREATE TRIGGER IF NOT EXISTS kp_au AFTER UPDATE ON knowledge_packages BEGIN
+                        INSERT INTO knowledge_packages_fts(knowledge_packages_fts, rowid, topic, structured_knowledge, domain)
+                        VALUES ('delete', old.id, old.topic, old.structured_knowledge, old.domain);
+                        INSERT INTO knowledge_packages_fts(rowid, topic, structured_knowledge, domain)
+                        VALUES (new.id, new.topic, new.structured_knowledge, new.domain);
+                    END
+                """)
+                
                 # Create ema_history table for scoring
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS ema_history (
@@ -375,19 +411,95 @@ class DatabaseManager:
                     "ALTER TABLE specialist_registry ADD COLUMN qid_path TEXT DEFAULT NULL",
                     "ALTER TABLE specialist_registry ADD COLUMN weighted_success REAL DEFAULT 0.0",
                     "ALTER TABLE specialist_registry ADD COLUMN weighted_fail REAL DEFAULT 0.0",
+                    "ALTER TABLE specialist_registry ADD COLUMN last_wikidata_download TIMESTAMP DEFAULT NULL",
+                    "ALTER TABLE specialist_registry ADD COLUMN last_wikidata_feed TIMESTAMP DEFAULT NULL",
                     "ALTER TABLE knowledge_packages ADD COLUMN qid TEXT DEFAULT NULL",
                     "ALTER TABLE knowledge_packages ADD COLUMN subdomain_path TEXT DEFAULT NULL",
+                    "ALTER TABLE knowledge_packages ADD COLUMN absorbed_at TIMESTAMP DEFAULT NULL",
                 ]:
                     try:
                         cursor.execute(col_sql)
                     except sqlite3.OperationalError:
                         pass
 
+                # Create wikidata_sync_log table
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS wikidata_sync_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        specialist_id INTEGER NOT NULL,
+                        domain TEXT NOT NULL,
+                        qids_added INTEGER DEFAULT 0,
+                        sync_type TEXT DEFAULT 'incremental',
+                        status TEXT DEFAULT 'SUCCESS',
+                        error_message TEXT,
+                        started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        completed_at TIMESTAMP,
+                        FOREIGN KEY (specialist_id) REFERENCES specialist_registry(id)
+                    )
+                """)
+
                 # Migration: reset legacy tier default (3 -> 0) to match new enum
-                try:
-                    cursor.execute("UPDATE specialist_registry SET tier = 0 WHERE tier = 3")
-                except sqlite3.OperationalError:
-                    pass
+                # Only run once — guard with migration_log table
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS _migration_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT UNIQUE NOT NULL,
+                        applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                cursor.execute("SELECT id FROM _migration_log WHERE name = 'legacy_tier_reset'")
+                if not cursor.fetchone():
+                    try:
+                        cursor.execute("UPDATE specialist_registry SET tier = 0 WHERE tier = 3")
+                        cursor.execute("INSERT INTO _migration_log (name) VALUES ('legacy_tier_reset')")
+                        logger.info("Migration 'legacy_tier_reset' applied")
+                    except sqlite3.OperationalError:
+                        pass
+
+                # Migration: deduplicate knowledge_packages and add UNIQUE(qid,domain)
+                cursor.execute("SELECT id FROM _migration_log WHERE name = 'kp_dedup_qid_domain'")
+                if not cursor.fetchone():
+                    try:
+                        cursor.execute("""
+                            DELETE FROM knowledge_packages
+                            WHERE qid IS NOT NULL AND rowid NOT IN (
+                                SELECT MIN(rowid) FROM knowledge_packages
+                                WHERE qid IS NOT NULL GROUP BY qid, domain
+                            )
+                        """)
+                        cursor.execute("""
+                            CREATE UNIQUE INDEX IF NOT EXISTS idx_kp_qid_domain
+                            ON knowledge_packages(qid, domain)
+                        """)
+                        cursor.execute("INSERT INTO _migration_log (name) VALUES ('kp_dedup_qid_domain')")
+                        logger.info("Migration 'kp_dedup_qid_domain' applied")
+                    except sqlite3.OperationalError:
+                        pass
+
+                # Migration: populate FTS5 index for existing knowledge_packages
+                cursor.execute("SELECT id FROM _migration_log WHERE name = 'kp_fts5_populate'")
+                if not cursor.fetchone():
+                    try:
+                        cursor.execute("""
+                            INSERT INTO knowledge_packages_fts(rowid, topic, structured_knowledge, domain)
+                            SELECT id, topic, structured_knowledge, domain FROM knowledge_packages
+                        """)
+                        cursor.execute("INSERT INTO _migration_log (name) VALUES ('kp_fts5_populate')")
+                        logger.info("Migration 'kp_fts5_populate' applied")
+                    except sqlite3.OperationalError as e:
+                        logger.warning(f"FTS5 populate migration skipped: {e}")
+
+                # Migration: add feed_packages column for separating feed vs real EMA
+                cursor.execute("SELECT id FROM _migration_log WHERE name = 'kp_feed_packages_col'")
+                if not cursor.fetchone():
+                    try:
+                        cursor.execute(
+                            "ALTER TABLE specialist_registry ADD COLUMN feed_packages INTEGER DEFAULT 0"
+                        )
+                        cursor.execute("INSERT INTO _migration_log (name) VALUES ('kp_feed_packages_col')")
+                        logger.info("Migration 'kp_feed_packages_col' applied")
+                    except sqlite3.OperationalError:
+                        pass
 
                 self._get_connection().commit()
                 logger.info("Specialist tables initialized successfully")

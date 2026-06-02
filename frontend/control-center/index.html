@@ -38,6 +38,9 @@
       <div class="nav-item" data-tab="incidents" onclick="app.switchTab('incidents')">
         <span class="nav-icon">🔥</span> Incidents
       </div>
+      <div class="nav-item" data-tab="wikidata" onclick="app.switchTab('wikidata')">
+        <span class="nav-icon">📡</span> Wikidata
+      </div>
     </nav>
     <div class="sidebar-stats" id="sidebar-stats">
       <div class="ss-item"><span class="ss-val" id="ss-specs">-</span><span class="ss-lbl">Specialists</span></div>
@@ -60,12 +63,13 @@
     <div class="tab-content" id="tab-super-experts"></div>
     <div class="tab-content" id="tab-certified"></div>
     <div class="tab-content" id="tab-incidents"></div>
+    <div class="tab-content" id="tab-wikidata"></div>
   </main>
   <div class="status-bar" id="status-bar">
     <span id="sb-status">Loading...</span>
     <span id="sb-time"></span>
   </div>
   <script src="charts.js"></script>
-  <script src="app.js?v=1"></script>
+  <script src="app.js?v=2"></script>
 </body>
 </html>

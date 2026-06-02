@@ -22,13 +22,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
 _PIPELINE_STATE_FILE = Path(__file__).parent / "pipeline_state.json"
+_WIKIDATA_PID_FILE = Path(__file__).parent.parent / "storage" / "wikidata_download.pid"
+_WIKIDATA_PROGRESS_FILE = Path(__file__).parent.parent / "storage" / "wikidata_progress.json"
 
 _pipeline: dict = {"pid": None, "start_time": 0, "duration_hours": 0}
 _pipeline_lock = threading.Lock()
 _kill_timer: Optional[threading.Timer] = None
 
+_wikidata_process: dict = {"pid": None, "type": None, "start_time": 0}
+_wikidata_lock = threading.Lock()
+
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 EXPERTIA_API_KEY = os.environ.get("EXPERTIA_API_KEY", "")
+
+if not EXPERTIA_API_KEY:
+    logger.warning("EXPERTIA_API_KEY not set — API endpoints are unprotected (local mode)")
 
 
 def verify_api_key(x_api_key: Optional[str] = Security(_api_key_header)):
@@ -79,6 +87,28 @@ def _load_pipeline_state():
 
 # Restore state from disk on module load
 _load_pipeline_state()
+
+
+def _try_restore_wikidata_pid():
+    if _wikidata_process.get("pid"):
+        return
+    try:
+        if _WIKIDATA_PID_FILE.exists():
+            raw = _WIKIDATA_PID_FILE.read_text().strip()
+            pid = int(raw)
+            if _is_pid_alive(pid):
+                _wikidata_process["pid"] = pid
+                _wikidata_process["type"] = "download"
+                _wikidata_process["start_time"] = _WIKIDATA_PROGRESS_FILE.stat().st_mtime if _WIKIDATA_PROGRESS_FILE.exists() else time.time()
+                logger.info(f"Restored wikidata download PID={pid}")
+            else:
+                _WIKIDATA_PID_FILE.unlink()
+                logger.info(f"Cleaned stale wikidata PID file (PID={pid} no longer alive)")
+    except Exception as e:
+        logger.warning(f"Failed to restore wikidata PID: {e}")
+
+
+_try_restore_wikidata_pid()
 
 
 def _is_pid_alive(pid):
@@ -178,7 +208,7 @@ def get_specialists():
 
     for r in rows:
         tier = r.get("tier", 0) or 0
-        r["is_reliable"] = 1 if tier >= 2 else 0
+        r["is_reliable"] = 1 if tier >= 1 else 0
         sid = r["id"]
 
         if sid in ch_map:
@@ -266,30 +296,33 @@ class StartPipelineRequest(BaseModel):
     duration: float = 5.0
 
 
+class WikidataDownloadRequest(BaseModel):
+    phase: str = "incremental"
+
+
 @router.post("/pipeline/start", dependencies=[Depends(verify_api_key)])
 def start_pipeline(req: StartPipelineRequest):
     with _pipeline_lock:
         if _pipeline["pid"] and _is_pid_alive(_pipeline["pid"]):
             raise HTTPException(status_code=409, detail="Pipeline already running")
 
-    duration_hours = req.duration
-    if req.phase == 'nurture':
-        duration_hours = 99999  # nurture runs until manual stop
+        duration_hours = req.duration
+        if req.phase == 'nurture':
+            duration_hours = 99999  # nurture runs until manual stop
 
-    cmd = [
-        "python", "orchestrator.py",
-        "--phase", req.phase,
-        "--specialist", req.specialist,
-        "--model", req.model,
-        "--duration", str(duration_hours),
-        "--max-duration", str(duration_hours),
-    ]
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-        )
-        with _pipeline_lock:
+        cmd = [
+            "python", "orchestrator.py",
+            "--phase", req.phase,
+            "--specialist", req.specialist,
+            "--model", req.model,
+            "--duration", str(duration_hours),
+            "--max-duration", str(duration_hours),
+        ]
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
             now = time.time()
             _pipeline["pid"] = proc.pid
             _pipeline["start_time"] = now
@@ -299,14 +332,14 @@ def start_pipeline(req: StartPipelineRequest):
             if req.phase != 'nurture':
                 _schedule_kill_timer()
 
-        _save_pipeline_state()
-        logger.info(f"Pipeline started PID={proc.pid} cmd={' '.join(cmd)}")
-        kill_after_s = duration_hours * 3600
-        logger.info(f"Kill timer set for {duration_hours}h ({kill_after_s}s)")
-        return {"status": "started", "pid": proc.pid}
-    except Exception as e:
-        logger.error(f"Failed to start pipeline: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+            _save_pipeline_state()
+            logger.info(f"Pipeline started PID={proc.pid} cmd={' '.join(cmd)}")
+            kill_after_s = duration_hours * 3600
+            logger.info(f"Kill timer set for {duration_hours}h ({kill_after_s}s)")
+            return {"status": "started", "pid": proc.pid}
+        except Exception as e:
+            logger.error(f"Failed to start pipeline: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 def _kill_pipeline(pid: int):
@@ -500,8 +533,31 @@ def get_health():
     }
 
 
+class KillRateLimiter:
+    """Rate limiter for /kill endpoint: max 3 kills per 10 minutes."""
+    def __init__(self, max_calls: int = 3, window_seconds: int = 600):
+        self.max_calls = max_calls
+        self.window_seconds = window_seconds
+        self.calls: list[float] = []
+        self._lock = threading.Lock()
+
+    def is_allowed(self) -> bool:
+        now = time.time()
+        with self._lock:
+            self.calls = [t for t in self.calls if now - t < self.window_seconds]
+            if len(self.calls) >= self.max_calls:
+                return False
+            self.calls.append(now)
+            return True
+
+
+_kill_limiter = KillRateLimiter()
+
+
 @router.post("/kill", dependencies=[Depends(verify_api_key)])
 def kill_all():
+    if not _kill_limiter.is_allowed():
+        raise HTTPException(status_code=429, detail="Kill limit exceeded (max 3 per 10 minutes)")
     # Stop pipeline first
     with _pipeline_lock:
         pid = _pipeline.get("pid")
@@ -576,3 +632,171 @@ async def spawn_specialists(specialist_id: int, req: SpawnRequest):
         yield f"data: {json.dumps({'type': 'complete', 'results': results})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# ── WIKIDATA FEED ENDPOINTS ──────────────────────────────────────────────────
+
+@router.get("/wikidata/status")
+def wikidata_status():
+    db = get_db_manager()
+    pending_by_domain = db.execute_query(
+        """SELECT domain, COUNT(*) AS cnt
+           FROM knowledge_packages
+           WHERE qid IS NOT NULL AND absorbed_at IS NULL
+           GROUP BY domain ORDER BY cnt DESC""",
+        fetch=True
+    )
+    last_download = db.execute_query(
+        "SELECT MAX(last_wikidata_download) AS ts FROM specialist_registry",
+        fetch=True
+    )
+    last_feed = db.execute_query(
+        "SELECT MAX(last_wikidata_feed) AS ts FROM specialist_registry",
+        fetch=True
+    )
+
+    now = datetime.utcnow()
+    dl_ts = last_download[0]['ts'] if last_download and last_download[0]['ts'] else None
+    feed_ts = last_feed[0]['ts'] if last_feed and last_feed[0]['ts'] else None
+
+    def hours_since(ts_str):
+        if not ts_str:
+            return None
+        try:
+            dt = datetime.fromisoformat(ts_str.replace('Z', '+00:00').replace(' ', 'T'))
+            return (now - dt).total_seconds() / 3600
+        except:
+            return None
+
+    dl_hours = hours_since(dl_ts)
+    feed_hours = hours_since(feed_ts)
+
+    total_pending = sum(r['cnt'] for r in (pending_by_domain or []))
+
+    with _wikidata_lock:
+        dl_running = bool(_wikidata_process.get("pid") and _is_pid_alive(_wikidata_process["pid"]))
+
+    total_downloaded = db.execute_query(
+        "SELECT COUNT(*) AS cnt FROM knowledge_packages WHERE qid IS NOT NULL",
+        fetch=True
+    )
+    total_downloaded = total_downloaded[0]['cnt'] if total_downloaded else 0
+
+    current_domain = ''
+    packages_this_domain = 0
+    started_at = None
+    if dl_running:
+        started_at = _wikidata_process.get("start_time")
+        started_at = datetime.fromtimestamp(started_at).isoformat() if started_at else None
+        try:
+            if _WIKIDATA_PROGRESS_FILE.exists():
+                prog = json.loads(_WIKIDATA_PROGRESS_FILE.read_text())
+                current_domain = prog.get('current_domain', '')
+                packages_this_domain = prog.get('packages_this_domain', 0)
+        except Exception:
+            pass
+        if not current_domain:
+            last_row = db.execute_query(
+                """SELECT domain FROM knowledge_packages
+                   WHERE qid IS NOT NULL
+                   ORDER BY id DESC LIMIT 1""",
+                fetch=True
+            )
+            if last_row:
+                current_domain = last_row[0]['domain']
+
+    return {
+        "ultima_descarga": dl_ts,
+        "ultima_alimentacion": feed_ts,
+        "dias_sin_descargar": round(dl_hours / 24, 1) if dl_hours is not None else None,
+        "dias_pendientes_alimentar": round(feed_hours / 24, 1) if feed_hours is not None else None,
+        "total_pendientes": total_pending,
+        "pendientes_por_dominio": {r['domain']: r['cnt'] for r in (pending_by_domain or [])},
+        "download_running": dl_running,
+        "current_domain": current_domain,
+        "packages_downloaded": total_downloaded,
+        "packages_this_domain": packages_this_domain,
+        "download_started_at": started_at,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+
+@router.post("/wikidata/download", dependencies=[Depends(verify_api_key)])
+def wikidata_download(req: WikidataDownloadRequest = None):
+    db = get_db_manager()
+    with _wikidata_lock:
+        if _wikidata_process.get("pid") and _is_pid_alive(_wikidata_process["pid"]):
+            raise HTTPException(status_code=409, detail="Wikidata download already running")
+
+        use_full = bool(req and req.phase == 'full')
+        cmd = ["python", "tools/update_wikidata.py"]
+        if use_full:
+            cmd.append("--full")
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            _wikidata_process["pid"] = proc.pid
+            _wikidata_process["type"] = "download"
+            _wikidata_process["start_time"] = time.time()
+            try:
+                _WIKIDATA_PID_FILE.write_text(str(proc.pid))
+            except Exception as e:
+                logger.warning(f"Failed to save wikidata PID file: {e}")
+            logger.info(f"Wikidata download started PID={proc.pid}")
+            return {"status": "started", "pid": proc.pid}
+        except Exception as e:
+            logger.error(f"Failed to start wikidata download: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/wikidata/feed", dependencies=[Depends(verify_api_key)])
+def wikidata_feed():
+    with _wikidata_lock:
+        if _wikidata_process.get("pid") and _is_pid_alive(_wikidata_process["pid"]):
+            raise HTTPException(status_code=409, detail="Wikidata process already running")
+
+        cmd = ["python", "orchestrator.py", "--phase", "feed", "--duration", "0.1"]
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            _wikidata_process["pid"] = proc.pid
+            _wikidata_process["type"] = "feed"
+            _wikidata_process["start_time"] = time.time()
+            logger.info(f"Wikidata feed started PID={proc.pid}")
+            return {"status": "started", "pid": proc.pid}
+        except Exception as e:
+            logger.error(f"Failed to start wikidata feed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/wikidata/stop", dependencies=[Depends(verify_api_key)])
+def wikidata_stop():
+    with _wikidata_lock:
+        pid = _wikidata_process.get("pid")
+        if not pid or not _is_pid_alive(pid):
+            _wikidata_process["pid"] = None
+            raise HTTPException(status_code=404, detail="No wikidata process running")
+
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=5)
+        else:
+            os.kill(pid, 15)
+        with _wikidata_lock:
+            _wikidata_process["pid"] = None
+        try:
+            if _WIKIDATA_PID_FILE.exists():
+                _WIKIDATA_PID_FILE.unlink()
+        except Exception as e:
+            logger.warning(f"Failed to remove wikidata PID file: {e}")
+        logger.info(f"Wikidata process PID={pid} stopped")
+        return {"status": "stopped", "pid": pid}
+    except Exception as e:
+        logger.error(f"Failed to stop wikidata process PID={pid}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
