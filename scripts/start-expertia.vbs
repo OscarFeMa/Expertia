@@ -4,6 +4,10 @@ Set FSO = CreateObject("Scripting.FileSystemObject")
 rootPath = FSO.GetParentFolderName(FSO.GetParentFolderName(WScript.ScriptFullName))
 WshShell.CurrentDirectory = rootPath
 
+' Kill orphaned processes from previous runs
+WshShell.Run "cmd.exe /c taskkill /F /IM pythonw.exe >nul 2>&1 & taskkill /F /IM python.exe >nul 2>&1", 0, True
+WScript.Sleep 2000
+
 ' Start API server (completely hidden, no window)
 WshShell.Run "python.exe query_api.py", 0, False
 
