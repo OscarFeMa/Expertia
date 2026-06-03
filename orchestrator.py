@@ -61,8 +61,15 @@ TIER_CRITERIA = {
 LEGEND_EMA_MIN = 0.999
 LEGEND_CYCLES_CLEAN = 50
 
-NURTURE_TARGET_EMA = 0.96
 NURTURE_CYCLE_TIMEOUT = 900  # 15 min per specialist cycle
+
+# ── Nurture Priority Scoring Weights ─────────────────────────────────────────
+NURTURE_W_EMA         = 10.0   # Low EMA = high priority
+NURTURE_W_QUALITY     = 5.0    # Low quality = high priority
+NURTURE_W_FAIL        = 8.0    # High fail rate = high priority
+NURTURE_W_STALENESS   = 0.5    # Days since last update
+NURTURE_W_PACKAGES    = 3.0    # Few packages = high priority
+NURTURE_PACKAGE_TARGET = 500   # Packages target for scoring normalization
 
 # Minimum real Phase B cycles required for tier promotion
 MIN_CYCLES_FOR_BRONZE = 3
@@ -858,6 +865,91 @@ class PipelineController:
         except Exception as e:
             logger.error(f"Subspecialist spawning check failed for specialist {specialist_id}: {e}")
 
+    def _check_subspecialist_expansion(self, specialist_id: int):
+        """Check if a specialist has unspawned QID expansions and create sub-specialists."""
+        try:
+            parent = self.db_manager.execute_query(
+                "SELECT id, domain, model, root_qid, packages_absorbed FROM specialist_registry WHERE id = ?",
+                (specialist_id,), fetch=True
+            )
+            if not parent:
+                return
+            parent = parent[0]
+
+            total_children = self.db_manager.execute_query(
+                "SELECT COUNT(*) as cnt FROM specialist_registry WHERE parent_id IS NOT NULL", fetch=True
+            )
+            current_children = total_children[0]['cnt'] if total_children else 0
+            if current_children >= MAX_SUBSPECIALISTS:
+                return
+
+            children_count = self.db_manager.execute_query(
+                "SELECT COUNT(*) as cnt FROM specialist_registry WHERE parent_id = ?",
+                (parent['id'],), fetch=True
+            )
+            existing_children = children_count[0]['cnt'] if children_count else 0
+            if existing_children >= MAX_CHILDREN_PER_PARENT:
+                return
+
+            if parent['packages_absorbed'] < SUBSPECIALIST_THRESHOLD:
+                return
+
+            expansions = self.db_manager.execute_query(
+                "SELECT qid FROM qid_expansions WHERE specialist_id = ? ORDER BY discovered_at_checkpoint ASC",
+                (parent['id'],), fetch=True
+            )
+            if not expansions or len(expansions) < 3:
+                return
+
+            root_qid = parent['root_qid']
+            unspawned = []
+            for exp in expansions:
+                qid = exp['qid']
+                existing = self.db_manager.execute_query(
+                    "SELECT id FROM specialist_registry WHERE root_qid = ? AND parent_id = ?",
+                    (qid, parent['id']), fetch=True
+                )
+                if not existing:
+                    unspawned.append(qid)
+            if not unspawned:
+                return
+
+            labels = self._batch_resolve_labels(unspawned)
+            valid_qids = self._validate_qid_for_spawning(unspawned, root_qid)
+
+            spawned = 0
+            for qid in unspawned:
+                if spawned >= MAX_CHILDREN_PER_PARENT:
+                    break
+                if current_children + spawned >= MAX_SUBSPECIALISTS:
+                    break
+
+                label = labels.get(qid, qid)
+                if self._is_blocklisted_label(label):
+                    continue
+                if qid not in valid_qids:
+                    continue
+
+                child_domain = f"{parent['domain']}/{label}"
+                parent_path = parent.get('qid_path') or parent['domain']
+                child_path = f"{parent_path}/{label}"
+
+                self.db_manager.execute_query(
+                    """INSERT INTO specialist_registry
+                       (domain, model, root_qid, properties, ema_score, tier, status, parent_id, qid_path)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (child_domain, parent['model'], qid, '{}', 0.10, TIER_NONE, 'IDLE', parent['id'], child_path)
+                )
+                spawned += 1
+                logger.info(f"EXPANDED sub-specialist: {child_domain} (QID: {qid}, parent: {parent['domain']})")
+                self._log_activity(f"Expandido {child_domain} de {parent['domain']} (QID {qid})")
+
+            if spawned > 0:
+                logger.info(f"Expanded {spawned} sub-specialists for {parent['domain']}")
+
+        except Exception as e:
+            logger.error(f"Sub-specialist expansion failed for {specialist_id}: {e}")
+
     # ── Super-Expert Methods ──────────────────────────────────────────────────
 
     def _create_super_expert_tables(self):
@@ -1338,16 +1430,41 @@ class PipelineController:
         report_path.write_text('\n'.join(lines), encoding='utf-8')
         logger.info(f"Report saved: {report_path}")
 
+    def _compute_nurture_priority(self, specialist: dict) -> float:
+        """Compute nurture priority score for a specialist. Higher = more urgent."""
+        ema = specialist.get('ema_score', 0.5)
+        quality = specialist.get('quality_score', 0.5)
+        fail_rate = specialist.get('fail_rate', 0.0)
+        packages = specialist.get('packages_absorbed', 0)
+        updated_at = specialist.get('updated_at', '')
+
+        staleness_days = 0.0
+        if updated_at:
+            try:
+                from datetime import datetime
+                last_update = datetime.strptime(str(updated_at), '%Y-%m-%d %H:%M:%S')
+                staleness_days = (datetime.now() - last_update).total_seconds() / 86400
+            except (ValueError, TypeError):
+                staleness_days = 7.0
+
+        score = (
+            (1.0 - ema) * NURTURE_W_EMA
+            + (1.0 - quality) * NURTURE_W_QUALITY
+            + fail_rate * NURTURE_W_FAIL
+            + staleness_days * NURTURE_W_STALENESS
+            + max(0, 1.0 - packages / NURTURE_PACKAGE_TARGET) * NURTURE_W_PACKAGES
+        )
+        return round(score, 4)
+
     async def _run_nurture_mode(self, all_specialists: list, pipeline_start: float,
                                  min_duration_hours: float, max_duration_hours: float,
                                  max_cycles: int, report_interval_minutes: int):
         logger.info("=" * 80)
-        logger.info(f"NURTURE MODE — raising specialists to EMA ≥ {NURTURE_TARGET_EMA} one by one")
+        logger.info("NURTURE MODE — Maintenance + Growth (priority scoring, continuous recycling, sub-specialist expansion)")
         logger.info("=" * 80)
 
         global_cycle = 0
         last_report_time = 0.0
-        current_target = None
 
         while True:
             if _shutdown_event.is_set():
@@ -1367,63 +1484,40 @@ class PipelineController:
                 logger.info(f"Hard max duration reached ({max_duration_hours}h). Stopping nurture.")
                 break
 
-            # Check if current target reached the goal
-            if current_target is not None:
-                row = self.db_manager.execute_query(
-                    "SELECT ema_score FROM specialist_registry WHERE id=?",
-                    (current_target['sid'],), fetch=True
-                )
-                if row and row[0]['ema_score'] >= NURTURE_TARGET_EMA:
-                    logger.info(
-                        f"{current_target['domain']} reached EMA {row[0]['ema_score']:.4f} ≥ "
-                        f"{NURTURE_TARGET_EMA} — moving to next"
-                    )
-                    current_target = None
-
-            # Pick next target (lowest EMA below threshold)
-            if current_target is None:
-                target = self.db_manager.execute_query(
-                    "SELECT id, domain, model, ema_score FROM specialist_registry "
-                    "WHERE parent_id IS NULL AND ema_score < ? "
-                    "ORDER BY ema_score ASC LIMIT 1",
-                    (NURTURE_TARGET_EMA,), fetch=True
-                )
-                if not target:
-                    logger.info("ALL SPECIALISTS HAVE REACHED EMA >= %.4f — nurture complete!" % NURTURE_TARGET_EMA)
-                    self._update_pipeline_status(status='COMPLETED', phase='Nurture mode completado')
-                    break
-                current_target = {
-                    'sid': target[0]['id'],
-                    'domain': target[0]['domain'],
-                    'model': target[0]['model'],
-                }
-                model_ready = await self.llm_runner.ensure_model_ready(current_target['model'])
-                if not model_ready:
-                    logger.error(
-                        f"Model {current_target['model']} unavailable for "
-                        f"{current_target['domain']} — skipping"
-                    )
-                    current_target = None
-                    await asyncio.sleep(30)
-                    continue
-
-            sid = current_target['sid']
-            domain = current_target['domain']
-            model = current_target['model']
-
-            row = self.db_manager.execute_query(
-                "SELECT ema_score FROM specialist_registry WHERE id=?", (sid,), fetch=True
+            # ── Pillar 1: Score ALL parent specialists by priority ──
+            parents = self.db_manager.execute_query(
+                "SELECT id, domain, model, ema_score, quality_score, fail_rate, "
+                "packages_absorbed, updated_at FROM specialist_registry "
+                "WHERE parent_id IS NULL ORDER BY domain",
+                fetch=True
             )
-            current_ema = row[0]['ema_score'] if row else 0.0
+            if not parents:
+                logger.info("No specialists found — nurture complete!")
+                break
+
+            scored = []
+            for p in parents:
+                score = self._compute_nurture_priority(p)
+                scored.append((score, p))
+            scored.sort(key=lambda x: x[0], reverse=True)
+
+            top_score, target_spec = scored[0]
+            sid = target_spec['id']
+            domain = target_spec['domain']
+            model = target_spec['model']
+            current_ema = target_spec.get('ema_score', 0.0)
+
+            # ── Pillar 3: Check sub-specialist expansion before processing ──
+            self._check_subspecialist_expansion(sid)
 
             global_cycle += 1
             effective_cycle = ((global_cycle - 1) % 3) + 1
 
             self._update_pipeline_status(
                 specialist=domain, model=model, cycle=global_cycle, total_cycles=999,
-                phase=f'Nurture: {domain} (EMA {current_ema:.4f} → {NURTURE_TARGET_EMA})', status='ACTIVE'
+                phase=f'Nurture: {domain} (score={top_score:.2f}, EMA={current_ema:.4f})', status='ACTIVE'
             )
-            logger.info(f"Nurture cycle {global_cycle}: {domain} (EMA={current_ema:.4f}, model={model})")
+            logger.info(f"Nurture cycle {global_cycle}: {domain} (priority={top_score:.2f}, EMA={current_ema:.4f}, model={model})")
 
             spec_row = self.db_manager.execute_query(
                 "SELECT * FROM specialist_registry WHERE id=?", (sid,), fetch=True
@@ -1432,6 +1526,13 @@ class PipelineController:
                 continue
             specialist = spec_row[0]
 
+            model_ready = await self.llm_runner.ensure_model_ready(model)
+            if not model_ready:
+                logger.error(f"Model {model} unavailable for {domain} — skipping")
+                await asyncio.sleep(30)
+                continue
+
+            # ── Pillar 2: Execute Phase B (continuous recycling) ──
             try:
                 phase_b = await asyncio.wait_for(
                     self.run_phase_b(specialist, effective_cycle),
@@ -1743,7 +1844,7 @@ class PipelineController:
 def parse_args():
     parser = argparse.ArgumentParser(description='Expertia Pipeline Orchestrator')
     parser.add_argument('--phase', choices=['full', 'cascade', 'web', 'nurture', 'feed'], default='full',
-                        help='Pipeline phase to run (default: full)')
+                        help='Pipeline phase: full=cascade+web+nurture, nurture=maintenance+growth mode (default: full)')
     parser.add_argument('--specialist', type=str, default='all',
                         help='Run only this specialist domain (default: all)')
     parser.add_argument('--model', type=str, default='all',
@@ -1777,7 +1878,7 @@ async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.
         signal.signal(signal.SIGTERM, _signal_handler)
     try:
         if phase == 'nurture':
-            max_cycles = 0  # nurture runs until all specialists reach 0.96 — no cycle limit
+            max_cycles = 0  # nurture runs indefinitely (maintenance + growth mode)
         if phase == 'feed':
             max_cycles = 1  # feed is a single pass, not a loop
             if min_duration_hours >= 5.0:

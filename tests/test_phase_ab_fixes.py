@@ -301,7 +301,9 @@ class TestB2_NurtureBackoff:
         orch_path = Path(__file__).parent.parent / "orchestrator.py"
         content = orch_path.read_text(encoding="utf-8")
         # Find the backoff near the "Model ... unavailable" message
-        idx_model_unavail = content.find("Model {current_target['model']} unavailable")
+        idx_model_unavail = content.find("Model {model} unavailable")
+        if idx_model_unavail == -1:
+            idx_model_unavail = content.find("Model {current_target['model']} unavailable")
         idx_sleep = content.find("await asyncio.sleep(30)", idx_model_unavail)
         assert idx_sleep > idx_model_unavail, "sleep(30) must come after model unavailable message"
 
