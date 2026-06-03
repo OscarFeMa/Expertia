@@ -2,7 +2,9 @@
 title Expertia Control Center
 cd /d "D:\proyectos\expertia\incubator-root"
 
-echo [Expertia] Limpiando puerto 8011...
+echo [Expertia] Limpiando procesos anteriores...
+taskkill /F /IM pythonw.exe >nul 2>&1
+taskkill /F /IM python.exe >nul 2>&1
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr :8011') do (
     taskkill /F /PID %%a >nul 2>&1
 )
