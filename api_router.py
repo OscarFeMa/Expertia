@@ -23,6 +23,7 @@ router = APIRouter(prefix="/api")
 
 _PIPELINE_STATE_FILE = Path(__file__).parent / "pipeline_state.json"
 _WIKIDATA_PID_FILE = Path(__file__).parent.parent / "storage" / "wikidata_download.pid"
+LOGS_DIR = Path(__file__).parent.parent / "logs"
 _WIKIDATA_PROGRESS_FILE = Path(__file__).parent.parent / "storage" / "wikidata_progress.json"
 
 _pipeline: dict = {"pid": None, "start_time": 0, "duration_hours": 0}
@@ -373,7 +374,7 @@ def start_pipeline(req: StartPipelineRequest):
             duration_hours = 99999  # nurture runs until manual stop
 
         cmd = [
-            "pythonw", "orchestrator.py",
+            "python", "orchestrator.py",
             "--phase", req.phase,
             "--specialist", req.specialist,
             "--model", req.model,
@@ -381,8 +382,12 @@ def start_pipeline(req: StartPipelineRequest):
             "--max-duration", str(duration_hours),
         ]
         try:
+            log_path = LOGS_DIR / f"orchestrator_{int(time.time())}.log"
+            log_file = open(log_path, "w", encoding="utf-8")
             proc = subprocess.Popen(
                 cmd,
+                stdout=log_file,
+                stderr=log_file,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
             now = time.time()
