@@ -47,7 +47,8 @@ def verify_api_key(x_api_key: Optional[str] = Security(_api_key_header)):
 
 def _save_pipeline_state():
     try:
-        state = dict(_pipeline)
+        with _pipeline_lock:
+            state = dict(_pipeline)
         _PIPELINE_STATE_FILE.write_text(json.dumps(state))
     except Exception as e:
         logger.warning(f"Failed to save pipeline state: {e}")
@@ -146,7 +147,6 @@ def _fetch_one(query: str, params: tuple = ()):
 
 def _execute(query: str, params: tuple = ()):
     _db().execute_query(query, params)
-    _db()._get_connection().commit()
 
 
 @router.get("/status")
@@ -288,6 +288,59 @@ def get_knowledge_stats():
         "total_packages": total["cnt"] if total else 0,
         "by_domain": by_domain,
     }
+
+
+@router.get("/knowledge/search")
+def search_knowledge(q: str = "", domain: str = "", limit: int = 10):
+    """Search knowledge packages by keyword (FTS5 or LIKE fallback)."""
+    if not q or len(q.strip()) < 2:
+        raise HTTPException(status_code=400, detail="Query must be at least 2 characters")
+    
+    limit = min(max(limit, 1), 50)
+    
+    try:
+        # Try FTS5 first
+        keywords = [w for w in q.split() if len(w) >= 2][:5]
+        fts_query = " OR ".join(keywords)
+        if domain:
+            rows = _fetch_all(
+                """SELECT kp.topic, kp.structured_knowledge, kp.source_url, kp.domain, kp.created_at
+                   FROM knowledge_packages_fts fts
+                   JOIN knowledge_packages kp ON fts.rowid = kp.id
+                   WHERE knowledge_packages_fts MATCH ? AND kp.domain = ?
+                   ORDER BY kp.created_at DESC LIMIT ?""",
+                (fts_query, domain, limit)
+            )
+        else:
+            rows = _fetch_all(
+                """SELECT kp.topic, kp.structured_knowledge, kp.source_url, kp.domain, kp.created_at
+                   FROM knowledge_packages_fts fts
+                   JOIN knowledge_packages kp ON fts.rowid = kp.id
+                   WHERE knowledge_packages_fts MATCH ?
+                   ORDER BY kp.created_at DESC LIMIT ?""",
+                (fts_query, limit)
+            )
+    except Exception:
+        # Fallback to LIKE search
+        like_pattern = f"%{q}%"
+        if domain:
+            rows = _fetch_all(
+                """SELECT topic, structured_knowledge, source_url, domain, created_at
+                   FROM knowledge_packages
+                   WHERE (topic LIKE ? OR structured_knowledge LIKE ?) AND domain = ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (like_pattern, like_pattern, domain, limit)
+            )
+        else:
+            rows = _fetch_all(
+                """SELECT topic, structured_knowledge, source_url, domain, created_at
+                   FROM knowledge_packages
+                   WHERE topic LIKE ? OR structured_knowledge LIKE ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (like_pattern, like_pattern, limit)
+            )
+    
+    return {"query": q, "domain": domain, "count": len(rows), "results": rows}
 
 
 class StartPipelineRequest(BaseModel):

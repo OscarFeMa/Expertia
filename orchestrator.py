@@ -269,6 +269,11 @@ def _domain_to_keywords(domain: str) -> str:
 
 
 class PipelineController:
+    # Circuit breaker for Ollama failures
+    _ollama_consecutive_failures = 0
+    _ollama_circuit_open = False
+    _OLLAMA_FAILURE_THRESHOLD = 3
+
     def __init__(self, sample_size: Optional[int] = None, cycles_per_specialist: int = 3):
         self.db_manager = get_db_manager()
         self.llm_runner = LLMRunner()
@@ -657,7 +662,9 @@ class PipelineController:
                         cached[qid] = qid
 
         if len(cached) > 100000:
-            cached = {}
+            # Evict oldest 50% to avoid thundering herd
+            items = list(cached.items())
+            cached = dict(items[len(items)//2:])
         self._label_cache = cached
         return result
 
@@ -767,102 +774,6 @@ class PipelineController:
                 for qid in batch:
                     if qid not in cache:
                         cache[qid] = set()
-
-    def _check_subspecialist_spawning(self, specialist_id: int):
-        """Evaluate a single specialist for sub-specialist spawning with validation pipeline."""
-        try:
-            parent = self.db_manager.execute_query(
-                "SELECT id, domain, model, root_qid, properties, packages_absorbed FROM specialist_registry WHERE id = ?",
-                (specialist_id,), fetch=True
-            )
-            if not parent:
-                return
-            parent = parent[0]
-
-            total_children = self.db_manager.execute_query(
-                "SELECT COUNT(*) as cnt FROM specialist_registry WHERE parent_id IS NOT NULL", fetch=True
-            )
-            current_children = total_children[0]['cnt'] if total_children else 0
-            if current_children >= MAX_SUBSPECIALISTS:
-                return
-
-            children_count = self.db_manager.execute_query(
-                "SELECT COUNT(*) as cnt FROM specialist_registry WHERE parent_id = ?",
-                (parent['id'],), fetch=True
-            )
-            existing_children = children_count[0]['cnt'] if children_count else 0
-            if existing_children >= MAX_CHILDREN_PER_PARENT:
-                return
-
-            expansions = self.db_manager.execute_query(
-                "SELECT qid FROM qid_expansions WHERE specialist_id = ? ORDER BY discovered_at_checkpoint ASC",
-                (parent['id'],), fetch=True
-            )
-            if not expansions or len(expansions) < 3:
-                return
-            if parent['packages_absorbed'] < SUBSPECIALIST_THRESHOLD:
-                return
-
-            root_qid = parent['root_qid']
-
-            # Filter candidates: pre-existing children first
-            unspawned = []
-            for exp in expansions:
-                qid = exp['qid']
-                existing = self.db_manager.execute_query(
-                    "SELECT id FROM specialist_registry WHERE root_qid = ? AND parent_id = ?",
-                    (qid, parent['id']), fetch=True
-                )
-                if not existing:
-                    unspawned.append(qid)
-            if not unspawned:
-                return
-
-            # Resolve labels for remaining candidates (cached internally)
-            labels = self._batch_resolve_labels(unspawned)
-
-            # Validate via P279 parent-sharing with root QID
-            valid_qids = self._validate_qid_for_spawning(unspawned, root_qid)
-
-            spawned_this_cycle = 0
-            for qid in unspawned:
-                if spawned_this_cycle >= MAX_CHILDREN_PER_PARENT:
-                    break
-                if current_children + spawned_this_cycle >= MAX_SUBSPECIALISTS:
-                    break
-
-                label = labels.get(qid, qid)
-
-                # 1. Blocklist heuristic check
-                if self._is_blocklisted_label(label):
-                    logger.info(f"BLOCKED (blocklist label): {qid} -> '{label}' for {parent['domain']}")
-                    self._log_activity(f"Bloqueado {parent['domain']}/{label} (QID {qid}) — etiqueta genérica", 'WARNING')
-                    continue
-
-                # 2. P279 parent-sharing validation
-                if qid not in valid_qids:
-                    branch_label = f"{parent['domain']}/{label}"
-                    logger.info(f"BLOCKED (P279): {qid} -> '{label}' not a subclass of {root_qid}")
-                    self._log_activity(f"Rama externa {branch_label} (QID {qid}) — no emparenta con {parent['domain']}", 'WARNING')
-                    continue
-
-                # 3. Passes all checks — spawn
-                child_domain = f"{parent['domain']}/{label}"
-                parent_path = parent.get('qid_path') or parent['domain']
-                child_path = f"{parent_path}/{label}"
-
-                self.db_manager.execute_query(
-                    """INSERT INTO specialist_registry 
-                       (domain, model, root_qid, properties, ema_score, tier, status, parent_id, qid_path)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (child_domain, parent['model'], qid, parent['properties'], 0.10, TIER_NONE, 'IDLE', parent['id'], child_path)
-                )
-                spawned_this_cycle += 1
-                logger.info(f"SPAWNED sub-specialist: {child_domain} (QID: {qid}, parent: {parent['domain']})")
-                self._log_activity(f"Germinado {child_domain} de {parent['domain']} (QID {qid})")
-
-        except Exception as e:
-            logger.error(f"Subspecialist spawning check failed for specialist {specialist_id}: {e}")
 
     def _check_subspecialist_expansion(self, specialist_id: int):
         """Check if a specialist has unspawned QID expansions and create sub-specialists."""
@@ -1075,7 +986,7 @@ class PipelineController:
                 """, (m['domain'], top_k * 2), fetch=True) or []
                 for pkg in pkgs:
                     # Keyword relevance scoring
-                    text = (pkg.get('topic', '') + ' ' + pkg.get('structured_knowledge', '')).lower()
+                    text = ((pkg.get('topic') or '') + ' ' + (pkg.get('structured_knowledge') or '')).lower()
                     relevance = sum(1 for kw in keywords if kw in text) / max(len(keywords), 1)
                     results.append({
                         'specialist': m['domain'],
@@ -1248,13 +1159,27 @@ class PipelineController:
         }
         queries = cycle_queries.get(cycle, cycle_queries[1])
 
+        # Circuit breaker: skip if Ollama has failed too many times consecutively
+        if PipelineController._ollama_circuit_open:
+            logger.warning(f"Circuit breaker OPEN — skipping {domain} (Ollama {PipelineController._ollama_consecutive_failures} consecutive failures)")
+            self._log_activity(f"SKIP {domain} — circuit breaker open (Ollama unavailable)", 'WARNING')
+            return result
+
         try:
             self._log_activity(f"Cargando modelo {model} para {domain}")
             model_loaded = await self.llm_runner.ensure_model_loaded(model)
             if not model_loaded:
                 logger.error(f"Failed to load model: {model}")
                 self._log_activity(f"ERROR: modelo {model} no disponible", 'ERROR')
+                PipelineController._ollama_consecutive_failures += 1
+                if PipelineController._ollama_consecutive_failures >= PipelineController._OLLAMA_FAILURE_THRESHOLD:
+                    PipelineController._ollama_circuit_open = True
+                    logger.critical(f"Circuit breaker OPENED after {PipelineController._ollama_consecutive_failures} consecutive Ollama failures")
                 return result
+            
+            # Model loaded successfully — reset circuit breaker
+            PipelineController._ollama_consecutive_failures = 0
+            PipelineController._ollama_circuit_open = False
 
             self._log_activity(f"Modelo {model} listo — iniciando {domain}")
             self.db_manager.execute_query("UPDATE specialist_registry SET status='ACTIVE' WHERE id=?", (sid,))
@@ -1831,6 +1756,11 @@ class PipelineController:
                         self.db_manager.execute_query(
                             "UPDATE specialist_registry SET ema_score=? WHERE id=?",
                             (prev, sid)
+                        )
+                        new_tier = self._compute_tier(sid)
+                        self.db_manager.execute_query(
+                            "UPDATE specialist_registry SET tier=? WHERE id=?",
+                            (new_tier, sid)
                         )
 
         final_elapsed = time.time() - self._start_time
