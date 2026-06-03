@@ -245,4 +245,8 @@ async def query(req: QueryRequest):
 
 
 if __name__ == "__main__":
+    import os
+    if not os.getenv("EXPERTIA_API_KEY"):
+        print("⚠  No EXPERTIA_API_KEY set. Binding to 0.0.0.0 exposes the API to the network.")
+        print("   Set EXPERTIA_API_KEY environment variable or bind to 127.0.0.1.")
     uvicorn.run(app, host="0.0.0.0", port=8011)

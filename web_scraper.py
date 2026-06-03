@@ -256,7 +256,8 @@ def search_wikipedia(
 # ──────────────────────────────────────────────
 
 def load_seeds_for_domain(domain: str) -> List[Dict[str, str]]:
-    seed_file = SEED_DIR / f"{domain}.json"
+    safe_domain = Path(domain).name
+    seed_file = SEED_DIR / f"{safe_domain}.json"
     if not seed_file.exists():
         return []
     try:

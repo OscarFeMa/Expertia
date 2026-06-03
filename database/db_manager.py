@@ -201,7 +201,26 @@ class DatabaseManager:
                 logger.error(f"Batch execution failed: {e}")
                 conn.rollback()
                 raise
-                raise
+    
+    async def execute_query_async(self, query: str, params: tuple = (), fetch: bool = False):
+        """Execute a SQL query asynchronously using aiosqlite."""
+        import aiosqlite
+        async with aiosqlite.connect(str(self.db_path)) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(query, params)
+            if fetch:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+            await db.commit()
+            return None
+
+    async def execute_batch_async(self, statements: list[tuple]) -> None:
+        """Execute multiple SQL statements in a single async transaction."""
+        import aiosqlite
+        async with aiosqlite.connect(str(self.db_path)) as db:
+            for query, params in statements:
+                await db.execute(query, params)
+            await db.commit()
     
     def table_exists(self, table_name: str) -> bool:
         """
