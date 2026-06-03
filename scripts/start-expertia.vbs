@@ -8,10 +8,10 @@ WshShell.CurrentDirectory = rootPath
 WshShell.Run "cmd.exe /c taskkill /F /IM pythonw.exe >nul 2>&1 & taskkill /F /IM python.exe >nul 2>&1", 0, True
 WScript.Sleep 2000
 
-' Start API server (completely hidden, no window)
-WshShell.Run "python.exe query_api.py", 0, False
+' Start API server (minimized window, not hidden)
+WshShell.Run "cmd.exe /c title Expertia API && cd /d """ & rootPath & """ && python.exe query_api.py", 7, False
 
-' Wait for API to be ready by polling port 8011
+' Wait for API to be ready by polling health endpoint
 ready = False
 For i = 1 To 20
     WScript.Sleep 1000
@@ -30,5 +30,5 @@ If ready Then
     ' Open browser to admin panel
     WshShell.Run "cmd.exe /c start http://localhost:8011/admin", 0, False
 Else
-    WScript.Echo "API failed to start after 20 seconds"
+    WScript.Echo "API failed to start after 20 seconds. Check logs."
 End If
