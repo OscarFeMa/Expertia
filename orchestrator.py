@@ -1634,7 +1634,7 @@ class PipelineController:
 
             # Phase B: Continuous loop
             if phase in ('full', 'web'):
-                loaded_vram_mb = check_ollama_vram()
+                loaded_vram_mb = await asyncio.to_thread(check_ollama_vram)
                 if loaded_vram_mb is not None and loaded_vram_mb > VRAM_WARN_THRESHOLD_MB:
                     logger.warning(f"ollama VRAM high ({loaded_vram_mb}MB > {VRAM_WARN_THRESHOLD_MB}MB) — potential OOM risk")
 
@@ -1787,7 +1787,7 @@ def parse_args():
 
 def _signal_handler(signum, frame):
     _shutdown_event.set()
-    threading.Timer(5.0, os._exit, [0]).start()
+    threading.Timer(5.0, lambda: sys.exit(0)).start()
 
 
 async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.0,
