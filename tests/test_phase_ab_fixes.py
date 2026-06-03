@@ -288,24 +288,20 @@ class TestB1_StartAllBat:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestB2_NurtureBackoff:
-    """B2: Nurture mode must sleep 30s when model unavailable."""
+    """B2: Nurture mode must handle model unavailable gracefully."""
 
-    def test_backoff_sleep_exists(self):
+    def test_model_unavailable_logs_error(self):
         from pathlib import Path
         orch_path = Path(__file__).parent.parent / "orchestrator.py"
         content = orch_path.read_text(encoding="utf-8")
-        assert "await asyncio.sleep(30)" in content
+        assert "Model {model} unavailable for {domain}" in content
 
-    def test_backoff_after_model_skip(self):
+    def test_batch_processes_top3(self):
+        """Nurture processes top-3 per iteration, skipping unavailable models without long sleep."""
         from pathlib import Path
         orch_path = Path(__file__).parent.parent / "orchestrator.py"
         content = orch_path.read_text(encoding="utf-8")
-        # Find the backoff near the "Model ... unavailable" message
-        idx_model_unavail = content.find("Model {model} unavailable")
-        if idx_model_unavail == -1:
-            idx_model_unavail = content.find("Model {current_target['model']} unavailable")
-        idx_sleep = content.find("await asyncio.sleep(30)", idx_model_unavail)
-        assert idx_sleep > idx_model_unavail, "sleep(30) must come after model unavailable message"
+        assert "batch = scored[:3]" in content
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

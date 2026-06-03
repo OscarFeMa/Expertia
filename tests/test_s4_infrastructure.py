@@ -105,21 +105,21 @@ class TestS43_FeedEMA:
             from orchestrator import PipelineController
             c = PipelineController()
             c.db_manager = MagicMock()
-            # Mock: first call returns specialist state, rest are updates
+            # Mock: first call returns specialist state, execute_batch for writes
             c.db_manager.execute_query = MagicMock(side_effect=[
                 [{'ema_score': 0.95, 'weighted_success': 10.0, 'weighted_fail': 1.0, 'tier': 2}],
-                None,  # UPDATE specialist_registry
-                None,  # INSERT ema_history
-                None,  # INSERT cycle_history
             ])
+            c.db_manager.execute_batch = MagicMock()
             c.update_ema_score(1, success=True, content_length=10000, trust_score=100,
                                contents_count=10, packages_saved=10, is_feed=True)
-            # Check the UPDATE call for specialist_registry
-            calls = c.db_manager.execute_query.call_args_list
-            update_call = calls[1]  # Second call is the UPDATE
-            args = update_call[0][1]
+            # Check the batch call for specialist_registry UPDATE
+            batch_calls = c.db_manager.execute_batch.call_args_list
+            assert len(batch_calls) == 1
+            stmts = batch_calls[0][0][0]
+            update_stmt = stmts[0]
+            params = update_stmt[1]
             # ws should be 10.0 (unchanged from initial), not 10.0 + quality
-            assert args[1] == 10.0, f"weighted_success should be unchanged (10.0), got {args[1]}"
+            assert params[1] == 10.0, f"weighted_success should be unchanged (10.0), got {params[1]}"
 
 
 class TestS44_MinCyclesForTier:

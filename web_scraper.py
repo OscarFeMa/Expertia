@@ -420,7 +420,7 @@ class ModernWebScraper:
         self.search_count += 1
         logger.info(f"ModernWebScraper #{self.search_count}: '{query}' (domain={domain})")
 
-        search_results = multi_engine_search(query, max_results, domain=domain)
+        search_results = await asyncio.to_thread(multi_engine_search, query, max_results, domain)
 
         if not search_results:
             logger.warning(f"No results from any engine for '{query}'")
