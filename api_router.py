@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api")
 
 _PIPELINE_STATE_FILE = Path(__file__).parent / "pipeline_state.json"
 _WIKIDATA_PID_FILE = Path(__file__).parent.parent / "storage" / "wikidata_download.pid"
-LOGS_DIR = Path(__file__).parent.parent / "logs"
+LOGS_DIR = Path(__file__).parent / "logs"
 _WIKIDATA_PROGRESS_FILE = Path(__file__).parent.parent / "storage" / "wikidata_progress.json"
 
 _pipeline: dict = {"pid": None, "start_time": 0, "duration_hours": 0}
