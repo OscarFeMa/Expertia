@@ -11,8 +11,17 @@ timeout /t 2 /nobreak >nul
 echo [Expertia] Iniciando API en segundo plano...
 start /min pythonw.exe query_api.py
 
-echo        Esperando a que arranque...
-timeout /t 5 /nobreak >nul
-
-echo        Abriendo Expertia...
-start "" "C:\Program Files (x86)\Microsoft\Edge\Application\msedge_proxy.exe" --profile-directory=Default --app-id=ggfbkolakpabfgbfpdgdblkodmgihlmp --app-url=http://localhost:8011/admin/ --app-launch-source=4
+echo        Esperando a que la API responda...
+set /a "attempts=0"
+:wait_loop
+timeout /t 1 /nobreak >nul
+set /a "attempts+=1"
+curl -s http://127.0.0.1:8011/api/health >nul 2>&1
+if %errorlevel% neq 0 (
+    if %attempts% lss 20 goto wait_loop
+    echo        [ERROR] API no responde tras 20 segundos.
+    pause
+    exit /b 1
+)
+echo        API lista (%attempts%s). Abriendo Expertia...
+start "" "http://localhost:8011/admin"
