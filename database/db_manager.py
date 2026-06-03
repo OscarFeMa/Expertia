@@ -184,6 +184,23 @@ class DatabaseManager:
             except sqlite3.Error as e:
                 logger.error(f"Batch execution failed: {e}")
                 self._get_connection().rollback()
+
+    def execute_batch(self, statements: list[tuple]) -> None:
+        """Execute multiple different SQL statements in a single transaction.
+        
+        Args:
+            statements: List of (query, params) tuples
+        """
+        conn = self._get_connection()
+        with self.get_cursor() as cursor:
+            try:
+                for query, params in statements:
+                    cursor.execute(query, params)
+                conn.commit()
+            except sqlite3.Error as e:
+                logger.error(f"Batch execution failed: {e}")
+                conn.rollback()
+                raise
                 raise
     
     def table_exists(self, table_name: str) -> bool:

@@ -266,14 +266,22 @@ def get_super_experts():
         "LEFT JOIN specialist_registry s ON s.id = sem.specialist_id "
         "GROUP BY se.id ORDER BY se.domain"
     )
+    # Batch fetch all members in one query instead of N+1
+    all_members = _fetch_all(
+        "SELECT sem.super_expert_id, s.domain, s.ema_score, s.packages_absorbed, s.status, sem.weight "
+        "FROM super_expert_members sem "
+        "JOIN specialist_registry s ON s.id = sem.specialist_id "
+        "ORDER BY sem.weight DESC"
+    )
+    # Group members by super_expert_id
+    members_by_se = {}
+    for m in all_members:
+        se_id = m["super_expert_id"]
+        if se_id not in members_by_se:
+            members_by_se[se_id] = []
+        members_by_se[se_id].append({k: v for k, v in m.items() if k != "super_expert_id"})
     for se in rows:
-        se["members"] = _fetch_all(
-            "SELECT s.domain, s.ema_score, s.packages_absorbed, s.status, sem.weight "
-            "FROM super_expert_members sem "
-            "JOIN specialist_registry s ON s.id = sem.specialist_id "
-            "WHERE sem.super_expert_id = ? ORDER BY sem.weight DESC",
-            (se["id"],),
-        )
+        se["members"] = members_by_se.get(se["id"], [])
     return {"super_experts": rows}
 
 
@@ -566,27 +574,22 @@ def get_system_cpu():
 @router.get("/health")
 def get_health():
     db_ok = _db().health_check()
+    # Single query for all counts instead of 5 separate queries
+    stats = _fetch_one(
+        "SELECT "
+        "(SELECT COUNT(*) FROM specialist_registry) AS specialist_count, "
+        "(SELECT COUNT(*) FROM knowledge_packages) AS package_count, "
+        "(SELECT COUNT(*) FROM activity_log WHERE level IN ('ERROR','CRITICAL')) AS incident_count"
+    )
     last_activity = _fetch_one(
         "SELECT timestamp, level, message FROM activity_log ORDER BY id DESC LIMIT 1"
     )
-    specialist_count = (
-        _fetch_one("SELECT COUNT(*) AS cnt FROM specialist_registry") or {}
-    ).get("cnt", 0)
-    package_count = (
-        _fetch_one("SELECT COUNT(*) AS cnt FROM knowledge_packages") or {}
-    ).get("cnt", 0)
-    incident_count = (
-        _fetch_one(
-            "SELECT COUNT(*) AS cnt FROM activity_log WHERE level IN ('ERROR','CRITICAL')"
-        )
-        or {}
-    ).get("cnt", 0)
     return {
         "database": "ok" if db_ok else "error",
         "last_activity": last_activity,
-        "specialist_count": specialist_count,
-        "package_count": package_count,
-        "incident_count": incident_count,
+        "specialist_count": stats.get("specialist_count", 0) if stats else 0,
+        "package_count": stats.get("package_count", 0) if stats else 0,
+        "incident_count": stats.get("incident_count", 0) if stats else 0,
         "timestamp": datetime.utcnow().isoformat(),
     }
 
