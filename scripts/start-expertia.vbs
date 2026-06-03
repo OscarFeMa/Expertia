@@ -8,7 +8,11 @@ WshShell.CurrentDirectory = rootPath
 WshShell.Run "cmd.exe /c taskkill /F /IM pythonw.exe >nul 2>&1 & taskkill /F /IM python.exe >nul 2>&1", 0, True
 WScript.Sleep 2000
 
-' Start API server (minimized window, not hidden)
+' Clean port 8011
+WshShell.Run "cmd.exe /c for /f ""tokens=5"" %a in ('netstat -ano ^| findstr :8011') do taskkill /F /PID %a >nul 2>&1", 0, True
+WScript.Sleep 2000
+
+' Start API server (minimized window)
 WshShell.Run "cmd.exe /c title Expertia API && cd /d """ & rootPath & """ && python.exe query_api.py", 7, False
 
 ' Wait for API to be ready by polling health endpoint
@@ -27,8 +31,8 @@ For i = 1 To 20
 Next
 
 If ready Then
-    ' Open browser to admin panel
-    WshShell.Run "cmd.exe /c start http://localhost:8011/admin", 0, False
+    ' Open as Edge PWA app
+    WshShell.Run """" & "C:\Program Files (x86)\Microsoft\Edge\Application\msedge_proxy.exe" & """ --profile-directory=Default --app-id=ggfbkolakpabfgbfpdgdblkodmgihlmp --app-url=http://localhost:8011/admin/ --app-launch-source=4", 0, False
 Else
     WScript.Echo "API failed to start after 20 seconds. Check logs."
 End If

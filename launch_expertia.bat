@@ -13,8 +13,8 @@ for /f "tokens=5" %%a in ('netstat -ano ^| findstr :8011') do (
 )
 timeout /t 2 /nobreak >nul
 
-echo [Expertia] Iniciando API...
-start "Expertia API" /MIN python.exe query_api.py
+echo [Expertia] Iniciando API en segundo plano...
+start /min python.exe query_api.py
 
 echo        Esperando a que la API responda...
 set /a "attempts=0"
@@ -29,4 +29,4 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 echo        API lista (%attempts%s). Abriendo Expertia...
-start "" "http://localhost:8011/admin"
+start "" "C:\Program Files (x86)\Microsoft\Edge\Application\msedge_proxy.exe" --profile-directory=Default --app-id=ggfbkolakpabfgbfpdgdblkodmgihlmp --app-url=http://localhost:8011/admin/ --app-launch-source=4
