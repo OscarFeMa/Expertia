@@ -27,7 +27,7 @@ LOGS_DIR = Path(__file__).parent / "logs"
 _WIKIDATA_PROGRESS_FILE = Path(__file__).parent.parent / "storage" / "wikidata_progress.json"
 
 _pipeline: dict = {"pid": None, "start_time": 0, "duration_hours": 0}
-_pipeline_lock = threading.Lock()
+_pipeline_lock = threading.RLock()
 _kill_timer: Optional[threading.Timer] = None
 
 _wikidata_process: dict = {"pid": None, "type": None, "start_time": 0}
