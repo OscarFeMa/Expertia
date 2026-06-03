@@ -485,11 +485,14 @@ class LLMRunner:
                 warnings.simplefilter("ignore", FutureWarning)
                 import pynvml
                 pynvml.nvmlInit()
-                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-                info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                free_mb = info.free // (1024 ** 2)
-                logger.debug(f"VRAM: {free_mb}MB free (need {min_free_mb}MB)")
-                return free_mb >= min_free_mb
+                try:
+                    handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                    info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                    free_mb = info.free // (1024 ** 2)
+                    logger.debug(f"VRAM: {free_mb}MB free (need {min_free_mb}MB)")
+                    return free_mb >= min_free_mb
+                finally:
+                    pynvml.nvmlShutdown()
         except ImportError:
             logger.debug("pynvml not installed — skipping VRAM check")
             return True

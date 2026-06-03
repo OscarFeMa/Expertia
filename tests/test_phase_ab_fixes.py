@@ -140,7 +140,7 @@ class TestA3_CORSRestriction:
         from pathlib import Path
         api_path = Path(__file__).parent.parent / "query_api.py"
         content = api_path.read_text(encoding="utf-8")
-        assert 'allow_methods=["GET", "POST"]' in content
+        assert 'allow_methods=["GET", "POST", "PATCH", "OPTIONS"]' in content
 
     def test_no_wildcard_methods(self):
         from pathlib import Path

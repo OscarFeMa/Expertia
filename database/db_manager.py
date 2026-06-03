@@ -515,6 +515,29 @@ class DatabaseManager:
         self._close_connection()
         logger.info("DatabaseManager cleanup completed")
 
+    def backup(self, backup_path: Optional[Path] = None) -> bool:
+        """Create a backup of the database using VACUUM INTO.
+        
+        Args:
+            backup_path: Path for the backup file. If None, uses {db_name}.backup.{timestamp}.db
+            
+        Returns:
+            True if backup succeeded, False otherwise
+        """
+        try:
+            if backup_path is None:
+                from datetime import datetime
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                backup_path = self._db_path.parent / f"{self._db_path.stem}.backup.{timestamp}.db"
+            
+            conn = self._get_connection()
+            conn.execute(f"VACUUM INTO '{backup_path}'")
+            logger.info(f"Database backup created: {backup_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Database backup failed: {e}")
+            return False
+
 
 # Global instance for easy access
 _db_manager: Optional[DatabaseManager] = None
