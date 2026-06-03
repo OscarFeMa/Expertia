@@ -7,15 +7,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 class TestNurturePriorityScoring:
-    """Pillar 1: Priority scoring based on EMA, quality, fail_rate, staleness, packages."""
+    """Pillar 1: Priority scoring based on EMA, weighted_success/fail, staleness, packages."""
 
     def test_constants_exist(self):
         from orchestrator import (
-            NURTURE_W_EMA, NURTURE_W_QUALITY, NURTURE_W_FAIL,
+            NURTURE_W_EMA, NURTURE_W_FAIL,
             NURTURE_W_STALENESS, NURTURE_W_PACKAGES, NURTURE_PACKAGE_TARGET
         )
         assert NURTURE_W_EMA == 10.0
-        assert NURTURE_W_QUALITY == 5.0
         assert NURTURE_W_FAIL == 8.0
         assert NURTURE_W_STALENESS == 0.5
         assert NURTURE_W_PACKAGES == 3.0
@@ -36,8 +35,8 @@ class TestNurturePriorityScoring:
             c = PipelineController()
             spec = {
                 'ema_score': 0.5,
-                'quality_score': 0.5,
-                'fail_rate': 0.0,
+                'weighted_success': 500.0,
+                'weighted_fail': 0.0,
                 'packages_absorbed': 500,
                 'updated_at': '2026-06-01 12:00:00',
             }
@@ -54,8 +53,8 @@ class TestNurturePriorityScoring:
             c = PipelineController()
             spec = {
                 'ema_score': 0.99,
-                'quality_score': 0.95,
-                'fail_rate': 0.0,
+                'weighted_success': 1000.0,
+                'weighted_fail': 0.0,
                 'packages_absorbed': 1000,
                 'updated_at': '2026-06-02 20:00:00',
             }
@@ -71,8 +70,8 @@ class TestNurturePriorityScoring:
              patch("orchestrator.KnowledgeIngestor"):
             c = PipelineController()
             base = {
-                'quality_score': 0.8,
-                'fail_rate': 0.0,
+                'weighted_success': 500.0,
+                'weighted_fail': 0.0,
                 'packages_absorbed': 500,
                 'updated_at': '2026-06-02 20:00:00',
             }
@@ -90,12 +89,11 @@ class TestNurturePriorityScoring:
             c = PipelineController()
             base = {
                 'ema_score': 0.95,
-                'quality_score': 0.8,
                 'packages_absorbed': 500,
                 'updated_at': '2026-06-02 20:00:00',
             }
-            high_fail = c._compute_nurture_priority({**base, 'fail_rate': 0.5})
-            low_fail = c._compute_nurture_priority({**base, 'fail_rate': 0.0})
+            high_fail = c._compute_nurture_priority({**base, 'weighted_success': 500.0, 'weighted_fail': 500.0})
+            low_fail = c._compute_nurture_priority({**base, 'weighted_success': 500.0, 'weighted_fail': 0.0})
             assert high_fail > low_fail
 
     def test_few_packages_beats_many(self):
@@ -108,8 +106,8 @@ class TestNurturePriorityScoring:
             c = PipelineController()
             base = {
                 'ema_score': 0.95,
-                'quality_score': 0.8,
-                'fail_rate': 0.0,
+                'weighted_success': 500.0,
+                'weighted_fail': 0.0,
                 'updated_at': '2026-06-02 20:00:00',
             }
             few = c._compute_nurture_priority({**base, 'packages_absorbed': 10})
@@ -126,8 +124,8 @@ class TestNurturePriorityScoring:
             c = PipelineController()
             base = {
                 'ema_score': 0.95,
-                'quality_score': 0.8,
-                'fail_rate': 0.0,
+                'weighted_success': 500.0,
+                'weighted_fail': 0.0,
                 'packages_absorbed': 500,
             }
             stale = c._compute_nurture_priority({**base, 'updated_at': '2026-05-20 12:00:00'})
@@ -144,8 +142,8 @@ class TestNurturePriorityScoring:
             c = PipelineController()
             spec = {
                 'ema_score': 0.95,
-                'quality_score': 0.8,
-                'fail_rate': 0.0,
+                'weighted_success': 500.0,
+                'weighted_fail': 0.0,
                 'packages_absorbed': 500,
                 'updated_at': '',
             }
