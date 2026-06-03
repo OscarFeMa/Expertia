@@ -191,15 +191,14 @@ class DatabaseManager:
         Args:
             statements: List of (query, params) tuples
         """
-        conn = self._get_connection()
         with self.get_cursor() as cursor:
             try:
                 for query, params in statements:
                     cursor.execute(query, params)
-                conn.commit()
+                cursor.connection.commit()
             except sqlite3.Error as e:
                 logger.error(f"Batch execution failed: {e}")
-                conn.rollback()
+                cursor.connection.rollback()
                 raise
     
     async def execute_query_async(self, query: str, params: tuple = (), fetch: bool = False):
