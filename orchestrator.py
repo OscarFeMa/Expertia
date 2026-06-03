@@ -64,8 +64,7 @@ LEGEND_CYCLES_CLEAN = 50
 NURTURE_CYCLE_TIMEOUT = 900  # 15 min per specialist cycle
 
 # ── Nurture Priority Scoring Weights ─────────────────────────────────────────
-NURTURE_W_EMA         = 10.0   # Low EMA = high priority
-NURTURE_W_QUALITY     = 5.0    # Low quality = high priority
+NURTURE_W_EMA        = 10.0   # Low EMA = high priority
 NURTURE_W_FAIL        = 8.0    # High fail rate = high priority
 NURTURE_W_STALENESS   = 0.5    # Days since last update
 NURTURE_W_PACKAGES    = 3.0    # Few packages = high priority
@@ -1433,10 +1432,13 @@ class PipelineController:
     def _compute_nurture_priority(self, specialist: dict) -> float:
         """Compute nurture priority score for a specialist. Higher = more urgent."""
         ema = specialist.get('ema_score', 0.5)
-        quality = specialist.get('quality_score', 0.5)
-        fail_rate = specialist.get('fail_rate', 0.0)
         packages = specialist.get('packages_absorbed', 0)
         updated_at = specialist.get('updated_at', '')
+        weighted_success = specialist.get('weighted_success', 0.0)
+        weighted_fail = specialist.get('weighted_fail', 0.0)
+
+        total_ws_wf = weighted_success + weighted_fail
+        fail_rate = weighted_fail / total_ws_wf if total_ws_wf > 0 else 0.0
 
         staleness_days = 0.0
         if updated_at:
@@ -1449,7 +1451,6 @@ class PipelineController:
 
         score = (
             (1.0 - ema) * NURTURE_W_EMA
-            + (1.0 - quality) * NURTURE_W_QUALITY
             + fail_rate * NURTURE_W_FAIL
             + staleness_days * NURTURE_W_STALENESS
             + max(0, 1.0 - packages / NURTURE_PACKAGE_TARGET) * NURTURE_W_PACKAGES
@@ -1486,7 +1487,7 @@ class PipelineController:
 
             # ── Pillar 1: Score ALL parent specialists by priority ──
             parents = self.db_manager.execute_query(
-                "SELECT id, domain, model, ema_score, quality_score, fail_rate, "
+                "SELECT id, domain, model, ema_score, weighted_success, weighted_fail, "
                 "packages_absorbed, updated_at FROM specialist_registry "
                 "WHERE parent_id IS NULL ORDER BY domain",
                 fetch=True
