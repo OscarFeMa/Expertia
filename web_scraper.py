@@ -401,6 +401,9 @@ class ContentExtractor:
         except Exception as e:
             raise WebScraperError(f"Content extraction failed: {e}")
 
+    def __del__(self):
+        self.client.close()
+
     def cleanup(self) -> None:
         self.client.close()
         logger.info("ContentExtractor cleanup completed")
@@ -447,11 +450,13 @@ class ModernWebScraper:
                         return content
                 except (RateLimitError, ScraperTimeoutError, WebScraperError) as e:
                     logger.warning(f"Skipping {url}: {e}")
+                except Exception as e:
+                    logger.error(f"Unexpected error processing {url}: {e}")
                 return None
 
         tasks = [process_url(result) for result in search_results]
-        results_gathered = await asyncio.gather(*tasks)
-        extracted_contents = [c for c in results_gathered if c is not None]
+        results_gathered = await asyncio.gather(*tasks, return_exceptions=True)
+        extracted_contents = [c for c in results_gathered if isinstance(c, dict)]
 
         logger.info(f"Extracted content from {len(extracted_contents)} URLs")
         return extracted_contents

@@ -11,6 +11,11 @@ class App {
     this._lastEntities = 0;
     this._lastCheckpointId = 0;
     this._monitorTimer = null;
+    this._lastPidInfo = null;
+    this._lastFetchTime = 0;
+    this.dashSpecSort = 'domain-asc';
+    this.allSpecialistsData = [];
+    this._highlightDomain = '';
     this.apiKey = sessionStorage.getItem('expertia-api-key') || '';
     this.init();
   }
