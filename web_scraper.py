@@ -25,7 +25,6 @@ EXCLUDED_DOMAINS = {
     'www.bbc.co.uk/bitesize',
     'www.mdpi.com',
 }
-import trafilatura
 from trafilatura import extract
 
 from database.db_manager import get_db_manager

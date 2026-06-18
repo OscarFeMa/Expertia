@@ -130,3 +130,6 @@ tools/watchdog_state.json
 
 # SQLite journal files
 *.db-journal
+
+# Windows shortcuts
+*.lnk
