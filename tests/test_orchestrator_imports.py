@@ -19,17 +19,25 @@ def _log(msg):
 def _flush_to_summary(label: str):
     """Write the buffer to GITHUB_STEP_SUMMARY if available."""
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-    if not summary_path:
-        return
+    file_path = "/tmp/ci-test-output.txt"
+    _output_buf.seek(0)
+    content = _output_buf.read()
     try:
-        with open(summary_path, "a") as f:
-            f.write(f"### Test imports - {label}\n")
-            f.write("```\n")
-            _output_buf.seek(0)
-            f.write(_output_buf.read())
-            f.write("\n```\n")
+        with open(file_path, "a") as f:
+            f.write(f"=== Test imports - {label} ===\n")
+            f.write(content)
+            f.write("\n")
     except Exception as e:
-        _log(f"  [WARN] Failed to write to GITHUB_STEP_SUMMARY: {e}")
+        _log(f"  [WARN] Failed to write to {file_path}: {e}")
+    if summary_path:
+        try:
+            with open(summary_path, "a") as f:
+                f.write(f"### Test imports - {label}\n")
+                f.write("```\n")
+                f.write(content)
+                f.write("\n```\n")
+        except Exception as e:
+            _log(f"  [WARN] Failed to write to GITHUB_STEP_SUMMARY: {e}")
 
 
 def _try_import(label: str, import_stmt: str, create_obj: bool = False):
