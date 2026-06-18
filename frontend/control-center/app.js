@@ -7,7 +7,7 @@ class App {
     this.activeTab = 'dashboard';
     this.dataCache = {};
     this.memoryHistory = [];
-    this.apiKey = localStorage.getItem('expertia-api-key') || '';
+    this.apiKey = sessionStorage.getItem('expertia-api-key') || '';
     this.init();
   }
 
@@ -922,7 +922,7 @@ class App {
   saveApiKey() {
     const val = document.getElementById('fleet-apikey')?.value || '';
     this.apiKey = val;
-    localStorage.setItem('expertia-api-key', val);
+    sessionStorage.setItem('expertia-api-key', val);
     const msg = document.getElementById('fleet-apikey-msg');
     if (msg) { msg.textContent = '✓ Saved'; msg.style.color = 'var(--active)'; setTimeout(() => msg.textContent = '', 2000); }
   }

@@ -21,6 +21,8 @@ def init(db_path: Optional[Path] = None):
 
 
 def _conn():
+    if _ro_path is None:
+        raise RuntimeError("readonly_db not initialized: call init(db_path) first")
     uri = f"file:{_ro_path}?mode=ro"
     conn = sqlite3.connect(uri, uri=True, timeout=2.0, check_same_thread=False)
     conn.execute("PRAGMA busy_timeout=500")
