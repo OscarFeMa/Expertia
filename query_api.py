@@ -62,8 +62,7 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
     if llm:
-        if hasattr(llm, '_session') and llm._session:
-            await llm._session.close()
+        await llm.cleanup()
     logger.info("LLMRunner session closed")
 
 

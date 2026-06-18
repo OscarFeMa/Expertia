@@ -86,7 +86,7 @@ def retry_with_exponential_backoff(
             for attempt in range(max_retries):
                 try:
                     return await func(*args, **kwargs)
-                except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                except (aiohttp.ClientError, asyncio.TimeoutError, LLMQueryError, ModelTimeoutError) as e:
                     last_exception = e
                     if attempt < max_retries - 1:
                         logger.warning(
@@ -315,6 +315,7 @@ class LLMRunner:
         self.verification_engine = OfflineVerificationEngine()
         self.current_model: Optional[str] = None
         self._lock: Optional[asyncio.Lock] = None
+        self._lock_init_lock = threading.Lock()
         self._session: Optional[aiohttp.ClientSession] = None
         self.api_base_url = f"http://{self.ollama_host}:{self.ollama_port}"
     
@@ -510,7 +511,9 @@ class LLMRunner:
         """
         # Lazy initialize lock to avoid creating it outside event loop
         if self._lock is None:
-            self._lock = asyncio.Lock()
+            with self._lock_init_lock:
+                if self._lock is None:
+                    self._lock = asyncio.Lock()
         async with self._lock:
             # Verify model exists locally
             if not self.verify_model_exists(model_name):
@@ -518,7 +521,7 @@ class LLMRunner:
                 return False
             
             # Check current running models FIRST to avoid unnecessary VRAM wait
-            running_models = self._get_running_models()
+            running_models = await asyncio.to_thread(self._get_running_models)
             
             # If the target model is already running, we're done
             for running in running_models:
@@ -541,7 +544,7 @@ class LLMRunner:
                 for running in running_models:
                     if running.name != model_name:
                         logger.info(f"Different model '{running.name}' is active, stopping...")
-                        if not self._stop_model(running.name):
+                        if not await asyncio.to_thread(self._stop_model, running.name):
                             logger.warning(f"Failed to stop model '{running.name}'")
             
             # Give Ollama time to actually release VRAM after unload
@@ -553,7 +556,7 @@ class LLMRunner:
                 await asyncio.sleep(5)
             
             # Start the target model
-            if not self._start_model(model_name):
+            if not await asyncio.to_thread(self._start_model, model_name):
                 logger.error(f"Failed to load model '{model_name}'")
                 return False
             
@@ -561,7 +564,7 @@ class LLMRunner:
             logger.info(f"Waiting for model '{model_name}' to initialize in VRAM...")
             max_attempts = 15
             for attempt in range(max_attempts):
-                running_models = self._get_running_models()
+                running_models = await asyncio.to_thread(self._get_running_models)
                 for running in running_models:
                     if running.name == model_name:
                         logger.info(f"READY for inference: {model_name} (loaded in ~{attempt*2}s)")
@@ -668,6 +671,12 @@ class LLMRunner:
         """
         try:
             loop = asyncio.get_running_loop()
+            if threading.current_thread() is threading.main_thread():
+                return asyncio.run(self.query_llm(
+                    model_name=model_name, prompt=prompt,
+                    timeout=timeout, temperature=temperature,
+                    max_tokens=max_tokens
+                ))
             future = asyncio.run_coroutine_threadsafe(
                 self.query_llm(model_name=model_name, prompt=prompt,
                                timeout=timeout, temperature=temperature,
@@ -686,7 +695,7 @@ class LLMRunner:
         """Cleanup - stop current model if running and close HTTP session."""
         if self.current_model:
             logger.info(f"Cleanup: Unloading model '{self.current_model}'")
-            self._stop_model(self.current_model)
+            await asyncio.to_thread(self._stop_model, self.current_model)
             self.current_model = None
         if self._session and not self._session.closed:
             await self._session.close()

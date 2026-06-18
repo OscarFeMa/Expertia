@@ -9,7 +9,9 @@ Watchdog v2 for nurture pipeline.
 import argparse
 import json
 import logging
+import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import time
@@ -30,7 +32,7 @@ logger = logging.getLogger("watchdog")
 STATE_FILE = REPO_ROOT / "tools" / "watchdog_state.json"
 PIPELINE_STATE_FILE = REPO_ROOT / "pipeline_state.json"
 DB_PATH = REPO_ROOT / "storage" / "incubator.db"
-UV_PYTHON = r"C:\Users\usuario\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\python.exe"
+UV_PYTHON = os.environ.get("WATCHDOG_PYTHON_PATH") or shutil.which("python") or "python"
 
 STRIKE_LIMIT = 10       # max stuck detections per specialist before BLOCKED
 STUCK_HOURS = 3         # hours without new cycle to consider stuck
