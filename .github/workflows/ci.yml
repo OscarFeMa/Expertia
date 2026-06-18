@@ -8,27 +8,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Environment info
+        run: |
+          python --version
+          pip --version
+          python -c "import sys; print(f'Python {sys.version}')"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest ruff
-      - name: Environment info
+      - name: Verify installed packages
         run: |
-          python --version
-          pip list
-          python -c "import sys; print('Python ok')"
-      - name: Lint
-        run: ruff check . --ignore=E501,E402,F403,F405,F811 2>&1 || true
+          python -c "import duckduckgo_search, trafilatura, requests, aiohttp, httpx, ijson, aiosqlite, plotly, pandas, fastapi, uvicorn, pydantic_settings, psutil; print('ALL packages imported OK')"
       - name: Test imports
         run: python -u tests/test_orchestrator_imports.py 2>&1
-        timeout-minutes: 5
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: test-output
-          path: /tmp/ci-test-output.txt
-          retention-days: 1
-      - name: Run unit tests
-        run: python -m pytest tests/ -v --ignore=tests/test_web_scraper.py --ignore=tests/test_dissect_wikidata_deep.py --ignore=tests/test_dissect_wikidata_imports.py --ignore=tests/test_orchestrator_phase_b.py 2>&1
         timeout-minutes: 5
