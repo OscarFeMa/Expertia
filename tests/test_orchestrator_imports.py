@@ -62,9 +62,9 @@ def test_imports():
     from orchestrator import PipelineController, validate_paths, WIKIDATA_SCHEMAS, SPECIALIST_REGISTRY
     assert validate_paths is not None
     assert WIKIDATA_SCHEMAS is not None
-    assert len(WIKIDATA_SCHEMAS) == 15
+    assert len(WIKIDATA_SCHEMAS) == 18
     assert SPECIALIST_REGISTRY is not None
-    assert len(SPECIALIST_REGISTRY) == 15
+    assert len(SPECIALIST_REGISTRY) == 18
     
     # Test dissect_wikidata
     from dissect_wikidata import WikidataStreamingExtractor, TAG_TO_QID_MAP

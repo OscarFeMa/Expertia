@@ -177,19 +177,22 @@ class TestNurtureContinuousRecycling:
         content = orch_path.read_text(encoding="utf-8")
         assert "WHERE parent_id IS NULL ORDER BY domain" in content
 
-    def test_nurture_processes_top3_per_iteration(self):
-        """Nurture should process top-3 specialists per iteration to prevent starvation."""
+    def test_nurture_single_focus_per_iteration(self):
+        """Nurture v2: focus on ONE specialist per iteration until tier target reached."""
         from pathlib import Path
         orch_path = Path(__file__).parent.parent / "orchestrator.py"
         content = orch_path.read_text(encoding="utf-8")
-        assert "batch = scored[:3]" in content
-        assert "for top_score, target_spec in batch:" in content
+        assert "current_target = None" in content
+        assert "current_target_tier = TIER_GOLD" in content
+        assert "scored = []" in content
+        assert "scored.sort(key=lambda x: x[0], reverse=True)" in content
 
-    def test_nurture_logs_priority_score(self):
+    def test_nurture_logs_target_info(self):
         from pathlib import Path
         orch_path = Path(__file__).parent.parent / "orchestrator.py"
         content = orch_path.read_text(encoding="utf-8")
-        assert "priority=" in content
+        assert "score=" in content
+        assert "Nurture v2:" in content
 
 
 class TestNurtureSubSpecialistExpansion:

@@ -103,6 +103,7 @@ logs/
 # Temporary files
 *.tmp
 *.temp
+tmp/
 
 # OS generated files
 .DS_Store
@@ -125,3 +126,7 @@ tmp_streamlit_test/
 
 # Pipeline state
 pipeline_state.json
+tools/watchdog_state.json
+
+# SQLite journal files
+*.db-journal

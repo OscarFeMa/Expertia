@@ -396,7 +396,7 @@ class LLMRunner:
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
-                timeout=120,
+                timeout=300,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
             )
 
@@ -544,6 +544,14 @@ class LLMRunner:
                         logger.info(f"Different model '{running.name}' is active, stopping...")
                         if not self._stop_model(running.name):
                             logger.warning(f"Failed to stop model '{running.name}'")
+            
+            # Give Ollama time to actually release VRAM after unload
+            await asyncio.sleep(3)
+            for attempt in range(3):
+                if self._check_vram(min_free_mb=1024):
+                    break
+                logger.warning(f"VRAM still low after unload, waiting 5s (attempt {attempt+1}/3)")
+                await asyncio.sleep(5)
             
             # Start the target model
             if not self._start_model(model_name):

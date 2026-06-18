@@ -1,40 +1,47 @@
-# Async Expert Incubator - Dependencies
+# Expertia - Dependencies
 # Python 3.10+
 
-# Web Search (Modernized)
+# Web Search
 ddgs>=8.0.0
 
-# HTML Parsing and Content Extraction (Updated)
+# HTML Parsing and Content Extraction
 trafilatura==2.0.0
 
-# HTTP Client (sync, used by orchestrator for Wikidata API calls)
+# HTTP Clients
 requests>=2.31.0
-
-# Async HTTP client
 aiohttp>=3.10.0
 httpx>=0.27.0
 
-# Phase A: Wikidata Streaming (Zero-RAM-Bloat)
+# Phase A: Wikidata Streaming
 ijson>=3.3.0
 
-# Database Connection Pooling
-# (Using built-in sqlite3, no additional dependencies needed)
+# Database
+aiosqlite>=0.20.0
 
-# Reports (matplotlib for EMA evolution charts)
+# Reports & Visualization
 matplotlib>=3.8.0
+plotly>=5.18.0
+pandas>=2.1.0
 
 # API
 fastapi>=0.110.0
 uvicorn>=0.27.0
 
+# Streamlit Console
+streamlit>=1.28.0
+streamlit-autorefresh>=1.0.0
+
 # Configuration
 pydantic-settings>=2.1.0
 
-# VRAM watchdog (optional)
+# VRAM watchdog
 nvidia-ml-py>=11.0.0
+
+# System monitoring
+psutil>=5.9.0
 
 # Testing
 pytest>=9.0.0
 
-# Type Hinting (included in Python 3.10+, but listed for clarity)
+# Type Hinting
 # typing-extensions>=4.0.0

@@ -17,16 +17,12 @@ import httpx
 from typing import List, Dict, Optional
 from pathlib import Path
 
-from ddgs import DDGS
+from duckduckgo_search import DDGS
 
 # Low-quality sources to exclude from scraping results
 EXCLUDED_DOMAINS = {
-    'en.wikipedia.org', 'www.wikipedia.org', 'wikipedia.org',
-    'www.britannica.com', 'britannica.com',
     'www.geeksforgeeks.org',
     'www.bbc.co.uk/bitesize',
-    'plato.stanford.edu',
-    'mathworld.wolfram.com',
     'www.mdpi.com',
 }
 import trafilatura
@@ -42,6 +38,7 @@ from config.settings import (
     WIKIPEDIA_USER_AGENT,
     WIKIPEDIA_API_URL,
     SEED_DIR,
+    LANGUAGES,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,11 +80,16 @@ def validate_url(url: str) -> bool:
 def score_source_trust(url: str) -> int:
     if not url or not isinstance(url, str):
         return 40
+
+
     url_lower = url.lower()
     tier1_patterns = [
         'arxiv.org', 'pubmed', 'ieee.org', 'acm.org', 'nature.com',
         '.edu', 'docs.python.org', 'postgresql.org', 'docs.microsoft.com',
-        'developer.apple.com', 'docs.rs', 'go.dev', 'kubernetes.io', 'nginx.org'
+        'developer.apple.com', 'docs.rs', 'go.dev', 'kubernetes.io', 'nginx.org',
+        'ncbi.nlm.nih.gov', 'who.int', 'cochrane.org', 'nejm.org',
+        'thelancet.com', 'bmj.com', 'jamanetwork.com', 'cell.com',
+        'sciencedirect.com', 'springer.com', 'wiley.com',
     ]
     for pattern in tier1_patterns:
         if pattern in url_lower:
@@ -201,7 +203,9 @@ def search_wikipedia(
     if max_results is None:
         max_results = MAX_RESULTS_PER_SEARCH
     apply_random_delay()
-    logger.info(f"[WIKI] Searching Wikipedia for: '{query}'")
+    logger.info(f"[WIKI] Searching Wikipedia ({lang}) for: '{query}'")
+    # Build language-specific API URL
+    wiki_url = f"https://{lang}.wikipedia.org/w/api.php" if lang != "en" else WIKIPEDIA_API_URL
     params = {
         "action": "query",
         "list": "search",
@@ -215,7 +219,7 @@ def search_wikipedia(
     for attempt in range(3):
         try:
             with httpx.Client(timeout=SEARCH_TIMEOUT) as client:
-                r = client.get(WIKIPEDIA_API_URL, params=params, headers=headers)
+                r = client.get(wiki_url, params=params, headers=headers)
                 r.raise_for_status()
                 data = r.json()
             search_results = data.get("query", {}).get("search", [])
@@ -320,15 +324,17 @@ def multi_engine_search(
         errors.append(f"DDGS: {e}")
         logger.warning(f"[FALLBACK] DDGS failed: {e}")
 
-    # Engine 2: Wikipedia
-    try:
-        results = search_wikipedia(query, max_results)
-        if results:
-            logger.info(f"[FALLBACK] Wikipedia returned {len(results)} results — using them")
-            return results
-    except Exception as e:
-        errors.append(f"Wikipedia: {e}")
-        logger.warning(f"[FALLBACK] Wikipedia failed: {e}")
+    # Engine 2: Wikipedia (try configured languages)
+    for lang in LANGUAGES.split('|'):
+        try:
+            results = search_wikipedia(query, max_results, lang=lang)
+            if results:
+                logger.info(f"[FALLBACK] Wikipedia ({lang}) returned {len(results)} results — using them")
+                return results
+        except Exception as e:
+            err_msg = f"Wikipedia({lang}): {e}"
+            errors.append(err_msg)
+            logger.warning(f"[FALLBACK] {err_msg}")
 
     # Engine 3: Seed URLs (domain-specific)
     try:

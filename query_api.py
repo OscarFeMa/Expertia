@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import sys
 from pathlib import Path
@@ -5,10 +6,13 @@ from typing import Optional
 
 import uvicorn
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.datastructures import MutableHeaders
 
 sys.path.insert(0, str(Path(__file__).parent))
 from config.log_setup import setup_logging
@@ -17,8 +21,25 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 from database.db_manager import get_db_manager
+from database.readonly_db import init as init_readonly_db
 from llm_manager import LLMRunner
 from api_router import router as api_router
+
+
+async def _periodic_checkpoint():
+    """Background task: checkpoint WAL every 60s to prevent WAL bloat."""
+    import asyncio
+    # Use a separate write connection for checkpointing
+    db_path = Path(__file__).parent / "storage" / "incubator.db"
+    while True:
+        await asyncio.sleep(60)
+        try:
+            import sqlite3
+            conn = sqlite3.connect(f"file:{db_path}?mode=rw", uri=True, timeout=5.0)
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            conn.close()
+        except Exception:
+            pass
 
 
 @asynccontextmanager
@@ -26,6 +47,7 @@ async def lifespan(app: FastAPI):
     global llm
     llm = LLMRunner()
     logger.info("LLMRunner initialized")
+    init_readonly_db()
     # Reset stale ACTIVE statuses from crashed pipelines
     try:
         db = get_db_manager()
@@ -33,11 +55,18 @@ async def lifespan(app: FastAPI):
         logger.info("Reset stale ACTIVE specialist statuses")
     except Exception as e:
         logger.warning(f"Failed to reset stale ACTIVE: {e}")
+    # Start periodic WAL checkpoint task
+    task = asyncio.create_task(_periodic_checkpoint())
     yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
     if llm:
         if hasattr(llm, '_session') and llm._session:
-            await llm._session.aclose()
-        logger.info("LLMRunner session closed")
+            await llm._session.close()
+    logger.info("LLMRunner session closed")
 
 
 app = FastAPI(title="Expertia Query API", version="0.1.0", lifespan=lifespan)
@@ -56,6 +85,14 @@ app.add_middleware(
 
 
 @app.middleware("http")
+async def timeout_middleware(request: Request, call_next):
+    try:
+        return await asyncio.wait_for(call_next(request), timeout=10.0)
+    except asyncio.TimeoutError:
+        logger.warning(f"TIMEOUT {request.method} {request.url.path}")
+        return JSONResponse(status_code=503, content={"detail": "Request timed out"})
+
+@app.middleware("http")
 async def add_security_headers(request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -67,6 +104,10 @@ app.include_router(api_router)
 frontend_path = Path(__file__).parent / "frontend" / "control-center"
 if frontend_path.exists():
     app.mount("/admin", StaticFiles(directory=str(frontend_path), html=True), name="admin")
+
+neural_path = Path(__file__).parent / "frontend" / "neural-horizon"
+if neural_path.exists():
+    app.mount("/neural", StaticFiles(directory=str(neural_path), html=True), name="neural")
 
 llm: Optional[LLMRunner] = None
 
@@ -124,9 +165,6 @@ def _find_best_domain(question: str) -> tuple[str, str]:
         "cyber": "Cybersecurity",
         "security": "Cybersecurity",
         "encryption": "Cybersecurity",
-        "bio": "Bioinformatics",
-        "genomics": "Bioinformatics",
-        "dna": "Bioinformatics",
         "geopolitics": "Geopolitics",
         "political": "Geopolitics",
         "data": "DataScience",
@@ -141,6 +179,18 @@ def _find_best_domain(question: str) -> tuple[str, str]:
         "astronomy": "Astronomy",
         "space": "Astronomy",
         "planet": "Astronomy",
+        "language": "Linguistics",
+        "linguistics": "Linguistics",
+        "grammar": "Linguistics",
+        "psychology": "Psychology",
+        "cognitive": "Psychology",
+        "behavior": "Psychology",
+        "environment": "EnvironmentalScience",
+        "climate": "EnvironmentalScience",
+        "ecology": "EnvironmentalScience",
+        "sociology": "Sociology",
+        "society": "Sociology",
+        "demographic": "Sociology",
     }
     q = question.lower()
     for kw, dom in keyword_map.items():
@@ -211,11 +261,18 @@ async def query(req: QueryRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="question is required")
 
-    domain, model = (
-        (req.domain, _find_best_domain(req.question)[1])
-        if req.domain
-        else _find_best_domain(req.question)
-    )
+    if req.domain:
+        db = _get_db()
+        domain_row = db.execute_query(
+            "SELECT domain, model FROM specialist_registry WHERE domain = ?",
+            (req.domain,), fetch=True
+        )
+        if domain_row:
+            domain, model = domain_row[0]['domain'], domain_row[0]['model']
+        else:
+            domain, model = _find_best_domain(req.question)
+    else:
+        domain, model = _find_best_domain(req.question)
     logger.info(f"Query domain={domain} model={model} question={req.question[:80]}")
 
     contexts = _fetch_context(domain, req.question)
@@ -245,8 +302,7 @@ async def query(req: QueryRequest):
 
 
 if __name__ == "__main__":
-    import os
-    if not os.getenv("EXPERTIA_API_KEY"):
-        print("[WARN] No EXPERTIA_API_KEY set. Binding to 0.0.0.0 exposes the API to the network.")
-        print("[WARN] Set EXPERTIA_API_KEY environment variable or bind to 127.0.0.1.")
-    uvicorn.run(app, host="0.0.0.0", port=8011)
+    import uvicorn
+    # IPv6 dual-stack: localhost (::1) + 127.0.0.1 both work instantly
+    # On Windows, IPv6 sockets default to IPV6_V6ONLY=0 (dual-stack)
+    uvicorn.run(app, host="::", port=8011)

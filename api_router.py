@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import time
 import asyncio
 import threading
@@ -15,16 +16,17 @@ from fastapi.responses import StreamingResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 
-from database.db_manager import DatabaseManager, get_db_manager
-from tools.spawn_specialist import spawn_child, get_expansions_for_specialist, get_qualified_specialists
+from database.db_manager import get_db_manager
+from database.readonly_db import select, select_one
+from tools.spawn_specialist import spawn_child
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
 _PIPELINE_STATE_FILE = Path(__file__).parent / "pipeline_state.json"
-_WIKIDATA_PID_FILE = Path(__file__).parent.parent / "storage" / "wikidata_download.pid"
+_WIKIDATA_PID_FILE = Path(__file__).parent / "storage" / "wikidata_download.pid"
 LOGS_DIR = Path(__file__).parent / "logs"
-_WIKIDATA_PROGRESS_FILE = Path(__file__).parent.parent / "storage" / "wikidata_progress.json"
+_WIKIDATA_PROGRESS_FILE = Path(__file__).parent / "storage" / "wikidata_progress.json"
 
 _pipeline: dict = {"pid": None, "start_time": 0, "duration_hours": 0}
 _pipeline_lock = threading.RLock()
@@ -32,6 +34,11 @@ _kill_timer: Optional[threading.Timer] = None
 
 _wikidata_process: dict = {"pid": None, "type": None, "start_time": 0}
 _wikidata_lock = threading.Lock()
+
+_monitor_process: dict = {"pid": None, "start_time": 0}
+_monitor_lock = threading.Lock()
+_MONITOR_PID_FILE = Path(__file__).parent / "storage" / "monitor.pid"
+_MONITOR_REPORT_FILE = Path(__file__).parent / "storage" / "monitor_reports.json"
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 EXPERTIA_API_KEY = os.environ.get("EXPERTIA_API_KEY", "")
@@ -110,9 +117,6 @@ def _try_restore_wikidata_pid():
         logger.warning(f"Failed to restore wikidata PID: {e}")
 
 
-_try_restore_wikidata_pid()
-
-
 def _is_pid_alive(pid):
     if pid is None:
         return False
@@ -130,24 +134,22 @@ def _is_pid_alive(pid):
     except Exception:
         return False
 
+
+_try_restore_wikidata_pid()
+
 UTC_OFFSET = timedelta(hours=2)
 
 
-def _db():
-    return get_db_manager()
-
-
 def _fetch_all(query: str, params: tuple = ()):
-    return _db().execute_query(query, params, fetch=True) or []
+    return select(query, params)
 
 
 def _fetch_one(query: str, params: tuple = ()):
-    rows = _db().execute_query(query, params, fetch=True)
-    return rows[0] if rows else None
+    return select_one(query, params)
 
 
 def _execute(query: str, params: tuple = ()):
-    _db().execute_query(query, params)
+    get_db_manager().execute_query(query, params)
 
 
 @router.get("/status")
@@ -168,6 +170,61 @@ def get_status():
         "start_epoch": row.get("start_epoch", 0),
         "updated_at": row.get("updated_at", ""),
     }
+
+
+@router.get("/cascade/checkpoints")
+def get_cascade_checkpoints(since_id: int = 0):
+    """Return cascade checkpoint history for real-time monitoring charts.
+    
+    Auto-detects run restarts (--from-zero) via SQL self-join (no full table load).
+    Only returns checkpoints from the latest run, unless since_id is specified.
+    """
+    if since_id <= 0:
+        restart_row = _fetch_one("""
+            SELECT c1.id FROM cascade_checkpoints c1
+            JOIN cascade_checkpoints c2 ON c2.id = c1.id - 1
+            WHERE c1.entities_processed < c2.entities_processed
+            ORDER BY c1.id DESC LIMIT 1
+        """)
+        if restart_row:
+            since_id = restart_row["id"] - 1
+
+    if since_id > 0:
+        rows = _fetch_all(
+            "SELECT id, checkpoint_num, entities_processed, total_matches, "
+            "elapsed_seconds, created_at "
+            "FROM cascade_checkpoints WHERE id > ? ORDER BY id ASC",
+            (since_id,)
+        )
+    else:
+        last_id = _fetch_one("SELECT MAX(id) as mid FROM cascade_checkpoints")
+        since_id = max(0, last_id["mid"] - 200) if last_id else 0
+        rows = _fetch_all(
+            "SELECT id, checkpoint_num, entities_processed, total_matches, "
+            "elapsed_seconds, created_at "
+            "FROM cascade_checkpoints WHERE id > ? ORDER BY id ASC",
+            (since_id,)
+        )
+    latest_entities = rows[-1]["entities_processed"] if rows else 0
+    latest_id = rows[-1]["id"] if rows else 0
+    return {
+        "checkpoints": rows or [],
+        "latest_entities": latest_entities,
+        "latest_id": latest_id,
+    }
+
+
+@router.get("/cascade/per-specialist")
+def get_cascade_per_specialist():
+    """Return per-specialist match counts from cache table (fast)."""
+    rows = _fetch_all(
+        "SELECT specialist_id, domain, match_count "
+        "FROM specialist_match_cache "
+        "ORDER BY match_count DESC"
+    )
+    if rows:
+        return {"matches": rows, "cached": True}
+    return {"matches": [], "cached": False, "loading": True}
 
 
 @router.get("/specialists")
@@ -288,14 +345,16 @@ def get_super_experts():
 
 @router.get("/knowledge-stats")
 def get_knowledge_stats():
-    total = _fetch_one("SELECT COUNT(*) AS cnt FROM knowledge_packages")
+    total = _fetch_one("SELECT MAX(id) AS cnt FROM knowledge_packages")
     by_domain = _fetch_all(
-        "SELECT COALESCE(domain, 'unknown') AS domain, COUNT(*) AS cnt "
-        "FROM knowledge_packages GROUP BY domain ORDER BY cnt DESC"
+        "SELECT domain, SUM(packages_absorbed) AS cnt "
+        "FROM specialist_registry "
+        "WHERE packages_absorbed > 0 "
+        "GROUP BY domain ORDER BY cnt DESC"
     )
     return {
         "total_packages": total["cnt"] if total else 0,
-        "by_domain": by_domain,
+        "by_domain": by_domain if by_domain else [],
     }
 
 
@@ -578,23 +637,19 @@ def get_system_cpu():
 
 @router.get("/health")
 def get_health():
-    db_ok = _db().health_check()
-    # Single query for all counts instead of 5 separate queries
-    stats = _fetch_one(
-        "SELECT "
-        "(SELECT COUNT(*) FROM specialist_registry) AS specialist_count, "
-        "(SELECT COUNT(*) FROM knowledge_packages) AS package_count, "
-        "(SELECT COUNT(*) FROM activity_log WHERE level IN ('ERROR','CRITICAL')) AS incident_count"
+    specialist_count = _fetch_one("SELECT COUNT(*) AS cnt FROM specialist_registry")
+    incident_count = _fetch_one(
+        "SELECT COUNT(*) AS cnt FROM activity_log WHERE level IN ('ERROR','CRITICAL')"
     )
     last_activity = _fetch_one(
         "SELECT timestamp, level, message FROM activity_log ORDER BY id DESC LIMIT 1"
     )
     return {
-        "database": "ok" if db_ok else "error",
+        "database": "ok",
         "last_activity": last_activity,
-        "specialist_count": stats.get("specialist_count", 0) if stats else 0,
-        "package_count": stats.get("package_count", 0) if stats else 0,
-        "incident_count": stats.get("incident_count", 0) if stats else 0,
+        "specialist_count": specialist_count["cnt"] if specialist_count else 0,
+        "package_count": 0,
+        "incident_count": incident_count["cnt"] if incident_count else 0,
         "timestamp": datetime.utcnow().isoformat(),
     }
 
@@ -649,6 +704,26 @@ def kill_all():
         _kill_timer.cancel()
         _kill_timer = None
 
+    # Kill monitor
+    with _monitor_lock:
+        mpid = _monitor_process.get("pid")
+        if mpid and _is_pid_alive(mpid):
+            try:
+                if os.name == "nt":
+                    subprocess.run(
+                        ["taskkill", "/F", "/PID", str(mpid)],
+                        capture_output=True, timeout=5,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                else:
+                    os.kill(mpid, 15)
+                logger.warning(f"Killed monitor PID={mpid} via kill-all")
+            except Exception as e:
+                logger.error(f"Failed to kill monitor PID={mpid}: {e}")
+        _monitor_process["pid"] = None
+    if _MONITOR_PID_FILE.exists():
+        _MONITOR_PID_FILE.unlink()
+
     # Schedule self-destruct (kill the API process after responding)
     def _suicide():
         import os as _os
@@ -666,15 +741,44 @@ class SpawnRequest(BaseModel):
 
 @router.get("/qualified-specialists")
 def get_qualified():
-    db = get_db_manager()
-    return {"specialists": get_qualified_specialists(db)}
+    rows = select(
+        "SELECT id, domain, model, root_qid, packages_absorbed, ema_score, "
+        "weighted_success, weighted_fail "
+        "FROM specialist_registry WHERE parent_id IS NULL "
+        "AND packages_absorbed > 2500 AND ema_score > 0.95 "
+        "ORDER BY packages_absorbed DESC"
+    )
+    return {"specialists": rows}
 
 
 @router.get("/specialists/{specialist_id}/expansions")
 def get_expansions(specialist_id: int):
-    db = get_db_manager()
-    expansions = get_expansions_for_specialist(db, specialist_id)
-    return {"expansions": expansions}
+    parent = select_one(
+        "SELECT id, domain, root_qid FROM specialist_registry WHERE id=?",
+        (specialist_id,)
+    )
+    if not parent:
+        return {"expansions": []}
+    rows = select(
+        "SELECT qid FROM qid_expansions WHERE specialist_id=? ORDER BY discovered_at_checkpoint",
+        (specialist_id,)
+    )
+    if not rows:
+        return {"expansions": []}
+    qids = [r['qid'] for r in rows]
+    from tools.spawn_specialist import batch_resolve_labels, validate_qids, is_blocklisted_label
+    labels = batch_resolve_labels(qids)
+    validation = validate_qids(qids, parent['root_qid'])
+    result = []
+    for qid in qids:
+        label = labels.get(qid, qid)
+        result.append({
+            'qid': qid,
+            'label': label,
+            'valid_p279': validation.get(qid, False),
+            'blocklisted': is_blocklisted_label(label),
+        })
+    return {"expansions": result}
 
 
 @router.post("/specialists/{specialist_id}/spawn", dependencies=[Depends(verify_api_key)])
@@ -708,26 +812,40 @@ async def spawn_specialists(specialist_id: int, req: SpawnRequest):
 
 @router.get("/wikidata/status")
 def wikidata_status():
-    db = get_db_manager()
-    pending_by_domain = db.execute_query(
-        """SELECT domain, COUNT(*) AS cnt
-           FROM knowledge_packages
-           WHERE qid IS NOT NULL AND absorbed_at IS NULL
-           GROUP BY domain ORDER BY cnt DESC""",
-        fetch=True
-    )
-    last_download = db.execute_query(
+    with _wikidata_lock:
+        dl_running = bool(_wikidata_process.get("pid") and _is_pid_alive(_wikidata_process["pid"]))
+
+    # Total downloaded packages: read the pre-cached sum from specialist_registry.
+    # Avoid COUNT(*) on knowledge_packages (192M rows) — that would take >30s on HDD.
+    total_row = select_one("SELECT SUM(packages_absorbed) AS s FROM specialist_registry")
+    total_downloaded = total_row['s'] if total_row and total_row['s'] else 0
+
+    # Pending (unabsorbed) packages: when no download is running, there are none.
+    # Auto-feed during cascade sets absorbed_at = CURRENT_TIMESTAMP for every row.
+    # Only a running download would produce unabsorbed packages.
+    total_pending = 0
+    pending_by_domain = {}
+
+    if dl_running:
+        pending_by_domain_rows = select(
+            """SELECT domain, COUNT(*) AS cnt
+               FROM knowledge_packages
+               WHERE qid IS NOT NULL AND absorbed_at IS NULL
+               GROUP BY domain ORDER BY cnt DESC""",
+        )
+        pending_by_domain = {r['domain']: r['cnt'] for r in (pending_by_domain_rows or [])}
+        total_pending = sum(pending_by_domain.values())
+
+    last_download = select_one(
         "SELECT MAX(last_wikidata_download) AS ts FROM specialist_registry",
-        fetch=True
     )
-    last_feed = db.execute_query(
+    last_feed = select_one(
         "SELECT MAX(last_wikidata_feed) AS ts FROM specialist_registry",
-        fetch=True
     )
 
     now = datetime.utcnow()
-    dl_ts = last_download[0]['ts'] if last_download and last_download[0]['ts'] else None
-    feed_ts = last_feed[0]['ts'] if last_feed and last_feed[0]['ts'] else None
+    dl_ts = last_download['ts'] if last_download and last_download['ts'] else None
+    feed_ts = last_feed['ts'] if last_feed and last_feed['ts'] else None
 
     def hours_since(ts_str):
         if not ts_str:
@@ -740,17 +858,6 @@ def wikidata_status():
 
     dl_hours = hours_since(dl_ts)
     feed_hours = hours_since(feed_ts)
-
-    total_pending = sum(r['cnt'] for r in (pending_by_domain or []))
-
-    with _wikidata_lock:
-        dl_running = bool(_wikidata_process.get("pid") and _is_pid_alive(_wikidata_process["pid"]))
-
-    total_downloaded = db.execute_query(
-        "SELECT COUNT(*) AS cnt FROM knowledge_packages WHERE qid IS NOT NULL",
-        fetch=True
-    )
-    total_downloaded = total_downloaded[0]['cnt'] if total_downloaded else 0
 
     current_domain = ''
     packages_this_domain = 0
@@ -766,14 +873,14 @@ def wikidata_status():
         except Exception:
             pass
         if not current_domain:
-            last_row = db.execute_query(
+            # Only query knowledge_packages when download is running (small result set)
+            last_row = select_one(
                 """SELECT domain FROM knowledge_packages
                    WHERE qid IS NOT NULL
                    ORDER BY id DESC LIMIT 1""",
-                fetch=True
             )
             if last_row:
-                current_domain = last_row[0]['domain']
+                current_domain = last_row['domain']
 
     return {
         "ultima_descarga": dl_ts,
@@ -781,7 +888,7 @@ def wikidata_status():
         "dias_sin_descargar": round(dl_hours / 24, 1) if dl_hours is not None else None,
         "dias_pendientes_alimentar": round(feed_hours / 24, 1) if feed_hours is not None else None,
         "total_pendientes": total_pending,
-        "pendientes_por_dominio": {r['domain']: r['cnt'] for r in (pending_by_domain or [])},
+        "pendientes_por_dominio": pending_by_domain,
         "download_running": dl_running,
         "current_domain": current_domain,
         "packages_downloaded": total_downloaded,
@@ -793,13 +900,12 @@ def wikidata_status():
 
 @router.post("/wikidata/download", dependencies=[Depends(verify_api_key)])
 def wikidata_download(req: WikidataDownloadRequest = None):
-    db = get_db_manager()
     with _wikidata_lock:
         if _wikidata_process.get("pid") and _is_pid_alive(_wikidata_process["pid"]):
             raise HTTPException(status_code=409, detail="Wikidata download already running")
 
         use_full = bool(req and req.phase == 'full')
-        cmd = ["pythonw", "tools/update_wikidata.py"]
+        cmd = [sys.executable, "tools/update_wikidata.py"]
         if use_full:
             cmd.append("--full")
 
@@ -828,7 +934,7 @@ def wikidata_feed():
         if _wikidata_process.get("pid") and _is_pid_alive(_wikidata_process["pid"]):
             raise HTTPException(status_code=409, detail="Wikidata process already running")
 
-        cmd = ["pythonw", "orchestrator.py", "--phase", "feed", "--duration", "0.1"]
+        cmd = [sys.executable, "orchestrator.py", "--phase", "feed", "--duration", "0.1"]
 
         try:
             proc = subprocess.Popen(
@@ -871,3 +977,101 @@ def wikidata_stop():
     except Exception as e:
         logger.error(f"Failed to stop wikidata process PID={pid}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── MONITOR ENDPOINTS ─────────────────────────────────────────────────────────
+
+def _try_restore_monitor_pid():
+    with _monitor_lock:
+        if _monitor_process.get("pid"):
+            return
+        if _MONITOR_PID_FILE.exists():
+            try:
+                raw = _MONITOR_PID_FILE.read_text().strip()
+                pid = int(raw)
+                if _is_pid_alive(pid):
+                    _monitor_process["pid"] = pid
+                    _monitor_process["start_time"] = _MONITOR_REPORT_FILE.stat().st_mtime if _MONITOR_REPORT_FILE.exists() else time.time()
+                    logger.info(f"Restored monitor PID={pid}")
+                else:
+                    _MONITOR_PID_FILE.unlink()
+            except Exception as e:
+                logger.warning(f"Failed to restore monitor PID: {e}")
+
+
+_try_restore_monitor_pid()
+
+
+@router.post("/monitor/start", dependencies=[Depends(verify_api_key)])
+def monitor_start():
+    with _monitor_lock:
+        if _monitor_process.get("pid") and _is_pid_alive(_monitor_process["pid"]):
+            raise HTTPException(status_code=409, detail="Monitor already running")
+
+        cmd = ["python", "tools/pipeline_monitor.py"]
+        try:
+            log_path = LOGS_DIR / f"monitor_{int(time.time())}.log"
+            log_file = open(log_path, "w", encoding="utf-8")
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_file,
+                stderr=log_file,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            _monitor_process["pid"] = proc.pid
+            _monitor_process["start_time"] = time.time()
+            _MONITOR_PID_FILE.write_text(str(proc.pid))
+            logger.info(f"Monitor started PID={proc.pid}")
+            return {"status": "started", "pid": proc.pid}
+        except Exception as e:
+            logger.error(f"Failed to start monitor: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/monitor/stop", dependencies=[Depends(verify_api_key)])
+def monitor_stop():
+    with _monitor_lock:
+        pid = _monitor_process.get("pid")
+        if not pid or not _is_pid_alive(pid):
+            _monitor_process["pid"] = None
+            raise HTTPException(status_code=404, detail="No monitor running")
+
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=5,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+        else:
+            os.kill(pid, 15)
+        with _monitor_lock:
+            _monitor_process["pid"] = None
+        _MONITOR_PID_FILE.unlink(missing_ok=True)
+        logger.info(f"Monitor PID={pid} stopped")
+        return {"status": "stopped", "pid": pid}
+    except Exception as e:
+        logger.error(f"Failed to stop monitor PID={pid}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/monitor/status")
+def monitor_status():
+    with _monitor_lock:
+        pid = _monitor_process.get("pid")
+        alive = _is_pid_alive(pid) if pid else False
+        if not alive:
+            _monitor_process["pid"] = None
+
+    reports = []
+    if _MONITOR_REPORT_FILE.exists():
+        try:
+            data = json.loads(_MONITOR_REPORT_FILE.read_text())
+            reports = data if isinstance(data, list) else [data]
+        except Exception:
+            pass
+
+    return {
+        "alive": alive,
+        "pid": pid if alive else None,
+        "started_at": datetime.fromtimestamp(_monitor_process["start_time"]).isoformat() if _monitor_process["start_time"] else None,
+        "uptime_seconds": int(time.time() - _monitor_process["start_time"]) if _monitor_process["start_time"] and alive else 0,
+        "reports": reports[-5:],  # last 5 reports
+    }

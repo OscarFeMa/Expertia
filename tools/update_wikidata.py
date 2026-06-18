@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import (
     WIKIDATA_ENTITY_API, WIKIDATA_SPARQL_ENDPOINT,
     WIKIDATA_API_USER_AGENT, WIKIDATA_LABEL_BATCH_SIZE,
+    LANGUAGES,
 )
 from database.db_manager import get_db_manager
 
@@ -119,7 +120,7 @@ def fetch_entities_batch(qids: List[str]) -> Dict[str, Dict]:
                     'ids': ids_str,
                     'props': 'labels|descriptions|aliases|claims|sitelinks',
                     'format': 'json',
-                    'languages': 'en',
+                    'languages': LANGUAGES,
                 },
                 headers=HEADERS,
                 timeout=30
@@ -133,11 +134,37 @@ def fetch_entities_batch(qids: List[str]) -> Dict[str, Dict]:
     return result
 
 
-def build_structured_knowledge(entity: Dict) -> str:
-    label = (entity.get('labels') or {}).get('en', {}).get('value', '')
-    desc = (entity.get('descriptions') or {}).get('en', {}).get('value', '')
-    aliases = (entity.get('aliases') or {}).get('en', [])
-    alias_text = '; '.join(a.get('value', '') for a in aliases[:5])
+def _pick_first(values: Dict, langs: List[str], key: str = 'value'):
+    """Pick the first available value from a language-keyed dict using the ordered language list."""
+    if not values:
+        return ''
+    for lang in langs:
+        v = values.get(lang, {}).get(key, '')
+        if v:
+            return v
+    # fallback to any language
+    for v in values.values():
+        val = v.get(key, '')
+        if val:
+            return val
+    return ''
+
+
+def build_structured_knowledge(entity: Dict, languages: str = LANGUAGES) -> str:
+    langs = languages.split('|')
+    label = _pick_first(entity.get('labels') or {}, langs)
+    desc = _pick_first(entity.get('descriptions') or {}, langs)
+    aliases_list = []
+    aliases_dict = entity.get('aliases') or {}
+    for lang in langs:
+        if lang in aliases_dict:
+            aliases_list = [a.get('value', '') for a in aliases_dict[lang][:5]]
+            break
+    if not aliases_list:
+        for v in aliases_dict.values():
+            aliases_list = [a.get('value', '') for a in v[:5]]
+            break
+    alias_text = '; '.join(aliases_list)
 
     claims = entity.get('claims') or {}
     claim_lines = []
@@ -189,7 +216,7 @@ SELECT DISTINCT ?qid ?qidLabel ?qidDescription ?modified ?altLabel WHERE {{
   ?qid wikibase:statements ?statementCount .
   FILTER(?statementCount > 0)
   {date_filter}
-  SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
+  SERVICE wikibase:label {{ bd:serviceParam wikibase:language "{LANGUAGES.replace('|', ',')},en". }}
 }}
 ORDER BY DESC(?modified)
 '''

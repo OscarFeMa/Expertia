@@ -1,24 +1,29 @@
 # Project Status — Expertia Synaptic Archive
 
-**Last Updated:** 2026-05-26
+**Last Updated:** 2026-06-08
 
 ## Current System State
 
 ### Active Components
-- **15 Specialist Roots** with corrected Wikidata QIDs
-- **Pipeline Phase B**: Web scraping (DDGS) + LLM distillation + EMA scoring
-- **Sub-Specialist Spawning**: Validated via Wikidata P279 parent-sharing + API label resolution
-- **22 Super-Expert Councils**: Static reference tables with weighted members
-- **Synaptic Archive Console**: Streamlit UI with sunburst hierarchy, control panel, auto-refresh
-- **Pipeline Reports**: EMA evolution charts in `storage/reports/` on completion
+- **18 Specialist Roots** — 14 legacy + 4 new (Linguistics, Psychology, EnvironmentalScience, Sociology)
+- **Pipeline**: Phase A (Wikidata dump scan → matched QIDs) + Phase B (Nurture v2 with Tier Ascension)
+- **Multilingual Extraction**: 6 languages (en, es, fr, de, pt, it) for Wikidata + Wikipedia
+- **Nurture v2**: Single-target Tier Ascension (Bronze→Silver→Gold→Legend), cascade detection, EMA decay
+- **23 Super-Expert Councils**: Includes SocietyAndCulture, updated LanguagesLinguistics, NeuroscienceCognition, ClimateEnvironment
+- **Neural Horizon Dashboard**: Static frontend served via API, pipeline control, monitor, dark/light theme
+- **Pipeline Monitor**: Independent process, 20-min reporting interval
+- **Circuit Breaker**: Auto-reset after 60s, cascade detection (≥20 failures/50 cycles → 5min pause)
 
 ### Specialist Ecosystem
-- **Total Specialists:** 15 root + 1 sub-specialist (Medicine/Geriatrics #1774)
-- **Database:** `storage/incubator.db` with 7 tables
-- **Pipeline:** Phase B (web+LLM) loop per specialist, spawning check every 10 cycles
+- **Total Specialists:** 18 root (10 specialists deleted: Bioinformatics, Geriatrics, plant physiology, criminal/civil/family/sharia/Turkish law, Astronomy/biology)
+- **Database:** `storage/incubator.db` with 10+ tables (matched_qids, wiki_monitor, activity_log)
+- **Pipeline:** Phase A (dump scan) then auto-feed to Phase B Nurture
+- **Models:** phi4-mini:3.8b (12 specialists), llama3.2:3b (3), qwen2.5-coder:3b (5)
+- **7,315 packages** reassigned from deleted specialists to surviving domains
+- **16,477 duplicate packages** removed, 1,139,560 circuit-breaker WARNINGs cleaned from activity_log
 
-### Super-Expert Councils (22)
-EconomyFinance, ArtificialIntelligence, BiotechnologyHealth, QuantumPhysics, CybersecurityDefense, ClimateEnvironment, SpaceExploration, DataPrivacyEthics, CulturalHeritage, EnergySustainability, CryptocurrencyBlockchain, EducationTechnology, ManufacturingIndustry, Telecommunications, MaterialsScience, UrbanPlanningSmartCities, DefenseStrategy, NeuroscienceCognition, GeneralKnowledge, LanguagesLinguistics, VisualArts, PerformingArts.
+### Super-Expert Councils (23)
+EconomyFinance, ArtificialIntelligence, BiotechnologyHealth, QuantumPhysics, CybersecurityDefense, ClimateEnvironment, SpaceExploration, DataPrivacyEthics, CulturalHeritage, EnergySustainability, CryptocurrencyBlockchain, EducationTechnology, ManufacturingIndustry, Telecommunications, MaterialsScience, UrbanPlanningSmartCities, DefenseStrategy, NeuroscienceCognition, GeneralKnowledge, LanguagesLinguistics, VisualArts, PerformingArts, **SocietyAndCulture**.
 
 ## Database Schema
 

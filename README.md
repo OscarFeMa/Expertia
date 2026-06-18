@@ -1,46 +1,48 @@
 # Expertia — Synaptic Archive
 
-Motor de orquestación de agentes especializados para hardware local. Gestiona una red de 15 micro-modelos LLM (Ollama) con pipeline de scraping web + destilación, spawning de sub-especialistas validado por Wikidata, y un consejo de 22 super-expertos para síntesis cross-dominio.
+Motor de orquestación de agentes especializados para hardware local. Gestiona una red de 18 micro-modelos LLM (Ollama) con pipeline de scraping web + destilación, validación por Wikidata, y un consejo de 23 super-expertos para síntesis cross-dominio.
 
 ## Overview
 
 Expertia es un sistema de conocimiento autónomo, soberano y local-first. Opera mediante:
 
-- **15 especialistas raíz** con modelos ajustados por hardware (RTX 1660 6GB VRAM)
+- **18 especialistas raíz** con modelos ajustados por hardware (RTX 1660 6GB VRAM)
 - **Pipeline Phase B** (Web Scraping + LLM distillation) con scoring dinámico EMA
-- **Spawning de sub-especialistas** con validación vía Wikidata P279 (parentesco directo/hermano)
-- **Resolución de labels** por API Wikidata (`wbgetentities`) — sin diccionarios hardcodeados
-- **22 consejos super-expertos** de referencia estática con miembros ponderados
-- **Consola Streamlit** "Synaptic Archive" con estética pergamino, gráficos sunburst y control de pipeline
-- **Reportes automáticos** cada 30 min
+- **Extracción multilingüe** (en, es, fr, de, pt, it) desde Wikidata + Wikipedia
+- **23 consejos super-expertos** de referencia estática con miembros ponderados
+- **Dashboard Neural Horizon** con control de pipeline, charts y monitor
+- **Reportes automáticos** cada 20 min
 
-## 15 Especialistas
+## 18 Especialistas
 
-| Dominio | Modelo | Root QID | Corrección |
-|---|---|---|---|
-| SoftwareEngineering | qwen2.5-coder:3b | Q80993 | ✅ |
-| Mathematics | deepseek-r1:1.5b | Q395 | ✅ |
-| Medicine | phi4-mini:3.8b | Q11190 | ✅ |
-| LegalSystem | llama3.2:3b | Q7748 | ✅ |
-| PhilosophyHistory | gemma3:4b | Q5891 | ✅ |
-| FinanceEconomics | gemma3:4b | Q8134 | ✅ |
-| Physics | deepseek-r1:1.5b | Q413 | ✅ |
-| Cybersecurity | qwen2.5-coder:3b | Q3510521 | ✅ corregido |
-| Bioinformatics | phi4-mini:3.8b | Q128570 | ✅ corregido |
-| Geopolitics | llama3.2:3b | Q159385 | ✅ corregido |
-| DataScience | qwen2.5-coder:3b | Q2374463 | ✅ corregido |
-| Chemistry | phi4-mini:3.8b | Q2329 | ✅ corregido |
-| ArtHistory | gemma3:4b | Q50637 | ✅ corregido |
-| Electronics | qwen2.5-coder:3b | Q11650 | ✅ corregido |
-| Astronomy | phi4-mini:3.8b | Q333 | ✅ |
+| Dominio | Modelo | Root QID |
+|---|---|---|
+| SoftwareEngineering | qwen2.5-coder:3b | Q80993 |
+| Mathematics | qwen2.5-coder:3b | Q395 |
+| Medicine | phi4-mini:3.8b | Q11190 |
+| LegalSystem | llama3.2:3b | Q7748 |
+| PhilosophyHistory | phi4-mini:3.8b | Q5891 |
+| FinanceEconomics | phi4-mini:3.8b | Q8134 |
+| Physics | phi4-mini:3.8b | Q413 |
+| Cybersecurity | qwen2.5-coder:3b | Q3510521 |
+| Geopolitics | llama3.2:3b | Q159385 |
+| DataScience | qwen2.5-coder:3b | Q2374463 |
+| Chemistry | phi4-mini:3.8b | Q2329 |
+| ArtHistory | phi4-mini:3.8b | Q50637 |
+| Electronics | qwen2.5-coder:3b | Q11650 |
+| Astronomy | phi4-mini:3.8b | Q333 |
+| **Linguistics** | **phi4-mini:3.8b** | **Q81798** |
+| **Psychology** | **phi4-mini:3.8b** | **Q9418** |
+| **EnvironmentalScience** | **phi4-mini:3.8b** | **Q188069** |
+| **Sociology** | **llama3.2:3b** | **Q21201** |
 
-## 22 Super-Expertos
+## 23 Super-Expertos
 
 Consejos estáticos de referencia (sin pipeline propio):
 
-EconomyFinance, ArtificialIntelligence, BiotechnologyHealth, QuantumPhysics, CybersecurityDefense, ClimateEnvironment, SpaceExploration, DataPrivacyEthics, CulturalHeritage, EnergySustainability, CryptocurrencyBlockchain, EducationTechnology, ManufacturingIndustry, Telecommunications, MaterialsScience, UrbanPlanningSmartCities, DefenseStrategy, NeuroscienceCognition, GeneralKnowledge, LanguagesLinguistics, VisualArts, PerformingArts.
+EconomyFinance, ArtificialIntelligence, BiotechnologyHealth, QuantumPhysics, CybersecurityDefense, ClimateEnvironment, SpaceExploration, DataPrivacyEthics, CulturalHeritage, EnergySustainability, CryptocurrencyBlockchain, EducationTechnology, ManufacturingIndustry, Telecommunications, MaterialsScience, UrbanPlanningSmartCities, DefenseStrategy, NeuroscienceCognition, GeneralKnowledge, LanguagesLinguistics, VisualArts, PerformingArts, SocietyAndCulture.
 
-Cada consejo tiene miembros de los 15 especialistas con pesos que suman 1.0.
+Cada consejo tiene miembros de los 18 especialistas con pesos que suman 1.0.
 
 ## Sub-especialistas
 
@@ -64,15 +66,12 @@ incubator-root/
 │   ├── packages/             # Paquetes de conocimiento
 │   └── reports/              # Reportes automáticos
 ├── orchestrator.py           # Pipeline controller principal
-├── expertia_console.py       # Consola Streamlit "Synaptic Archive"
 ├── web_scraper.py            # Scraper moderno (DDGS + Trafilatura)
 ├── llm_manager.py            # Gestor de modelos Ollama
 ├── dissect_wikidata.py       # Extractor Wikidata streaming (ijson+gzip)
 ├── metrics.py                # Colector de métricas
 ├── knowledge_ingestor.py     # Ingestor de conocimiento
-├── launch_expertia.bat       # Lanzador Streamlit (PowerShell oculto)
-├── install_models.bat        # Descarga de modelos Ollama
-├── download_models.bat
+├── download_models.bat       # Descarga de modelos Ollama
 └── requirements.txt
 ```
 

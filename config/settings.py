@@ -19,7 +19,7 @@ class ExpertiaSettings(BaseSettings):
 
     search_delay_min: float = 2.5
     search_delay_max: float = 4.5
-    max_results_per_search: int = 5
+    max_results_per_search: int = 8
     search_timeout: int = 30
     parser_timeout: int = 30
     include_links: bool = True
@@ -27,7 +27,7 @@ class ExpertiaSettings(BaseSettings):
 
     wikidata_dump_path: str = "E:/aria2-1.37.0-win-64bit-build1/latest-all.json.gz"
     wikidata_output_dir: str = "E:/expertia-data"
-    wikidata_extraction_timeout_hours: float = 4.0
+    wikidata_extraction_timeout_hours: float = 36.0
     wikidata_entity_api: str = "https://www.wikidata.org/w/api.php"
     wikidata_sparql_endpoint: str = "https://query.wikidata.org/sparql"
     wikidata_api_user_agent: str = "Expertia/1.0 (incubator) Python/3.12"
@@ -35,12 +35,15 @@ class ExpertiaSettings(BaseSettings):
 
     subspecialist_threshold: int = 100
     max_subspecialists: int = 20
-    max_cascade_entities: int = 50000
+    max_cascade_entities: int = 0  # 0 = sin limite (procesa todo el dump hasta timeout)
+    parallel_workers: int = 4
     subspecialist_cycle_interval: int = 10
     max_children_per_parent: int = 3
 
     reporting_interval_seconds: int = 3600
     cooldown_seconds: int = 10
+
+    languages: str = "en|es|fr|de|pt|it"
 
     blocklist_labels: FrozenSet[str] = frozenset({
         "field of study", "academic discipline", "branch of science",
@@ -97,6 +100,8 @@ MAX_SUBSPECIALISTS = _SETTINGS.max_subspecialists
 SUBSPECIALIST_CYCLE_INTERVAL = _SETTINGS.subspecialist_cycle_interval
 MAX_CHILDREN_PER_PARENT = _SETTINGS.max_children_per_parent
 MAX_CASCADE_ENTITIES = _SETTINGS.max_cascade_entities
+PARALLEL_WORKERS = _SETTINGS.parallel_workers
+LANGUAGES = _SETTINGS.languages
 BLOCKLIST_LABELS = _SETTINGS.blocklist_labels
 BLOCKLIST_LABEL_PREFIXES = _SETTINGS.blocklist_label_prefixes
 

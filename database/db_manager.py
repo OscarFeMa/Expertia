@@ -72,27 +72,43 @@ class DatabaseManager:
         else:
             try:
                 self._connection.execute("SELECT 1")
-            except sqlite3.ProgrammingError:
+            except sqlite3.Error:
                 with self._connection_lock:
+                    try:
+                        self._connection.close()
+                    except Exception:
+                        pass
                     self._connection = self._open_connection()
         
         return self._connection
     
-    def _open_connection(self):
+    def _open_connection(self, read_only: bool = False):
         try:
-            conn = sqlite3.connect(
-                str(self.db_path),
-                check_same_thread=False,
-                timeout=30.0
-            )
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("PRAGMA synchronous=NORMAL;")
+            if read_only:
+                conn = sqlite3.connect(
+                    f"file:{self.db_path}?mode=ro",
+                    uri=True,
+                    check_same_thread=False,
+                    timeout=5.0
+                )
+            else:
+                conn = sqlite3.connect(
+                    str(self.db_path),
+                    check_same_thread=False,
+                    timeout=30.0
+                )
+            if read_only:
+                conn.execute("PRAGMA busy_timeout=1000;")
+            else:
+                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("PRAGMA synchronous=NORMAL;")
+                conn.execute("PRAGMA busy_timeout=2000;")
+                conn.execute("PRAGMA mmap_size=268435456;")
             conn.execute("PRAGMA cache_size=-64000;")
             conn.execute("PRAGMA temp_store=MEMORY;")
-            conn.execute("PRAGMA busy_timeout=5000;")
-            conn.execute("PRAGMA mmap_size=268435456;")
             conn.row_factory = sqlite3.Row
-            logger.info("SQLite connection established (WAL + perf pragmas)")
+            mode = "READ-ONLY" if read_only else "WAL + perf pragmas"
+            logger.info(f"SQLite connection established ({mode})")
             return conn
         except sqlite3.Error as e:
             logger.error(f"Failed to establish SQLite connection: {e}")
@@ -125,7 +141,10 @@ class DatabaseManager:
             yield cursor
         except sqlite3.Error as e:
             logger.error(f"Database operation failed: {e}")
-            connection.rollback()
+            try:
+                connection.rollback()
+            except sqlite3.Error:
+                pass
             raise
         finally:
             if cursor is not None:
@@ -148,20 +167,34 @@ class DatabaseManager:
         Returns:
             List of results if fetch=True, None otherwise
         """
-        with self.get_cursor() as cursor:
+        for attempt in range(2):
             try:
-                cursor.execute(query, params)
-                
-                if fetch:
-                    results = cursor.fetchall()
+                with self.get_cursor() as cursor:
+                    cursor.execute(query, params)
+                    if fetch:
+                        results = cursor.fetchall()
+                        self._get_connection().commit()
+                        return [dict(row) for row in results]
                     self._get_connection().commit()
-                    return [dict(row) for row in results]
-                self._get_connection().commit()
-                return None
-                
+                    return None
+            except sqlite3.OperationalError as e:
+                err_msg = str(e).lower()
+                if attempt == 0 and ("locked" in err_msg or "busy" in err_msg or "timeout" in err_msg):
+                    logger.warning(f"DB locked, reconnecting and retrying: {e}")
+                    self._close_connection()
+                    continue
+                logger.error(f"Query execution failed: {e}")
+                try:
+                    self._get_connection().rollback()
+                except sqlite3.Error:
+                    pass
+                raise
             except sqlite3.Error as e:
                 logger.error(f"Query execution failed: {e}")
-                self._get_connection().rollback()
+                try:
+                    self._get_connection().rollback()
+                except sqlite3.Error:
+                    pass
                 raise
     
     def execute_many(
@@ -183,7 +216,10 @@ class DatabaseManager:
                 logger.info(f"Executed {len(params_list)} queries successfully")
             except sqlite3.Error as e:
                 logger.error(f"Batch execution failed: {e}")
-                self._get_connection().rollback()
+                try:
+                    self._get_connection().rollback()
+                except sqlite3.Error:
+                    pass
 
     def execute_batch(self, statements: list[tuple]) -> None:
         """Execute multiple different SQL statements in a single transaction.
@@ -193,12 +229,17 @@ class DatabaseManager:
         """
         with self.get_cursor() as cursor:
             try:
+                cursor.execute("BEGIN IMMEDIATE")
                 for query, params in statements:
                     cursor.execute(query, params)
                 cursor.connection.commit()
+                logger.info(f"Batch committed {len(statements)} statements")
             except sqlite3.Error as e:
                 logger.error(f"Batch execution failed: {e}")
-                cursor.connection.rollback()
+                try:
+                    cursor.connection.rollback()
+                except sqlite3.Error:
+                    pass
                 raise
     
     async def execute_query_async(self, query: str, params: tuple = (), fetch: bool = False):
@@ -536,6 +577,44 @@ class DatabaseManager:
                     except sqlite3.OperationalError:
                         pass
 
+                # Migration: add wikidata_total_entities for knowledge coverage calculation
+                cursor.execute("SELECT id FROM _migration_log WHERE name = 'kp_wikidata_total'")
+                if not cursor.fetchone():
+                    try:
+                        cursor.execute(
+                            "ALTER TABLE specialist_registry ADD COLUMN wikidata_total_entities INTEGER DEFAULT 0"
+                        )
+                        cursor.execute("INSERT INTO _migration_log (name) VALUES ('kp_wikidata_total')")
+                        logger.info("Migration 'kp_wikidata_total' applied")
+                    except sqlite3.OperationalError:
+                        pass
+
+                # Migration: create matched_qids table for Phase A QID collection
+                cursor.execute("SELECT id FROM _migration_log WHERE name = 'kp_matched_qids'")
+                if not cursor.fetchone():
+                    try:
+                        cursor.execute("""
+                            CREATE TABLE IF NOT EXISTS matched_qids (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                qid TEXT NOT NULL,
+                                specialist_id INTEGER NOT NULL,
+                                entity_id TEXT,
+                                domain TEXT,
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                processed INTEGER DEFAULT 0,
+                                FOREIGN KEY (specialist_id) REFERENCES specialist_registry(id),
+                                UNIQUE(qid, specialist_id)
+                            )
+                        """)
+                        cursor.execute("""
+                            CREATE INDEX IF NOT EXISTS idx_matched_qids_specialist
+                            ON matched_qids(specialist_id, processed)
+                        """)
+                        cursor.execute("INSERT INTO _migration_log (name) VALUES ('kp_matched_qids')")
+                        logger.info("Migration 'kp_matched_qids' applied")
+                    except sqlite3.OperationalError as e:
+                        logger.warning(f"Migration 'kp_matched_qids' skipped: {e}")
+
                 self._get_connection().commit()
                 logger.info("Specialist tables initialized successfully")
                 return True
@@ -563,7 +642,7 @@ class DatabaseManager:
             if backup_path is None:
                 from datetime import datetime
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                backup_path = self._db_path.parent / f"{self._db_path.stem}.backup.{timestamp}.db"
+                backup_path = self.db_path.parent / f"{self.db_path.stem}.backup.{timestamp}.db"
             
             conn = self._get_connection()
             conn.execute(f"VACUUM INTO '{backup_path}'")
