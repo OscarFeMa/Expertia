@@ -669,7 +669,7 @@ class PipelineController:
             if not result:
                 return
             row = result[0]
-            current_ema = row['ema_score']
+            current_ema = row['ema_score'] or 0.0
 
             # EMA decay for inactivity >48h
             updated_at = row.get('updated_at', '')
@@ -923,91 +923,6 @@ class PipelineController:
                 for qid in batch:
                     if qid not in cache:
                         cache[qid] = set()
-
-    def _check_subspecialist_expansion(self, specialist_id: int):
-        """DESACTIVADO: se reemplaza por cluster-based detection en Fase 2."""
-        return
-        try:
-            parent = self.db_manager.execute_query(
-                "SELECT id, domain, model, root_qid, packages_absorbed FROM specialist_registry WHERE id = ?",
-                (specialist_id,), fetch=True
-            )
-            if not parent:
-                return
-            parent = parent[0]
-
-            total_children = self.db_manager.execute_query(
-                "SELECT COUNT(*) as cnt FROM specialist_registry WHERE parent_id IS NOT NULL", fetch=True
-            )
-            current_children = total_children[0]['cnt'] if total_children else 0
-            if current_children >= MAX_SUBSPECIALISTS:
-                return
-
-            children_count = self.db_manager.execute_query(
-                "SELECT COUNT(*) as cnt FROM specialist_registry WHERE parent_id = ?",
-                (parent['id'],), fetch=True
-            )
-            existing_children = children_count[0]['cnt'] if children_count else 0
-            if existing_children >= MAX_CHILDREN_PER_PARENT:
-                return
-
-            if parent['packages_absorbed'] < SUBSPECIALIST_THRESHOLD:
-                return
-
-            expansions = self.db_manager.execute_query(
-                "SELECT qid FROM qid_expansions WHERE specialist_id = ? ORDER BY discovered_at_checkpoint ASC",
-                (parent['id'],), fetch=True
-            )
-            if not expansions or len(expansions) < 3:
-                return
-
-            root_qid = parent['root_qid']
-            # Batch query: fetch all existing children root_qids in one query
-            existing_children_rows = self.db_manager.execute_query(
-                "SELECT root_qid FROM specialist_registry WHERE parent_id = ?",
-                (parent['id'],), fetch=True
-            )
-            existing_root_qids = {row['root_qid'] for row in existing_children_rows}
-            
-            unspawned = [exp['qid'] for exp in expansions if exp['qid'] not in existing_root_qids]
-            if not unspawned:
-                return
-
-            labels = self._batch_resolve_labels(unspawned)
-            valid_qids = self._validate_qid_for_spawning(unspawned, root_qid)
-
-            spawned = 0
-            for qid in unspawned:
-                if spawned >= MAX_CHILDREN_PER_PARENT:
-                    break
-                if current_children + spawned >= MAX_SUBSPECIALISTS:
-                    break
-
-                label = labels.get(qid, qid)
-                if self._is_blocklisted_label(label):
-                    continue
-                if qid not in valid_qids:
-                    continue
-
-                child_domain = f"{parent['domain']}/{label}"
-                parent_path = parent.get('qid_path') or parent['domain']
-                child_path = f"{parent_path}/{label}"
-
-                self.db_manager.execute_query(
-                    """INSERT INTO specialist_registry
-                       (domain, model, root_qid, properties, ema_score, tier, status, parent_id, qid_path)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (child_domain, parent['model'], qid, '{}', 0.10, TIER_NONE, 'IDLE', parent['id'], child_path)
-                )
-                spawned += 1
-                logger.info(f"EXPANDED sub-specialist: {child_domain} (QID: {qid}, parent: {parent['domain']})")
-                self._log_activity(f"Expandido {child_domain} de {parent['domain']} (QID {qid})")
-
-            if spawned > 0:
-                logger.info(f"Expanded {spawned} sub-specialists for {parent['domain']}")
-
-        except Exception as e:
-            logger.error(f"Sub-specialist expansion failed for {specialist_id}: {e}")
 
     # ── Super-Expert Methods ──────────────────────────────────────────────────
 
@@ -1772,7 +1687,6 @@ class PipelineController:
             model = specialist['model']
             current_ema = specialist.get('ema_score', 0.0)
 
-            self._check_subspecialist_expansion(sid)
             global_cycle += 1
             target_cycles += 1
             effective_cycle = ((global_cycle - 1) % 3) + 1
@@ -2105,7 +2019,7 @@ class PipelineController:
                 sid = r['id']
                 if sid in self._ema_snapshot:
                     prev = self._ema_snapshot[sid]
-                    curr = r['ema_score']
+                    curr = r['ema_score'] or 0.0
                     if curr < prev * 0.85:
                         logger.critical(f"AUTO-ROLLBACK: specialist {sid} dropped {prev:.4f} -> {curr:.4f}")
                         self.db_manager.execute_query(
@@ -2157,7 +2071,7 @@ def parse_args():
 
 def _signal_handler(signum, frame):
     _shutdown_event.set()
-    threading.Timer(5.0, lambda: sys.exit(0)).start()
+    threading.Timer(5.0, lambda: asyncio.get_event_loop().stop()).start()
 
 
 async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.0,
