@@ -1,45 +1,47 @@
 # Estado del Proyecto — Expertia Synaptic Archive
 
-**Última actualización:** 2026-05-26
+**Última actualización:** 2026-06-08
 
-> ⚠️ Este documento ha sido reemplazado por `PROJECT_STATUS.md` (en inglés).
-> Se mantiene por compatibilidad histórica. Consultar `PROJECT_STATUS.md` para el estado actual.
+> ⚠️ Documento histórico. Consultar `PROJECT_STATUS.md` para estado actual.
 
 ## Resumen
 
-Expertia es un motor de orquestación de agentes especializados para hardware local (Windows 11, RTX 1660 6GB VRAM, 32GB RAM). Opera 15 especialistas raíz con modelos Ollama, pipeline de web scraping + destilación LLM, spawning de sub-especialistas validado por Wikidata, y 22 consejos super-expertos.
+Expertia es un motor de orquestación de agentes especializados para hardware local (Windows 11, RTX 1660 6GB VRAM, 32GB RAM). Opera 18 especialistas raíz con modelos Ollama, pipeline de scraping + destilación LLM, extracción multilingüe (en, es, fr, de, pt, it), y 23 consejos super-expertos.
 
 ### Componentes Actuales
 
-- **15 Especialistas** con QIDs corregidos vía Wikidata API
-- **Pipeline Phase B**: Web scraping (DuckDuckGo) + destilación LLM + scoring EMA dinámico
-- **Sub-especialistas**: Spawning con validación P279 (parentesco directo/hermano), resolución de labels por API
-- **22 Super-Expertos**: Consejos estáticos con miembros ponderados
-- **Consola "Synaptic Archive"**: Streamlit con tarjetas, sunburst, control de pipeline, reportes automáticos
+- **18 Especialistas** — 14 sobrevivientes + 4 nuevos (Linguistics, Psychology, EnvironmentalScience, Sociology)
+- **Pipeline**: Phase A (dump Wikidata → QIDs matched) + Phase B (Nurture v2 con Tier Ascension)
+- **Multilingüe**: 6 idiomas en Wikidata labels, descripciones, SPARQL, Wikipedia
+- **23 Super-Expertos**: Incluye SocietyAndCulture, LanguagesLinguistics actualizado, NeuroscienceCognition, ClimateEnvironment
+- **Dashboard Neural Horizon**: API + frontend estático con control de pipeline, monitor, charts
 
-### 15 Especialistas
+### 18 Especialistas
 
 | Dominio | Modelo | Root QID |
 |---|---|---|
 | SoftwareEngineering | qwen2.5-coder:3b | Q80993 |
-| Mathematics | deepseek-r1:1.5b | Q395 |
+| Mathematics | qwen2.5-coder:3b | Q395 |
 | Medicine | phi4-mini:3.8b | Q11190 |
 | LegalSystem | llama3.2:3b | Q7748 |
-| PhilosophyHistory | gemma3:4b | Q5891 |
-| FinanceEconomics | gemma3:4b | Q8134 |
-| Physics | deepseek-r1:1.5b | Q413 |
+| PhilosophyHistory | phi4-mini:3.8b | Q5891 |
+| FinanceEconomics | phi4-mini:3.8b | Q8134 |
+| Physics | phi4-mini:3.8b | Q413 |
 | Cybersecurity | qwen2.5-coder:3b | Q3510521 |
-| Bioinformatics | phi4-mini:3.8b | Q128570 |
 | Geopolitics | llama3.2:3b | Q159385 |
 | DataScience | qwen2.5-coder:3b | Q2374463 |
 | Chemistry | phi4-mini:3.8b | Q2329 |
-| ArtHistory | gemma3:4b | Q50637 |
+| ArtHistory | phi4-mini:3.8b | Q50637 |
 | Electronics | qwen2.5-coder:3b | Q11650 |
 | Astronomy | phi4-mini:3.8b | Q333 |
+| **Linguistics** | **phi4-mini:3.8b** | **Q81798** |
+| **Psychology** | **phi4-mini:3.8b** | **Q9418** |
+| **EnvironmentalScience** | **phi4-mini:3.8b** | **Q188069** |
+| **Sociology** | **llama3.2:3b** | **Q21201** |
 
-### 22 Super-Expertos
+### 23 Super-Expertos
 
-EconomyFinance, ArtificialIntelligence, BiotechnologyHealth, QuantumPhysics, CybersecurityDefense, ClimateEnvironment, SpaceExploration, DataPrivacyEthics, CulturalHeritage, EnergySustainability, CryptocurrencyBlockchain, EducationTechnology, ManufacturingIndustry, Telecommunications, MaterialsScience, UrbanPlanningSmartCities, DefenseStrategy, NeuroscienceCognition, GeneralKnowledge, LanguagesLinguistics, VisualArts, PerformingArts.
+EconomyFinance, ArtificialIntelligence, BiotechnologyHealth, QuantumPhysics, CybersecurityDefense, ClimateEnvironment, SpaceExploration, DataPrivacyEthics, CulturalHeritage, EnergySustainability, CryptocurrencyBlockchain, EducationTechnology, ManufacturingIndustry, Telecommunications, MaterialsScience, UrbanPlanningSmartCities, DefenseStrategy, NeuroscienceCognition, GeneralKnowledge, LanguagesLinguistics, VisualArts, PerformingArts, **SocietyAndCulture**.
 
 ### Correcciones de QIDs Raíz (Mayo 2026)
 

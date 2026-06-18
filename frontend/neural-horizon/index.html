@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Neural Horizon — Expertia</title>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" crossorigin="anonymous"></script>
+  <link rel="stylesheet" href="style.css?v=2">
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <div class="logo" onclick="app.switchTab('dashboard')">
+      <div class="logo-icon">🔮</div>
+      <div class="logo-text">Neural<br>Horizon</div>
+      <div class="logo-badge">v2</div>
+    </div>
+    <nav class="nav" id="nav">
+      <div class="nav-item active" data-tab="dashboard" onclick="app.switchTab('dashboard')">
+        <span class="nav-icon">📟</span> Dashboard
+      </div>
+      <div class="nav-item" data-tab="specialists" onclick="app.switchTab('specialists')">
+        <span class="nav-icon">📚</span> Specialists
+      </div>
+      <div class="nav-item" data-tab="fleet" onclick="app.switchTab('fleet')">
+        <span class="nav-icon">⚙️</span> Fleet
+      </div>
+      <div class="nav-item" data-tab="map" onclick="app.switchTab('map')">
+        <span class="nav-icon">🌐</span> Neural Map
+      </div>
+      <div class="nav-item" data-tab="super-experts" onclick="app.switchTab('super-experts')">
+        <span class="nav-icon">🏛️</span> Super-Experts
+      </div>
+      <div class="nav-item" data-tab="certified" onclick="app.switchTab('certified')">
+        <span class="nav-icon">🏆</span> Certified
+      </div>
+      <div class="nav-item" data-tab="incidents" onclick="app.switchTab('incidents')">
+        <span class="nav-icon">🔥</span> Incidents
+      </div>
+      <div class="nav-item" data-tab="wikidata" onclick="app.switchTab('wikidata')">
+        <span class="nav-icon">📡</span> Wikidata
+      </div>
+      <div class="nav-item" data-tab="monitor" onclick="app.switchTab('monitor')">
+        <span class="nav-icon">📊</span> Monitor
+      </div>
+    </nav>
+    <div class="sidebar-stats" id="sidebar-stats">
+      <div class="ss-item"><span class="ss-val" id="ss-specs">-</span><span class="ss-lbl">Specialists</span></div>
+      <div class="ss-item"><span class="ss-val" id="ss-pkgs">-</span><span class="ss-lbl">Packages</span></div>
+      <div class="ss-item"><span class="ss-val" id="ss-incidents">-</span><span class="ss-lbl">Incidents</span></div>
+      <div class="ss-item"><span class="ss-val" id="ss-reliable">-</span><span class="ss-lbl">Fiables</span></div>
+    </div>
+    <div class="sidebar-kill">
+      <button class="kill-btn" onclick="app.killAll()" title="Kill all Expertia processes">⏹ Kill All</button>
+    </div>
+    <div class="sidebar-footer">
+      <button class="theme-toggle" onclick="app.toggleTheme()" title="Toggle theme">🌓</button>
+    </div>
+  </aside>
+  <main class="main" id="main">
+    <div class="tab-content active" id="tab-dashboard"></div>
+    <div class="tab-content" id="tab-specialists"></div>
+    <div class="tab-content" id="tab-fleet"></div>
+    <div class="tab-content" id="tab-map"></div>
+    <div class="tab-content" id="tab-super-experts"></div>
+    <div class="tab-content" id="tab-certified"></div>
+    <div class="tab-content" id="tab-incidents"></div>
+    <div class="tab-content" id="tab-wikidata"></div>
+    <div class="tab-content" id="tab-monitor"></div>
+  </main>
+  <div class="status-bar" id="status-bar">
+    <span id="sb-status">Loading...</span>
+    <span id="sb-time"></span>
+  </div>
+  <script src="charts.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

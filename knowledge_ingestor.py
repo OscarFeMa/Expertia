@@ -5,6 +5,7 @@ Reads local knowledge packages and reports as "System Context"
 for LLM distillation prompts.
 """
 
+import re
 import logging
 from pathlib import Path
 from typing import Optional
@@ -36,6 +37,7 @@ class KnowledgeIngestor:
             for f in sorted(self.packages_dir.rglob("*.md"), reverse=True)[:5]:
                 try:
                     content = f.read_text(encoding="utf-8")
+                    content = re.sub(r'!\[.*?\]\(.*?\)', '', content)
                     if domain is None or domain.lower() in content.lower():
                         parts.append(f"[Package: {f.stem}]\n{content[:800]}")
                 except Exception as e:
@@ -46,6 +48,7 @@ class KnowledgeIngestor:
             for f in sorted(self.reports_dir.rglob("*.md"), reverse=True)[:3]:
                 try:
                     content = f.read_text(encoding="utf-8")
+                    content = re.sub(r'!\[.*?\]\(.*?\)', '', content)
                     if domain is None or domain.lower() in content.lower():
                         parts.append(f"[Report: {f.stem}]\n{content[:800]}")
                 except Exception as e:

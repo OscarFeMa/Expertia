@@ -15,4 +15,4 @@ def setup_logging(
         handlers.append(RotatingFileHandler(
             str(log_file), maxBytes=10*1024*1024, backupCount=5, encoding="utf-8"
         ))
-    logging.basicConfig(level=level, format=fmt, handlers=handlers)
+    logging.basicConfig(level=level, format=fmt, handlers=handlers, force=True)

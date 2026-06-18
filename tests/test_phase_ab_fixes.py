@@ -296,12 +296,13 @@ class TestB2_NurtureBackoff:
         content = orch_path.read_text(encoding="utf-8")
         assert "Model {model} unavailable for {domain}" in content
 
-    def test_batch_processes_top3(self):
-        """Nurture processes top-3 per iteration, skipping unavailable models without long sleep."""
+    def test_nurture_skips_unavailable_models(self):
+        """Nurture v2 uses single-focus targeting and skips models properly."""
         from pathlib import Path
         orch_path = Path(__file__).parent.parent / "orchestrator.py"
         content = orch_path.read_text(encoding="utf-8")
-        assert "batch = scored[:3]" in content
+        assert "nurture complete!" not in content.replace("No specialists found", "")
+        assert "scored.sort(key=lambda x: x[0], reverse=True)" in content
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

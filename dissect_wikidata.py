@@ -41,7 +41,9 @@ from config.settings import (
     WIKIDATA_DUMP_PATH,
     WIKIDATA_OUTPUT_DIR as TARGET_OUTPUT_DIR,
     WIKIDATA_EXTRACTION_TIMEOUT_HOURS,
+    LANGUAGES,
 )
+from tools.update_wikidata import build_structured_knowledge, _pick_first
 
 # ============================================================================
 # WIKIDATA QID MAPPING
@@ -335,6 +337,7 @@ class BatchWikidataExtractor:
 
     Opens the dump once and checks each entity against all specialists'
     target QIDs simultaneously, tracking per-specialist match counts.
+    Saves matched QIDs to matched_qids table for later processing via API.
     Supports progressive QID expansion via loaded_expansions.
     """
     def __init__(
@@ -345,6 +348,7 @@ class BatchWikidataExtractor:
         checkpoint_callback: Optional[Callable] = None,
         progress_callback: Optional[Callable] = None,
         hierarchy_cache: Optional[ClassHierarchyCache] = None,
+        db_manager=None,
     ):
         self.input_path = input_path
         self.output_dir = output_dir
@@ -352,16 +356,20 @@ class BatchWikidataExtractor:
         self.checkpoint_callback = checkpoint_callback
         self.progress_callback = progress_callback
         self.hierarchy_cache = hierarchy_cache
+        self.db_manager = db_manager or get_db_manager()
 
         self.entities_processed = 0
         self.matched_counts: Dict[str, int] = {}
         self._start_time = 0
+        self._pending_qids: List[tuple] = []  # batch buffer for QID inserts
+        self._pending_packages: List[tuple] = []  # batch buffer for knowledge_packages
 
     def extract_with_timeout(
         self,
         timeout_hours: float = 4.0,
         sample_size: Optional[int] = None,
         loaded_expansions: Optional[Dict[str, Set[int]]] = None,
+        resume_offset: int = 0,
     ) -> bool:
         timeout_seconds = timeout_hours * 3600
         self._start_time = time.time()
@@ -382,9 +390,32 @@ class BatchWikidataExtractor:
 
         try:
             with gzip.open(self.input_path, 'rb') as f:
-                parser = ijson.items(f, 'item')
+                parser = ijson.basic_parse(f)
+                skipped = 0
 
-                for entity in parser:
+                # Fast skip: count events without building objects
+                if resume_offset > 0:
+                    depth = 0
+                    for event, value in parser:
+                        if event == 'start_map':
+                            depth += 1
+                        elif event == 'end_map':
+                            depth -= 1
+                            if depth == 0:
+                                skipped += 1
+                                if skipped % 500000 == 0:
+                                    logger.info(f"Reanudando: saltadas {skipped:,} entidades ya procesadas...")
+                                    if self.progress_callback:
+                                        skip_elapsed = time.time() - self._start_time
+                                        skip_rate = skipped / skip_elapsed if skip_elapsed > 0 else 0
+                                        self.progress_callback(skipped, skip_elapsed, skip_rate)
+                                if skipped >= resume_offset:
+                                    break
+                    self.entities_processed = skipped
+                    logger.info(f"Reanudacion: saltadas {skipped:,} entidades, reanudando desde entidad {self.entities_processed:,}")
+
+                entity_gen = self._iter_entities(parser)
+                for entity in entity_gen:
                     elapsed = time.time() - self._start_time
                     if elapsed > timeout_seconds:
                         logger.critical("Batch extraction TIMEOUT reached")
@@ -414,6 +445,29 @@ class BatchWikidataExtractor:
                                 if qid not in spec_targets.get(sid, set()):
                                     expansions_since_checkpoint.setdefault(sid, set()).add(qid)
 
+                    # Save matched QIDs to matched_qids table for later API fetching
+                    for sid in matched_specs:
+                        entity_id = entity.get('id', '')
+                        if entity_id:
+                            self._pending_qids.append((entity_id, sid, entity_id, ''))
+                            if len(self._pending_qids) >= 500:
+                                self._flush_qids()
+
+                    # Build knowledge packages directly from dump data (no API needed)
+                    if matched_specs and entity.get('id'):
+                        eid = entity['id']
+                        langs = LANGUAGES.split('|')
+                        label = _pick_first(entity.get('labels') or {}, langs)
+                        structured = build_structured_knowledge(entity, LANGUAGES)
+                        if structured and len(structured.strip()) >= 20:
+                            topic = f'{label} — Wikidata entity' if label else f'{eid} — Wikidata entity'
+                            source_url = f'https://www.wikidata.org/entity/{eid}'
+                            for sid in matched_specs:
+                                domain = self.specialist_matchers[sid]['domain']
+                                self._pending_packages.append((topic, source_url, domain, eid, structured))
+                                if len(self._pending_packages) >= 500:
+                                    self._flush_packages()
+
                     if self.entities_processed % CHECKPOINT_INTERVAL == 0 and self.checkpoint_callback:
                         checkpoint_num += 1
                         self.checkpoint_callback(
@@ -435,17 +489,80 @@ class BatchWikidataExtractor:
                     time.time() - self._start_time,
                 )
 
+            # Flush remaining QIDs
+            if self._pending_qids:
+                self._flush_qids()
+
+            # Flush remaining knowledge packages
+            if self._pending_packages:
+                self._flush_packages()
+
             return True
 
         except Exception as e:
             logger.error(f"Batch extraction failed: {e}")
             return False
 
+    @staticmethod
+    def _iter_entities(parser):
+        """Yield complete entity dicts from a basic_parse generator."""
+        for event, value in parser:
+            if event != 'start_map':
+                continue
+            builder = ijson.ObjectBuilder()
+            builder.event(event, value)
+            depth = 1
+            for e, v in parser:
+                builder.event(e, v)
+                if e == 'end_map':
+                    depth -= 1
+                    if depth == 0:
+                        yield builder.value
+                        break
+                elif e == 'start_map':
+                    depth += 1
+
+    def _flush_qids(self):
+        """Flush buffered matched QIDs to database in batch."""
+        if not self._pending_qids:
+            return
+        try:
+            count = len(self._pending_qids)
+            self.db_manager.execute_many(
+                """INSERT OR IGNORE INTO matched_qids
+                   (qid, specialist_id, entity_id, domain)
+                   VALUES (?, ?, ?, ?)""",
+                self._pending_qids
+            )
+            logger.info(f"Wikidata: saved {count} matched QIDs to matched_qids")
+        except Exception as e:
+            logger.warning(f"Wikidata QID batch insert failed ({count} qids): {e}")
+        finally:
+            self._pending_qids = []
+
+    def _flush_packages(self):
+        """Flush buffered knowledge packages to database in batch."""
+        if not self._pending_packages:
+            return
+        try:
+            count = len(self._pending_packages)
+            self.db_manager.execute_many(
+                """INSERT OR IGNORE INTO knowledge_packages
+                   (topic, source_url, domain, qid, structured_knowledge, created_at)
+                   VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                self._pending_packages
+            )
+            logger.info(f"Wikidata: saved {count} knowledge packages directly from dump")
+        except Exception as e:
+            logger.warning(f"Wikidata package batch insert failed ({count} pkgs): {e}")
+        finally:
+            self._pending_packages = []
+
     def _get_entity_qids(self, entity: Dict) -> Set[str]:
-        """Extract all QIDs from entity claims (P31 and P279)."""
+        """Extract all QIDs from entity claims (P31, P279, P2579, P921, P101)."""
         qids = set()
         claims = entity.get('claims', {})
-        for prop_id in ('P31', 'P279'):
+        for prop_id in ('P31', 'P279', 'P2579', 'P921', 'P101'):
             for claim in claims.get(prop_id, []):
                 try:
                     qid = claim.get('mainsnak', {}).get('datavalue', {}).get('value', {}).get('id')
