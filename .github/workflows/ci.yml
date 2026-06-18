@@ -13,46 +13,40 @@ jobs:
       - name: config
         run: python -c "from config.settings import DATABASE_PATH; print('OK')" 2>&1
       - name: db_manager
-        run: python -c "
-from database.db_manager import get_db_manager, reset_db_manager
-db = get_db_manager()
-assert db is not None
-reset_db_manager()
-print('OK')
-" 2>&1
+        run: |
+          python -c "from database.db_manager import get_db_manager, reset_db_manager
+          db = get_db_manager()
+          assert db is not None
+          reset_db_manager()
+          print('OK')" 2>&1
       - name: llm_manager
-        run: python -c "
-from llm_manager import LLMRunner
-llm = LLMRunner()
-assert llm is not None
-print('OK')
-" 2>&1
+        run: |
+          python -c "from llm_manager import LLMRunner
+          llm = LLMRunner()
+          assert llm is not None
+          print('OK')" 2>&1
       - name: web_scraper
-        run: python -c "
-from web_scraper import ModernWebScraper, WebScraperError, RateLimitError, ScraperTimeoutError
-s = ModernWebScraper()
-assert s is not None
-print('OK')
-" 2>&1
+        run: |
+          python -c "from web_scraper import ModernWebScraper, WebScraperError, RateLimitError, ScraperTimeoutError
+          s = ModernWebScraper()
+          assert s is not None
+          print('OK')" 2>&1
       - name: metrics
-        run: python -c "
-from metrics import MetricsCollector
-m = MetricsCollector()
-assert m is not None
-print('OK')
-" 2>&1
+        run: |
+          python -c "from metrics import MetricsCollector
+          m = MetricsCollector()
+          assert m is not None
+          print('OK')" 2>&1
       - name: orchestrator
-        run: python -c "
-from orchestrator import PipelineController, validate_paths, WIKIDATA_SCHEMAS, SPECIALIST_REGISTRY
-assert validate_paths is not None
-assert len(WIKIDATA_SCHEMAS) == 18
-assert len(SPECIALIST_REGISTRY) == 18
-print('OK')
-" 2>&1
+        run: |
+          python -c "from orchestrator import PipelineController, validate_paths, WIKIDATA_SCHEMAS, SPECIALIST_REGISTRY
+          assert validate_paths is not None
+          assert len(WIKIDATA_SCHEMAS) == 18
+          assert len(SPECIALIST_REGISTRY) == 18
+          print('OK')" 2>&1
       - name: dissect_wikidata
-        run: python -c "
-from dissect_wikidata import WikidataStreamingExtractor, TAG_TO_QID_MAP
-assert TAG_TO_QID_MAP is not None
-assert len(TAG_TO_QID_MAP) > 0
-print('OK')
-" 2>&1
+        run: |
+          python -c "from dissect_wikidata import WikidataStreamingExtractor, TAG_TO_QID_MAP
+          assert TAG_TO_QID_MAP is not None
+          assert len(TAG_TO_QID_MAP) > 0
+          print('OK')" 2>&1
