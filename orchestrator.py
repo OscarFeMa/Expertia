@@ -330,6 +330,10 @@ class PipelineController:
                 )
             """)
             self.db_manager.execute_query("""
+                CREATE INDEX IF NOT EXISTS idx_activity_log_level
+                ON activity_log(level, id)
+            """)
+            self.db_manager.execute_query("""
                 CREATE TABLE IF NOT EXISTS cycle_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     specialist_id INTEGER NOT NULL,
@@ -374,6 +378,10 @@ class PipelineController:
                 FOREIGN KEY (specialist_id) REFERENCES specialist_registry(id),
                 UNIQUE(specialist_id, qid)
             )
+        """)
+        self.db_manager.execute_query("""
+            CREATE INDEX IF NOT EXISTS idx_qid_expansions_specialist_checkpoint
+            ON qid_expansions(specialist_id, discovered_at_checkpoint)
         """)
         self.db_manager.execute_query("""
             CREATE TABLE IF NOT EXISTS pipeline_status (
