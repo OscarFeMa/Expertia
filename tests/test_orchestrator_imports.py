@@ -2,6 +2,7 @@
 
 import sys
 import os
+import traceback
 
 # Add the project root to the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + '/..')
@@ -76,4 +77,13 @@ def test_imports():
 
 
 if __name__ == "__main__":
-    test_imports()
+    print(f"Python {sys.version}")
+    print(f"Platform: {sys.platform}")
+    print(f"CWD: {os.getcwd()}")
+    print(f"Script: {__file__}")
+    print(f"Path: {sys.path}")
+    try:
+        test_imports()
+    except Exception:
+        traceback.print_exc()
+        sys.exit(1)
