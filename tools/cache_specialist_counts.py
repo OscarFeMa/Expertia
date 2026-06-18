@@ -16,7 +16,7 @@ QUERY_TIMEOUT_SEC = 600  # 10 min max for the full scan
 def refresh_cache():
     conn = sqlite3.connect(str(DB_PATH), timeout=QUERY_TIMEOUT_SEC)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=OFF")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=30000")
     try:
         start = time.time()

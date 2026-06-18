@@ -106,6 +106,7 @@ class DatabaseManager:
                 conn.execute("PRAGMA mmap_size=268435456;")
             conn.execute("PRAGMA cache_size=-64000;")
             conn.execute("PRAGMA temp_store=MEMORY;")
+            conn.execute("PRAGMA wal_autocheckpoint=500;")
             conn.execute("PRAGMA foreign_keys=ON;")
             conn.row_factory = sqlite3.Row
             mode = "READ-ONLY" if read_only else "WAL + perf pragmas"
@@ -616,6 +617,29 @@ class DatabaseManager:
                         logger.info("Migration 'kp_matched_qids' applied")
                     except sqlite3.OperationalError as e:
                         logger.warning(f"Migration 'kp_matched_qids' skipped: {e}")
+
+                # Migration: create specialist_match_cache for precomputed matched_qid counts
+                cursor.execute("SELECT id FROM _migration_log WHERE name = 'kp_specialist_match_cache'")
+                if not cursor.fetchone():
+                    try:
+                        cursor.execute("""
+                            CREATE TABLE IF NOT EXISTS specialist_match_cache (
+                                specialist_id INTEGER PRIMARY KEY,
+                                domain TEXT NOT NULL,
+                                match_count INTEGER NOT NULL DEFAULT 0,
+                                refreshed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                            )
+                        """)
+                        cursor.execute("INSERT INTO _migration_log (name) VALUES ('kp_specialist_match_cache')")
+                        logger.info("Migration 'kp_specialist_match_cache' applied")
+                    except sqlite3.OperationalError as e:
+                        logger.warning(f"Migration 'kp_specialist_match_cache' skipped: {e}")
+
+                # Index: knowledge_packages(absorbed_at) for NULL-filtered lookups
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_knowledge_packages_absorbed
+                    ON knowledge_packages(absorbed_at)
+                """)
 
                 self._get_connection().commit()
                 logger.info("Specialist tables initialized successfully")
