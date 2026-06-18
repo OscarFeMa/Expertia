@@ -7,6 +7,11 @@ class App {
     this.activeTab = 'dashboard';
     this.dataCache = {};
     this.memoryHistory = [];
+    this._lastPidInfo = null;
+    this._lastFetchTime = 0;
+    this.dashSpecSort = 'domain-asc';
+    this.allSpecialistsData = [];
+    this._highlightDomain = '';
     this.apiKey = sessionStorage.getItem('expertia-api-key') || '';
     this.init();
   }
