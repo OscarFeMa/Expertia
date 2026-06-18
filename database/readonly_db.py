@@ -28,6 +28,7 @@ def _conn():
     conn.execute("PRAGMA busy_timeout=500")
     conn.execute("PRAGMA cache_size=-64000")
     conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
     return conn
 
