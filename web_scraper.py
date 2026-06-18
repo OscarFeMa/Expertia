@@ -17,7 +17,7 @@ import httpx
 from typing import List, Dict, Optional
 from pathlib import Path
 
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 # Low-quality sources to exclude from scraping results
 EXCLUDED_DOMAINS = {
