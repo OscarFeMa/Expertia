@@ -106,6 +106,7 @@ class DatabaseManager:
                 conn.execute("PRAGMA mmap_size=268435456;")
             conn.execute("PRAGMA cache_size=-64000;")
             conn.execute("PRAGMA temp_store=MEMORY;")
+            conn.execute("PRAGMA foreign_keys=ON;")
             conn.row_factory = sqlite3.Row
             mode = "READ-ONLY" if read_only else "WAL + perf pragmas"
             logger.info(f"SQLite connection established ({mode})")
@@ -173,9 +174,9 @@ class DatabaseManager:
                     cursor.execute(query, params)
                     if fetch:
                         results = cursor.fetchall()
-                        self._get_connection().commit()
                         return [dict(row) for row in results]
-                    self._get_connection().commit()
+                    if not query.strip().upper().startswith("SELECT"):
+                        self._get_connection().commit()
                     return None
             except sqlite3.OperationalError as e:
                 err_msg = str(e).lower()
@@ -220,6 +221,7 @@ class DatabaseManager:
                     self._get_connection().rollback()
                 except sqlite3.Error:
                     pass
+                raise
 
     def execute_batch(self, statements: list[tuple]) -> None:
         """Execute multiple different SQL statements in a single transaction.
