@@ -38,6 +38,10 @@ def _flush_to_summary(label: str):
                 f.write("\n```\n")
         except Exception as e:
             _log(f"  [WARN] Failed to write to GITHUB_STEP_SUMMARY: {e}")
+    # Also emit as GitHub Actions annotation
+    for line in content.split("\n"):
+        if line.strip():
+            print(f"::warning title={label}::{line}", flush=True)
 
 
 def _try_import(label: str, import_stmt: str, create_obj: bool = False):
