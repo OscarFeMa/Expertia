@@ -23,7 +23,6 @@ from dataclasses import dataclass
 from functools import wraps
 
 import aiohttp
-import requests
 
 from config.settings import (
     OLLAMA_HOST,

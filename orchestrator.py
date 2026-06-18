@@ -115,7 +115,7 @@ def check_ollama_vram() -> Optional[int]:
                     return int(mem_raw.replace('MB', ''))
         return None
     except Exception as e:
-        logger.debug(f"ollama ps failed: {e}")
+        logger.warning(f"ollama ps failed: {e}")
         return None
 
 from database.db_manager import get_db_manager
@@ -268,8 +268,6 @@ SUPER_EXPERTS = {
         "members": {"SoftwareEngineering": 0.08, "Mathematics": 0.07, "Medicine": 0.08, "LegalSystem": 0.06, "PhilosophyHistory": 0.08, "FinanceEconomics": 0.06, "Physics": 0.08, "Cybersecurity": 0.06, "Geopolitics": 0.05, "DataScience": 0.08, "Chemistry": 0.07, "ArtHistory": 0.06, "Electronics": 0.04, "Astronomy": 0.06, "Linguistics": 0.05, "Psychology": 0.04, "EnvironmentalScience": 0.04, "Sociology": 0.04}
     }
 }
-
-from dissect_wikidata import WikidataStreamingExtractor
 
 
 def validate_paths() -> bool:
@@ -485,7 +483,7 @@ class PipelineController:
                  cascade_entities, cascade_max, cascade_checkpoint)
             )
         except Exception as e:
-            logger.debug(f"Status update failed: {e}")
+            logger.warning(f"Status update failed: {e}")
 
     def _compute_tier(self, specialist_id: int, ema: float, current_tier: int) -> int:
         try:
@@ -574,7 +572,7 @@ class PipelineController:
             successes = sum(1 for r in rows if r['success'])
             return successes / len(rows)
         except Exception as e:
-            logger.debug(f"Racha 25 failed: {e}")
+            logger.warning(f"Racha 25 failed: {e}")
             return 0.0
 
     def _clean_cycle_count(self, specialist_id: int) -> int:
@@ -593,7 +591,7 @@ class PipelineController:
                     break
             return count
         except Exception as e:
-            logger.debug(f"Clean cycle count failed: {e}")
+            logger.warning(f"Clean cycle count failed: {e}")
             return 0
 
     def _check_cascade(self, specialist_id: int, current_ema: float) -> bool:
@@ -1341,9 +1339,6 @@ class PipelineController:
     async def _fetch_and_insert_from_qids(self):
         """Fetch details for matched QIDs from Wikidata API and insert as knowledge_packages.
         Called after Phase A completes to process the QIDs collected in matched_qids table."""
-        import requests
-        from config.settings import WIKIDATA_ENTITY_API, WIKIDATA_API_USER_AGENT, WIKIDATA_LABEL_BATCH_SIZE
-
         rows = self.db_manager.execute_query(
             "SELECT qid, specialist_id, domain FROM matched_qids WHERE processed = 0 ORDER BY specialist_id",
             fetch=True
@@ -1582,7 +1577,6 @@ class PipelineController:
         ) or []
 
         # Build time-aligned series per specialist
-        from collections import defaultdict
         series_raw = defaultdict(list)
         time_labels = []
         for row in history:

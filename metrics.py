@@ -8,7 +8,7 @@ for Phase A (Wikidata extraction) and Phase B (Web scraping + LLM).
 import time
 import logging
 from typing import Dict, List, Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Optional
@@ -11,8 +12,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from starlette.types import ASGIApp, Receive, Scope, Send
-from starlette.datastructures import MutableHeaders
 
 sys.path.insert(0, str(Path(__file__).parent))
 from config.log_setup import setup_logging
@@ -28,13 +27,10 @@ from api_router import router as api_router
 
 async def _periodic_checkpoint():
     """Background task: checkpoint WAL every 60s to prevent WAL bloat."""
-    import asyncio
-    # Use a separate write connection for checkpointing
     db_path = Path(__file__).parent / "storage" / "incubator.db"
     while True:
         await asyncio.sleep(60)
         try:
-            import sqlite3
             conn = sqlite3.connect(f"file:{db_path}?mode=rw", uri=True, timeout=5.0)
             conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
             conn.close()
@@ -302,7 +298,6 @@ async def query(req: QueryRequest):
 
 
 if __name__ == "__main__":
-    import uvicorn
     # IPv6 dual-stack: localhost (::1) + 127.0.0.1 both work instantly
     # On Windows, IPv6 sockets default to IPV6_V6ONLY=0 (dual-stack)
     uvicorn.run(app, host="::", port=8011)
