@@ -2,6 +2,8 @@ import asyncio
 import logging
 import sqlite3
 import sys
+import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
@@ -34,8 +36,8 @@ async def _periodic_checkpoint():
             conn = sqlite3.connect(f"file:{db_path}?mode=rw", uri=True, timeout=5.0)
             conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
             conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"WAL checkpoint failed: {e}")
 
 
 @asynccontextmanager
@@ -89,6 +91,25 @@ async def timeout_middleware(request: Request, call_next):
     except asyncio.TimeoutError:
         logger.warning(f"TIMEOUT {request.method} {request.url.path}")
         return JSONResponse(status_code=503, content={"detail": "Request timed out"})
+
+# Simple in-memory rate limiter: 30 requests/min per IP
+_rate_store = defaultdict(list)
+_RATE_LIMIT = 30
+_RATE_WINDOW = 60
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    if request.url.path.startswith("/api"):
+        client_ip = request.client.host if request.client else "unknown"
+        now = time.time()
+        window = _rate_store[client_ip]
+        cutoff = now - _RATE_WINDOW
+        while window and window[0] < cutoff:
+            window.pop(0)
+        if len(window) >= _RATE_LIMIT:
+            return JSONResponse(status_code=429, content={"detail": "rate limit exceeded"})
+        window.append(now)
+    return await call_next(request)
 
 @app.middleware("http")
 async def add_security_headers(request, call_next):
@@ -220,8 +241,9 @@ def _fetch_context(domain: str, question: str, max_chars: int = 2000) -> list[st
                 text = (r.get("structured_knowledge") or "")[:800]
                 if text:
                     contexts.append(text)
-        except Exception:
-            pass  # FTS5 table doesn't exist yet, fall through to recency
+        except Exception as e:
+            if "no such table" not in str(e).lower():
+                logger.warning(f"FTS5 query failed: {e}")
 
     # Fallback to recency if FTS returned nothing
     if not contexts:
@@ -259,21 +281,23 @@ async def query(req: QueryRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="question is required")
 
+    loop = asyncio.get_event_loop()
     if req.domain:
         db = _get_db()
-        domain_row = db.execute_query(
+        domain_row = await loop.run_in_executor(
+            None, db.execute_query,
             "SELECT domain, model FROM specialist_registry WHERE domain = ?",
-            (req.domain,), fetch=True
+            (req.domain,), True
         )
         if domain_row:
             domain, model = domain_row[0]['domain'], domain_row[0]['model']
         else:
-            domain, model = _find_best_domain(req.question)
+            domain, model = await loop.run_in_executor(None, _find_best_domain, req.question)
     else:
-        domain, model = _find_best_domain(req.question)
+        domain, model = await loop.run_in_executor(None, _find_best_domain, req.question)
     logger.info(f"Query domain={domain} model={model} question={req.question[:80]}")
 
-    contexts = _fetch_context(domain, req.question)
+    contexts = await loop.run_in_executor(None, _fetch_context, domain, req.question)
     ctx_block = "\n\n".join(contexts) if contexts else "No prior knowledge available."
 
     prompt = (
