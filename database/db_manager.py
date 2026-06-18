@@ -645,7 +645,8 @@ class DatabaseManager:
                 backup_path = self.db_path.parent / f"{self.db_path.stem}.backup.{timestamp}.db"
             
             conn = self._get_connection()
-            conn.execute(f"VACUUM INTO '{backup_path}'")
+            safe_path = str(backup_path).replace("'", "''")
+            conn.execute(f"VACUUM INTO '{safe_path}'")
             logger.info(f"Database backup created: {backup_path}")
             return True
         except Exception as e:
