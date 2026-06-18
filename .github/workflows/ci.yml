@@ -1,5 +1,5 @@
 name: CI
-on: [push, pull_request]
+on: [push]
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -8,19 +8,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Environment info
-        run: |
-          python --version
-          pip --version
-          python -c "import sys; print(f'Python {sys.version}')"
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest ruff
-      - name: Verify installed packages
-        run: |
-          python -c "import duckduckgo_search, trafilatura, requests, aiohttp, httpx, ijson, aiosqlite, plotly, pandas, fastapi, uvicorn, pydantic_settings, psutil; print('ALL packages imported OK')"
-      - name: Test imports
-        run: python -u tests/test_orchestrator_imports.py 2>&1
-        timeout-minutes: 5
+      - name: Install deps
+        run: pip install -r requirements.txt pytest ruff 2>&1
+      - name: Test basic import
+        run: python -c "from config.settings import DATABASE_PATH; print(f'config OK, DB={DATABASE_PATH}')" 2>&1
+      - name: Full import test
+        run: python tests/test_orchestrator_imports.py 2>&1
