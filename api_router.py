@@ -7,7 +7,7 @@ import sys
 import time
 import asyncio
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -137,7 +137,7 @@ def _is_pid_alive(pid):
 
 _try_restore_wikidata_pid()
 
-UTC_OFFSET = timedelta(hours=2)
+
 
 
 def _fetch_all(query: str, params: tuple = ()):
@@ -198,7 +198,7 @@ def get_cascade_checkpoints(since_id: int = 0):
         )
     else:
         last_id = _fetch_one("SELECT MAX(id) as mid FROM cascade_checkpoints")
-        since_id = max(0, last_id["mid"] - 200) if last_id else 0
+        since_id = max(0, last_id["mid"] - 200) if last_id and last_id.get("mid") is not None else 0
         rows = _fetch_all(
             "SELECT id, checkpoint_num, entities_processed, total_matches, "
             "elapsed_seconds, created_at "
@@ -417,6 +417,21 @@ class StartPipelineRequest(BaseModel):
     model: str = "all"
     duration: float = 5.0
 
+    class Config:
+        json_schema_extra = {"duration": {"gt": 0, "description": "Duration in hours (must be positive)"}}
+
+    @classmethod
+    def __get_validators__(cls):
+        yield cls._validate_duration
+
+    @classmethod
+    def _validate_duration(cls, v):
+        if v is not None:
+            import math
+            if v <= 0 or math.isnan(v) or math.isinf(v):
+                raise ValueError("duration must be a positive finite number")
+        return v
+
 
 class WikidataDownloadRequest(BaseModel):
     phase: str = "incremental"
@@ -442,11 +457,10 @@ def start_pipeline(req: StartPipelineRequest):
         ]
         try:
             log_path = LOGS_DIR / f"orchestrator_{int(time.time())}.log"
-            log_file = open(log_path, "w", encoding="utf-8")
             proc = subprocess.Popen(
                 cmd,
-                stdout=log_file,
-                stderr=log_file,
+                stdout=open(log_path, "w", encoding="utf-8"),
+                stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
             now = time.time()
@@ -529,12 +543,11 @@ def get_pipeline_pid():
         pid = _pipeline.get("pid")
         start_time = _pipeline.get("start_time", 0)
         duration_hours = _pipeline.get("duration_hours", 0)
-    alive = _is_pid_alive(pid) if pid else False
-    if not alive:
-        with _pipeline_lock:
+        alive = _is_pid_alive(pid) if pid else False
+        if not alive:
             _pipeline["pid"] = None
             _pipeline["end_epoch"] = None
-        _save_pipeline_state()
+    _save_pipeline_state()
     uptime = time.time() - start_time if start_time and alive else 0
     return {
         "pid": pid if alive else None,
@@ -616,7 +629,7 @@ def get_system_memory():
             "percent": mem.percent,
             "used": mem.used,
             "free": mem.free,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
     except ImportError:
         return {"error": "psutil not installed"}
@@ -629,7 +642,7 @@ def get_system_cpu():
         return {
             "percent": psutil.cpu_percent(interval=0.5),
             "count": psutil.cpu_count(),
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
     except ImportError:
         return {"error": "psutil not installed"}
@@ -650,7 +663,7 @@ def get_health():
         "specialist_count": specialist_count["cnt"] if specialist_count else 0,
         "package_count": 0,
         "incident_count": incident_count["cnt"] if incident_count else 0,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -843,7 +856,7 @@ def wikidata_status():
         "SELECT MAX(last_wikidata_feed) AS ts FROM specialist_registry",
     )
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     dl_ts = last_download['ts'] if last_download and last_download['ts'] else None
     feed_ts = last_feed['ts'] if last_feed and last_feed['ts'] else None
 
@@ -851,9 +864,11 @@ def wikidata_status():
         if not ts_str:
             return None
         try:
-            dt = datetime.fromisoformat(ts_str.replace('Z', '+00:00').replace(' ', 'T'))
+            dt = datetime.fromisoformat(ts_str.replace('Z', '+00:00').replace(' ', 'T').split('.')[0])
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
             return (now - dt).total_seconds() / 3600
-        except:
+        except Exception:
             return None
 
     dl_hours = hours_since(dl_ts)
@@ -870,8 +885,8 @@ def wikidata_status():
                 prog = json.loads(_WIKIDATA_PROGRESS_FILE.read_text())
                 current_domain = prog.get('current_domain', '')
                 packages_this_domain = prog.get('packages_this_domain', 0)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to load wikidata progress: %s", e)
         if not current_domain:
             # Only query knowledge_packages when download is running (small result set)
             last_row = select_one(
@@ -894,7 +909,7 @@ def wikidata_status():
         "packages_downloaded": total_downloaded,
         "packages_this_domain": packages_this_domain,
         "download_started_at": started_at,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -1011,11 +1026,10 @@ def monitor_start():
         cmd = ["python", "tools/pipeline_monitor.py"]
         try:
             log_path = LOGS_DIR / f"monitor_{int(time.time())}.log"
-            log_file = open(log_path, "w", encoding="utf-8")
             proc = subprocess.Popen(
                 cmd,
-                stdout=log_file,
-                stderr=log_file,
+                stdout=open(log_path, "w", encoding="utf-8"),
+                stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
             _monitor_process["pid"] = proc.pid
@@ -1056,6 +1070,7 @@ def monitor_stop():
 def monitor_status():
     with _monitor_lock:
         pid = _monitor_process.get("pid")
+        start_time = _monitor_process.get("start_time", 0)
         alive = _is_pid_alive(pid) if pid else False
         if not alive:
             _monitor_process["pid"] = None
@@ -1065,13 +1080,13 @@ def monitor_status():
         try:
             data = json.loads(_MONITOR_REPORT_FILE.read_text())
             reports = data if isinstance(data, list) else [data]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to load monitor reports: %s", e)
 
     return {
         "alive": alive,
         "pid": pid if alive else None,
-        "started_at": datetime.fromtimestamp(_monitor_process["start_time"]).isoformat() if _monitor_process["start_time"] else None,
-        "uptime_seconds": int(time.time() - _monitor_process["start_time"]) if _monitor_process["start_time"] and alive else 0,
-        "reports": reports[-5:],  # last 5 reports
+        "started_at": datetime.fromtimestamp(start_time).isoformat() if start_time else None,
+        "uptime_seconds": int(time.time() - start_time) if start_time and alive else 0,
+        "reports": reports[-5:],
     }

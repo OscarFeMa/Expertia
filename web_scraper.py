@@ -180,7 +180,7 @@ def search_duckduckgo(
                 continue
             filtered.append(r)
         results = filtered[:max_results]
-        logger.info(f"[DDGS] Found {len(results)} results (filtered from {len(search_results)}) for '{query}'")
+        logger.info(f"[DDGS] Found {len(results)} results for '{query}'")
         valid_results = filter_valid_urls(results)
         return sort_results_by_trust(valid_results, max_results)
     except (RateLimitError, ScraperTimeoutError):

@@ -695,11 +695,9 @@ with tabs[0]:
                         if target:
                             subprocess.run(["taskkill","/F","/T","/PID",str(target)], capture_output=True, timeout=5,
                                            creationflags=subprocess.CREATE_NO_WINDOW)
-                        subprocess.run(["taskkill","/F","/IM","pythonw.exe"], capture_output=True, timeout=5,
+                        netstat_kill = "for /f \"tokens=5\" %a in ('netstat -ano ^| findstr :8011') do taskkill /F /PID %a"
+                        subprocess.run(netstat_kill, capture_output=True, timeout=5, shell=True,
                                        creationflags=subprocess.CREATE_NO_WINDOW)
-                        subprocess.run(["for","/f","\"tokens=5\"","%a","in",\
-                                       "('netstat -ano ^| findstr :8011')","do","taskkill","/F","/PID","%a"],\
-                                       capture_output=True, timeout=5, shell=True)
                         st.session_state.orch_pid = None
                         st.session_state.orch_start_time = None
                         st.session_state.force_idle = True
@@ -817,7 +815,11 @@ with tabs[2]:
     ws = load_wikidata_speed()
     m3.metric("🏛️ Entities", f"{ws:,}" if ws else "N/A")
     conn = get_connection()
-    try: m4.metric("🔥 Incidents", f"{conn.execute('SELECT COUNT(*) FROM activity_log WHERE level IN (\"ERROR\",\"CRITICAL\")').fetchone()[0]:,}")
+    try:
+        incident_count = conn.execute("SELECT COUNT(*) FROM activity_log WHERE level IN ('ERROR','CRITICAL')").fetchone()[0]
+        m4.metric("🔥 Incidents", f"{incident_count:,}")
+    except Exception:
+        m4.metric("🔥 Incidents", "0")
     except Exception: m4.metric("🔥 Incidents", "0")
     # ── Tree Visualization ────────────────────────────────────────────────
     st.subheader("🌳 Árbol de Especialización", divider=True)

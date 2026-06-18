@@ -3,6 +3,7 @@ import gzip
 import json
 import logging
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -201,6 +202,9 @@ def build_structured_knowledge(entity: Dict, languages: str = LANGUAGES) -> str:
 def build_sparql_query(root_qid: str, since: Optional[str] = None) -> str:
     date_filter = ''
     if since:
+        if not re.match(r'^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2})?$', since):
+            logger.warning(f"Invalid timestamp format for SPARQL filter: {since}")
+            since = since[:19]
         date_filter = f'\n  FILTER(?modified >= "{since}"^^xsd:dateTime)'
 
     return f'''

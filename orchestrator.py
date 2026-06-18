@@ -2077,9 +2077,12 @@ def parse_args():
     return parser.parse_args()
 
 
+_signal_loop: Optional[asyncio.AbstractEventLoop] = None
+
 def _signal_handler(signum, frame):
     _shutdown_event.set()
-    threading.Timer(5.0, lambda: asyncio.get_event_loop().stop()).start()
+    if _signal_loop is not None and _signal_loop.is_running():
+        _signal_loop.call_soon_threadsafe(_signal_loop.stop)
 
 
 async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.0,
@@ -2095,6 +2098,8 @@ async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.
     if PHASE_B_PER_SPECIALIST_TIMEOUT < 600:
         logger.warning(f"PHASE_B_PER_SPECIALIST_TIMEOUT={PHASE_B_PER_SPECIALIST_TIMEOUT}s es muy bajo — usar >= 600s")
 
+    global _signal_loop
+    _signal_loop = asyncio.get_running_loop()
     signal.signal(signal.SIGINT, _signal_handler)
     if hasattr(signal, 'SIGTERM'):
         signal.signal(signal.SIGTERM, _signal_handler)
