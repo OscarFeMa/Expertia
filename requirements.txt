@@ -2,7 +2,7 @@
 # Python 3.10+
 
 # Web Search
-ddgs>=8.0.0
+ddgs>=9.0.0
 
 # HTML Parsing and Content Extraction
 trafilatura==2.0.0
