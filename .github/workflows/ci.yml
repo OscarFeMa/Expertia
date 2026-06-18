@@ -14,3 +14,9 @@ jobs:
         run: python -c "from config.settings import DATABASE_PATH; print(f'config OK, DB={DATABASE_PATH}')" 2>&1
       - name: Full import test
         run: python tests/test_orchestrator_imports.py 2>&1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-output
+          path: /tmp/ci-test-output.txt
+          retention-days: 1
