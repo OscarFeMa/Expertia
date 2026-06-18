@@ -21,18 +21,8 @@ jobs:
       - name: Lint
         run: ruff check . --ignore=E501,E402,F403,F405,F811 2>&1 || true
       - name: Test imports
-        run: |
-          set -o pipefail
-          python tests/test_orchestrator_imports.py 2>&1 | tee /tmp/ci-test-output.log
-        shell: bash
+        run: python tests/test_orchestrator_imports.py 2>&1
         timeout-minutes: 5
-      - name: Show test output in summary
-        if: failure()
-        run: |
-          echo "### Test output" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          cat /tmp/ci-test-output.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
       - name: Run unit tests
         run: python -m pytest tests/ -v --ignore=tests/test_web_scraper.py --ignore=tests/test_dissect_wikidata_deep.py --ignore=tests/test_dissect_wikidata_imports.py --ignore=tests/test_orchestrator_phase_b.py 2>&1
         timeout-minutes: 5
