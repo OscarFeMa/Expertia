@@ -58,6 +58,8 @@ class ExpertiaSettings(BaseSettings):
     wikipedia_api_url: str = "https://en.wikipedia.org/w/api.php"
     wikipedia_user_agent: str = "Expertia/1.0 (https://github.com/OscarFeMa/Expertia) Python/3.12"
 
+    database_path: str = "E:/expertia-data/incubator.db"
+
 
 _SETTINGS = ExpertiaSettings()
 
@@ -69,7 +71,7 @@ REPORTS_DIR = STORAGE_DIR / "reports"
 for d in (STORAGE_DIR, LOGS_DIR, PACKAGES_DIR, REPORTS_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
-DATABASE_PATH = STORAGE_DIR / "incubator.db"
+DATABASE_PATH = Path(_SETTINGS.database_path)
 SEED_DIR = STORAGE_DIR / "seed"
 SEED_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -112,6 +114,14 @@ WIKIDATA_LABEL_BATCH_SIZE = _SETTINGS.wikidata_label_batch_size
 
 WIKIPEDIA_API_URL = _SETTINGS.wikipedia_api_url
 WIKIPEDIA_USER_AGENT = _SETTINGS.wikipedia_user_agent
+
+# Quality thresholds (0.0 - 1.0)
+QUALITY_THRESHOLD_MIN = getattr(_SETTINGS, 'quality_threshold_min', 0.30)
+QUALITY_THRESHOLD_ACCEPTABLE = getattr(_SETTINGS, 'quality_threshold_acceptable', 0.50)
+
+# Academic API keys (empty = anonymous/rate-limited)
+PUBMED_API_KEY = getattr(_SETTINGS, 'pubmed_api_key', '')
+SEMANTIC_API_KEY = getattr(_SETTINGS, 'semantic_api_key', '')
 
 REPORTING_INTERVAL_SECONDS = _SETTINGS.reporting_interval_seconds
 COOLDOWN_SECONDS = _SETTINGS.cooldown_seconds

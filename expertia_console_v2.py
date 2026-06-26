@@ -10,9 +10,12 @@ from datetime import datetime, timedelta
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from database.db_manager import get_db_manager
+from database.readonly_db import select, select_one, init as ro_init
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(page_title="Neural Horizon — Expertia", layout="wide", page_icon="🔮")
+
+ro_init()
 
 for k in ("orch_pid","orch_start_time","auto_refresh","prev_phase","last_toast_time","force_idle","current_theme"):
     if k not in st.session_state:
@@ -59,12 +62,13 @@ def get_connection():
     return get_db_manager()._get_connection()
 
 def load_specialists():
-    return pd.read_sql_query("SELECT id,domain,model,ema_score,packages_absorbed,status,tier,parent_id,qid_path FROM specialist_registry ORDER BY parent_id IS NOT NULL, COALESCE(parent_id,id), domain", get_connection())
+    rows = select("SELECT id,domain,model,ema_score,packages_absorbed,status,tier,parent_id,qid_path FROM specialist_registry ORDER BY parent_id IS NOT NULL, COALESCE(parent_id,id), domain")
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 def load_pipeline_status():
     try:
-        df = pd.read_sql_query("SELECT * FROM pipeline_status ORDER BY id DESC LIMIT 1", get_connection())
-        return df.iloc[0].to_dict() if not df.empty else None
+        row = select_one("SELECT * FROM pipeline_status ORDER BY id DESC LIMIT 1")
+        return row if row else None
     except Exception: return None
 
 def load_activity_logs(limit=50, levels=None):
@@ -75,28 +79,30 @@ def load_activity_logs(limit=50, levels=None):
             parts.append(f"level IN ({ph})"); params.extend(levels)
         where = " WHERE " + " AND ".join(parts) if parts else ""
         params.append(limit)
-        return pd.read_sql_query(f"SELECT timestamp,level,message,id FROM activity_log{where} ORDER BY id DESC LIMIT ?", get_connection(), params=params)
+        rows = select(f"SELECT timestamp,level,message,id FROM activity_log{where} ORDER BY id DESC LIMIT ?", tuple(params))
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
     except Exception: return pd.DataFrame()
 
 def load_ema_history():
     try:
-        return pd.read_sql_query("SELECT e.timestamp AS created_at, e.ema_score, s.domain FROM ema_history e JOIN specialist_registry s ON e.specialist_id = s.id ORDER BY e.timestamp", get_connection())
+        rows = select("SELECT e.timestamp AS created_at, e.ema_score, s.domain FROM ema_history e JOIN specialist_registry s ON e.specialist_id = s.id ORDER BY e.timestamp")
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
     except Exception: return pd.DataFrame()
 
 def load_ema_sparklines(domains):
     if not domains: return {}
-    conn = get_connection()
-    return {d: [r[0] for r in reversed(conn.execute("SELECT e.ema_score FROM ema_history e JOIN specialist_registry s ON e.specialist_id = s.id WHERE s.domain = ? ORDER BY e.timestamp DESC LIMIT 10", (d,)).fetchall())] for d in domains}
+    result = {}
+    for d in domains:
+        rows = select("SELECT e.ema_score FROM ema_history e JOIN specialist_registry s ON e.specialist_id = s.id WHERE s.domain = ? ORDER BY e.timestamp DESC LIMIT 10", (d,))
+        result[d] = [r['ema_score'] for r in reversed(rows)] if rows else []
+    return result
 
 def load_specialists_tree():
     """Build sunburst/treemap hierarchical data: ids, labels, parents, values."""
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT id, domain, parent_id, packages_absorbed, ema_score FROM specialist_registry ORDER BY parent_id IS NULL DESC, domain"
-    ).fetchall()
+    rows = select("SELECT id, domain, parent_id, packages_absorbed, ema_score FROM specialist_registry ORDER BY parent_id IS NULL DESC, domain")
     ids, labels, parents, values, colors = [], [], [], [], []
     for r in rows:
-        rid, dom, pid, pkgs, ema = r
+        rid, dom, pid, pkgs, ema = r['id'], r['domain'], r.get('parent_id'), r.get('packages_absorbed', 0) or 0, r.get('ema_score', 0) or 0
         ids.append(str(rid))
         labels.append(dom)
         parents.append(str(int(pid)) if pid else "")
@@ -106,26 +112,26 @@ def load_specialists_tree():
 
 def load_hierarchy_stats():
     """Quick stats about tree depth, branches, etc."""
-    conn = get_connection()
-    roots = conn.execute("SELECT COUNT(*) FROM specialist_registry WHERE parent_id IS NULL").fetchone()[0]
-    children = conn.execute("SELECT COUNT(*) FROM specialist_registry WHERE parent_id IS NOT NULL").fetchone()[0]
-    depths = conn.execute("SELECT qid_path FROM specialist_registry WHERE parent_id IS NOT NULL AND qid_path IS NOT NULL").fetchall()
-    max_depth = max((len(d[0].split('/')) for d in depths if d[0]), default=1)
+    roots_row = select_one("SELECT COUNT(*) as cnt FROM specialist_registry WHERE parent_id IS NULL")
+    children_row = select_one("SELECT COUNT(*) as cnt FROM specialist_registry WHERE parent_id IS NOT NULL")
+    depths = select("SELECT qid_path FROM specialist_registry WHERE parent_id IS NOT NULL AND qid_path IS NOT NULL")
+    roots = roots_row['cnt'] if roots_row else 0
+    children = children_row['cnt'] if children_row else 0
+    max_depth = max((len(d['qid_path'].split('/')) for d in depths if d.get('qid_path')), default=1)
     return {"roots": roots, "children": children, "max_depth": max_depth}
 
 def load_branch_events(limit=20):
     """Load recent spawning events from activity_log."""
     try:
-        return pd.read_sql_query(
-            "SELECT timestamp, message FROM activity_log WHERE message LIKE '%Germinado%' OR message LIKE '%SPAWNED%' ORDER BY id DESC LIMIT ?",
-            get_connection(), params=(limit,))
+        rows = select("SELECT timestamp, message FROM activity_log WHERE message LIKE '%Germinado%' OR message LIKE '%SPAWNED%' ORDER BY id DESC LIMIT ?", (limit,))
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
     except Exception:
         return pd.DataFrame()
 
 def load_super_experts():
     """Load all super-experts with aggregated info."""
     try:
-        return pd.read_sql_query("""
+        rows = select("""
             SELECT se.id, se.domain, se.description,
                    COUNT(sem.id) AS member_count,
                    AVG(s.ema_score) AS avg_ema,
@@ -136,36 +142,41 @@ def load_super_experts():
             LEFT JOIN specialist_registry s ON s.id = sem.specialist_id
             GROUP BY se.id
             ORDER BY se.domain
-        """, get_connection())
+        """)
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
     except Exception as e:
         return pd.DataFrame()
 
 def load_super_expert_members(se_id):
     """Load members for a specific super-expert."""
     try:
-        return pd.read_sql_query("""
+        rows = select("""
             SELECT s.domain, s.ema_score, s.packages_absorbed, s.status, sem.weight
             FROM super_expert_members sem
             JOIN specialist_registry s ON s.id = sem.specialist_id
             WHERE sem.super_expert_id = ?
             ORDER BY sem.weight DESC
-        """, get_connection(), params=(se_id,))
+        """, (se_id,))
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
     except Exception as e:
         return pd.DataFrame()
 
 def load_blocked_branches(limit=50):
     """Load blocked branch events (blocklist label or SPARQL filtered)."""
     try:
-        return pd.read_sql_query(
-            "SELECT timestamp, message FROM activity_log WHERE message LIKE '%Bloqueado%' OR message LIKE '%Rama externa%' ORDER BY id DESC LIMIT ?",
-            get_connection(), params=(limit,))
+        rows = select("SELECT timestamp, message FROM activity_log WHERE message LIKE '%Bloqueado%' OR message LIKE '%Rama externa%' ORDER BY id DESC LIMIT ?", (limit,))
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
     except Exception:
         return pd.DataFrame()
 
 def load_errors_by_model():
     try:
-        known = [r[0] for r in get_connection().execute("SELECT DISTINCT model FROM specialist_registry").fetchall()]
-        df = pd.read_sql_query("SELECT message FROM activity_log WHERE level IN ('ERROR','CRITICAL') ORDER BY id DESC LIMIT 500", get_connection())
+        model_rows = select("SELECT DISTINCT model FROM specialist_registry")
+        known = [r['model'] for r in model_rows] if model_rows else []
+        log_rows = select("SELECT message FROM activity_log WHERE level IN ('ERROR','CRITICAL') ORDER BY id DESC LIMIT 500")
+        df = pd.DataFrame(log_rows) if log_rows else pd.DataFrame()
+        if df.empty:
+            return pd.DataFrame(columns=['model', 'count'])
         models = []
         for msg in df['message']:
             matched = False
@@ -177,11 +188,11 @@ def load_errors_by_model():
 
 def load_wikidata_speed():
     try:
-        df = pd.read_sql_query("SELECT message FROM activity_log WHERE message LIKE '%entity%' OR message LIKE '%extract%' ORDER BY id DESC LIMIT 1000", get_connection())
-        if df.empty: return None
+        rows = select("SELECT message FROM activity_log WHERE message LIKE '%entity%' OR message LIKE '%extract%' ORDER BY id DESC LIMIT 1000")
+        if not rows: return None
         entities = []
-        for msg in df['message']:
-            m = re.search(r'(\d+)\s*entities', str(msg), re.IGNORECASE)
+        for r in rows:
+            m = re.search(r'(\d+)\s*entities', str(r['message']), re.IGNORECASE)
             if m: entities.append(int(m.group(1)))
         return max(entities) if entities else None
     except Exception: return None
@@ -194,14 +205,19 @@ def is_pid_alive(pid):
     if cache.get('pid') == pid and time.time() - cache.get('time', 0) < PID_CACHE_TTL:
         return cache['alive']
     try:
-        if os.name == 'nt':
-            r = subprocess.run(["tasklist","/FI",f"PID eq {pid}"], capture_output=True, text=True, timeout=5,
-                               creationflags=subprocess.CREATE_NO_WINDOW)
-            alive = str(pid) in r.stdout
-        else:
-            os.kill(pid, 0); alive = True
-    except Exception:
+        import psutil
+        alive = psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except (ImportError, psutil.NoSuchProcess, psutil.AccessDenied):
         alive = False
+        try:
+            if os.name == 'nt':
+                r = subprocess.run(["tasklist","/FI",f"PID eq {pid}"], capture_output=True, text=True, timeout=5,
+                                   creationflags=subprocess.CREATE_NO_WINDOW)
+                alive = str(pid) in r.stdout
+            else:
+                os.kill(pid, 0); alive = True
+        except Exception:
+            alive = False
     st.session_state['_pid_alive_cache'] = {'pid': pid, 'alive': alive, 'time': time.time()}
     return alive
 
@@ -240,9 +256,9 @@ def auto_detect_orch():
 
 def get_specialist_state(domain):
     try:
-        msg = get_connection().execute("SELECT message FROM activity_log WHERE message LIKE ? ORDER BY id DESC LIMIT 1", (f"%{domain}%",)).fetchone()
-        if not msg: return 0
-        m = str(msg[0])
+        row = select_one("SELECT message FROM activity_log WHERE message LIKE ? ORDER BY id DESC LIMIT 1", (f"%{domain}%",))
+        if not row: return 0
+        m = str(row['message'])
         if "Package" in m or "package" in m or "guardado" in m: return 3
         if "Destilando" in m or "query" in m.lower(): return 2
         if "HTTP" in m or "trafilatura" in m: return 1
@@ -814,13 +830,12 @@ with tabs[2]:
     m2.metric("🧠 Active", ac_)
     ws = load_wikidata_speed()
     m3.metric("🏛️ Entities", f"{ws:,}" if ws else "N/A")
-    conn = get_connection()
     try:
-        incident_count = conn.execute("SELECT COUNT(*) FROM activity_log WHERE level IN ('ERROR','CRITICAL')").fetchone()[0]
+        row = select_one("SELECT COUNT(*) as cnt FROM activity_log WHERE level IN ('ERROR','CRITICAL')")
+        incident_count = row['cnt'] if row else 0
         m4.metric("🔥 Incidents", f"{incident_count:,}")
     except Exception:
         m4.metric("🔥 Incidents", "0")
-    except Exception: m4.metric("🔥 Incidents", "0")
     # ── Tree Visualization ────────────────────────────────────────────────
     st.subheader("🌳 Árbol de Especialización", divider=True)
     df_tree = load_specialists_tree()

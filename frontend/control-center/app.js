@@ -1316,6 +1316,9 @@ class App {
     const r = await this.postJSON(`${this.apiBase}/wikidata/download`, {});
     if (r && r.status === 'started') {
       setTimeout(() => this.renderWikidata(), 500);
+    } else if (r && r.error) {
+      alert('Error: ' + r.error);
+      if (btn) { btn.textContent = '📥 Descargar ahora'; btn.disabled = false; }
     }
   }
 
@@ -1325,6 +1328,9 @@ class App {
     const r = await this.postJSON(`${this.apiBase}/wikidata/feed`, {});
     if (r && r.status === 'started') {
       setTimeout(() => this.renderWikidata(), 500);
+    } else if (r && r.error) {
+      alert('Error: ' + r.error);
+      if (btns[1]) { btns[1].textContent = '🧠 Alimentar ahora'; btns[1].disabled = false; }
     }
   }
 

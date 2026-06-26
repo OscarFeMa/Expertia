@@ -121,6 +121,12 @@ def _is_pid_alive(pid):
     if pid is None:
         return False
     try:
+        import psutil
+        return psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except (ImportError, psutil.NoSuchProcess, psutil.AccessDenied):
+        pass
+    # Fallback if psutil unavailable
+    try:
         if os.name == "nt":
             r = subprocess.run(
                 ["tasklist", "/FI", f"PID eq {pid}"],
@@ -416,6 +422,7 @@ class StartPipelineRequest(BaseModel):
     specialist: str = "all"
     model: str = "all"
     duration: float = 5.0
+    parallel: int = 1
 
     class Config:
         json_schema_extra = {"duration": {"gt": 0, "description": "Duration in hours (must be positive)"}}
@@ -454,15 +461,18 @@ def start_pipeline(req: StartPipelineRequest):
             "--model", req.model,
             "--duration", str(duration_hours),
             "--max-duration", str(duration_hours),
+            "--parallel", str(req.parallel),
         ]
         try:
             log_path = LOGS_DIR / f"orchestrator_{int(time.time())}.log"
+            log_file = open(log_path, "w", encoding="utf-8")
             proc = subprocess.Popen(
                 cmd,
-                stdout=open(log_path, "w", encoding="utf-8"),
+                stdout=log_file,
                 stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
+            log_file.close()  # Close parent fd; child keeps its copy via handle inheritance
             now = time.time()
             _pipeline["pid"] = proc.pid
             _pipeline["start_time"] = now
@@ -833,21 +843,8 @@ def wikidata_status():
     total_row = select_one("SELECT SUM(packages_absorbed) AS s FROM specialist_registry")
     total_downloaded = total_row['s'] if total_row and total_row['s'] else 0
 
-    # Pending (unabsorbed) packages: when no download is running, there are none.
-    # Auto-feed during cascade sets absorbed_at = CURRENT_TIMESTAMP for every row.
-    # Only a running download would produce unabsorbed packages.
     total_pending = 0
     pending_by_domain = {}
-
-    if dl_running:
-        pending_by_domain_rows = select(
-            """SELECT domain, COUNT(*) AS cnt
-               FROM knowledge_packages
-               WHERE qid IS NOT NULL AND absorbed_at IS NULL
-               GROUP BY domain ORDER BY cnt DESC""",
-        )
-        pending_by_domain = {r['domain']: r['cnt'] for r in (pending_by_domain_rows or [])}
-        total_pending = sum(pending_by_domain.values())
 
     last_download = select_one(
         "SELECT MAX(last_wikidata_download) AS ts FROM specialist_registry",
@@ -885,17 +882,11 @@ def wikidata_status():
                 prog = json.loads(_WIKIDATA_PROGRESS_FILE.read_text())
                 current_domain = prog.get('current_domain', '')
                 packages_this_domain = prog.get('packages_this_domain', 0)
-        except Exception as e:
-            logger.debug("Failed to load wikidata progress: %s", e)
-        if not current_domain:
-            # Only query knowledge_packages when download is running (small result set)
-            last_row = select_one(
-                """SELECT domain FROM knowledge_packages
-                   WHERE qid IS NOT NULL
-                   ORDER BY id DESC LIMIT 1""",
-            )
-            if last_row:
-                current_domain = last_row['domain']
+                total_pending = prog.get('total_added', 0)
+                if current_domain and packages_this_domain > 0:
+                    pending_by_domain[current_domain] = packages_this_domain
+        except Exception:
+            pass
 
     return {
         "ultima_descarga": dl_ts,
@@ -920,7 +911,8 @@ def wikidata_download(req: WikidataDownloadRequest = None):
             raise HTTPException(status_code=409, detail="Wikidata download already running")
 
         use_full = bool(req and req.phase == 'full')
-        cmd = [sys.executable, "tools/update_wikidata.py"]
+        script_path = str(Path(__file__).parent / "tools" / "update_wikidata.py")
+        cmd = [sys.executable, script_path]
         if use_full:
             cmd.append("--full")
 
@@ -949,7 +941,8 @@ def wikidata_feed():
         if _wikidata_process.get("pid") and _is_pid_alive(_wikidata_process["pid"]):
             raise HTTPException(status_code=409, detail="Wikidata process already running")
 
-        cmd = [sys.executable, "orchestrator.py", "--phase", "feed", "--duration", "0.1"]
+        orchestrator_path = str(Path(__file__).parent / "orchestrator.py")
+        cmd = [sys.executable, orchestrator_path, "--phase", "feed", "--duration", "0.1"]
 
         try:
             proc = subprocess.Popen(
@@ -1026,12 +1019,14 @@ def monitor_start():
         cmd = ["python", "tools/pipeline_monitor.py"]
         try:
             log_path = LOGS_DIR / f"monitor_{int(time.time())}.log"
+            log_file = open(log_path, "w", encoding="utf-8")
             proc = subprocess.Popen(
                 cmd,
-                stdout=open(log_path, "w", encoding="utf-8"),
+                stdout=log_file,
                 stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
+            log_file.close()
             _monitor_process["pid"] = proc.pid
             _monitor_process["start_time"] = time.time()
             _MONITOR_PID_FILE.write_text(str(proc.pid))

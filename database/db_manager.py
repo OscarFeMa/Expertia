@@ -16,6 +16,7 @@ Architecture:
 import sqlite3
 import threading
 import logging
+import time
 from pathlib import Path
 from typing import Optional, ContextManager
 from contextlib import contextmanager
@@ -54,6 +55,7 @@ class DatabaseManager:
         
         self.db_path: Path = self._singleton_db_path
         self._connection: Optional[sqlite3.Connection] = None
+        self._execute_lock = threading.Lock()
         self._initialized = True
         
         logger.info(f"DatabaseManager initialized with path: {self.db_path}")
@@ -169,35 +171,36 @@ class DatabaseManager:
         Returns:
             List of results if fetch=True, None otherwise
         """
-        for attempt in range(2):
-            try:
-                with self.get_cursor() as cursor:
-                    cursor.execute(query, params)
-                    if fetch:
-                        results = cursor.fetchall()
-                        return [dict(row) for row in results]
-                    if not query.strip().upper().startswith("SELECT"):
-                        self._get_connection().commit()
-                    return None
-            except sqlite3.OperationalError as e:
-                err_msg = str(e).lower()
-                if attempt == 0 and ("locked" in err_msg or "busy" in err_msg or "timeout" in err_msg):
-                    logger.warning(f"DB locked, reconnecting and retrying: {e}")
-                    self._close_connection()
-                    continue
-                logger.error(f"Query execution failed: {e}")
+        with self._execute_lock:
+            for attempt in range(2):
                 try:
-                    self._get_connection().rollback()
-                except sqlite3.Error:
-                    pass
-                raise
-            except sqlite3.Error as e:
-                logger.error(f"Query execution failed: {e}")
-                try:
-                    self._get_connection().rollback()
-                except sqlite3.Error:
-                    pass
-                raise
+                    with self.get_cursor() as cursor:
+                        cursor.execute(query, params)
+                        if fetch:
+                            results = cursor.fetchall()
+                            return [dict(row) for row in results]
+                        if not query.strip().upper().startswith("SELECT"):
+                            self._get_connection().commit()
+                        return None
+                except sqlite3.OperationalError as e:
+                    err_msg = str(e).lower()
+                    if attempt == 0 and ("locked" in err_msg or "busy" in err_msg or "timeout" in err_msg):
+                        logger.warning(f"DB locked, reconnecting and retrying: {e}")
+                        self._close_connection()
+                        continue
+                    logger.error(f"Query execution failed: {e}")
+                    try:
+                        self._get_connection().rollback()
+                    except sqlite3.Error:
+                        pass
+                    raise
+                except sqlite3.Error as e:
+                    logger.error(f"Query execution failed: {e}")
+                    try:
+                        self._get_connection().rollback()
+                    except sqlite3.Error:
+                        pass
+                    raise
     
     def execute_many(
         self,
@@ -211,18 +214,19 @@ class DatabaseManager:
             query: SQL query string
             params_list: List of parameter tuples
         """
-        with self.get_cursor() as cursor:
-            try:
-                cursor.executemany(query, params_list)
-                self._get_connection().commit()
-                logger.info(f"Executed {len(params_list)} queries successfully")
-            except sqlite3.Error as e:
-                logger.error(f"Batch execution failed: {e}")
+        with self._execute_lock:
+            with self.get_cursor() as cursor:
                 try:
-                    self._get_connection().rollback()
-                except sqlite3.Error:
-                    pass
-                raise
+                    cursor.executemany(query, params_list)
+                    self._get_connection().commit()
+                    logger.info(f"Executed {len(params_list)} queries successfully")
+                except sqlite3.Error as e:
+                    logger.error(f"Batch execution failed: {e}")
+                    try:
+                        self._get_connection().rollback()
+                    except sqlite3.Error:
+                        pass
+                    raise
 
     def execute_batch(self, statements: list[tuple]) -> None:
         """Execute multiple different SQL statements in a single transaction.
@@ -230,25 +234,29 @@ class DatabaseManager:
         Args:
             statements: List of (query, params) tuples
         """
-        with self.get_cursor() as cursor:
-            try:
-                cursor.execute("BEGIN IMMEDIATE")
-                for query, params in statements:
-                    cursor.execute(query, params)
-                cursor.connection.commit()
-                logger.info(f"Batch committed {len(statements)} statements")
-            except sqlite3.Error as e:
-                logger.error(f"Batch execution failed: {e}")
+        with self._execute_lock:
+            with self.get_cursor() as cursor:
                 try:
-                    cursor.connection.rollback()
-                except sqlite3.Error:
-                    pass
-                raise
+                    cursor.execute("BEGIN IMMEDIATE")
+                    for query, params in statements:
+                        cursor.execute(query, params)
+                    cursor.connection.commit()
+                    logger.info(f"Batch committed {len(statements)} statements")
+                except sqlite3.Error as e:
+                    logger.error(f"Batch execution failed: {e}")
+                    try:
+                        cursor.connection.rollback()
+                    except sqlite3.Error:
+                        pass
+                    raise
     
     async def execute_query_async(self, query: str, params: tuple = (), fetch: bool = False):
         """Execute a SQL query asynchronously using aiosqlite."""
         import aiosqlite
         async with aiosqlite.connect(str(self.db_path)) as db:
+            await db.execute("PRAGMA journal_mode=WAL")
+            await db.execute("PRAGMA synchronous=NORMAL")
+            await db.execute("PRAGMA busy_timeout=15000")
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(query, params)
             if fetch:
@@ -261,6 +269,9 @@ class DatabaseManager:
         """Execute multiple SQL statements in a single async transaction."""
         import aiosqlite
         async with aiosqlite.connect(str(self.db_path)) as db:
+            await db.execute("PRAGMA journal_mode=WAL")
+            await db.execute("PRAGMA synchronous=NORMAL")
+            await db.execute("PRAGMA busy_timeout=15000")
             for query, params in statements:
                 await db.execute(query, params)
             await db.commit()
@@ -297,7 +308,8 @@ class DatabaseManager:
             Row count
         """
         VALID_TABLES = {"specialist_registry", "knowledge_packages", "cartridge_offsets",
-                        "super_experts", "super_expert_members", "wikidata_sync_log"}
+                        "super_experts", "super_expert_members", "wikidata_sync_log",
+                        "source_reputation"}
         if table_name not in VALID_TABLES:
             logger.error(f"Invalid table name: {table_name}")
             return 0
@@ -618,6 +630,46 @@ class DatabaseManager:
                     except sqlite3.OperationalError as e:
                         logger.warning(f"Migration 'kp_matched_qids' skipped: {e}")
 
+                # Migration: add batch_run_id column for knowledge_packages
+                # NOTE: unique index skipped because building it on 430M rows under
+                # temp_store=MEMORY consumes 17+ GB RAM. Column is unused in queries.
+                cursor.execute("SELECT id FROM _migration_log WHERE name = 'kp_batch_run_id'")
+                if not cursor.fetchone():
+                    try:
+                        cursor.execute(
+                            "ALTER TABLE knowledge_packages ADD COLUMN batch_run_id INTEGER DEFAULT 0"
+                        )
+                        cursor.execute("INSERT INTO _migration_log (name) VALUES ('kp_batch_run_id')")
+                        logger.info("Migration 'kp_batch_run_id' applied")
+                    except sqlite3.OperationalError:
+                        # Column already exists from a partial previous run; just mark migrated
+                        cursor.execute("INSERT OR IGNORE INTO _migration_log (name) VALUES ('kp_batch_run_id')")
+                        logger.info("Migration 'kp_batch_run_id' already applied (column exists)")
+
+                # Migration: create source_reputation table for EEAT/TrustRank tracking
+                cursor.execute("SELECT id FROM _migration_log WHERE name = 'kp_source_reputation'")
+                if not cursor.fetchone():
+                    try:
+                        cursor.execute("""
+                            CREATE TABLE IF NOT EXISTS source_reputation (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                netloc TEXT NOT NULL UNIQUE,
+                                trust_score INTEGER NOT NULL DEFAULT 40,
+                                tier INTEGER NOT NULL DEFAULT 3,
+                                access_count INTEGER DEFAULT 0,
+                                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                            )
+                        """)
+                        cursor.execute("""
+                            CREATE INDEX IF NOT EXISTS idx_source_reputation_score
+                            ON source_reputation(trust_score DESC)
+                        """)
+                        cursor.execute("INSERT INTO _migration_log (name) VALUES ('kp_source_reputation')")
+                        logger.info("Migration 'kp_source_reputation' applied")
+                    except sqlite3.OperationalError as e:
+                        logger.warning(f"Migration 'kp_source_reputation' skipped: {e}")
+
                 # Migration: create specialist_match_cache for precomputed matched_qid counts
                 cursor.execute("SELECT id FROM _migration_log WHERE name = 'kp_specialist_match_cache'")
                 if not cursor.fetchone():
@@ -636,10 +688,13 @@ class DatabaseManager:
                         logger.warning(f"Migration 'kp_specialist_match_cache' skipped: {e}")
 
                 # Index: knowledge_packages(absorbed_at) for NULL-filtered lookups
-                cursor.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_knowledge_packages_absorbed
-                    ON knowledge_packages(absorbed_at)
-                """)
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_knowledge_packages_absorbed'")
+                if cursor.fetchone():
+                    cursor.execute("INSERT OR IGNORE INTO _migration_log (name) VALUES ('kp_idx_absorbed_at')")
+                    logger.info("Migration 'kp_idx_absorbed_at' already applied (index exists)")
+                else:
+                    logger.warning("Index 'idx_knowledge_packages_absorbed' not found — skipping creation. "
+                                   "Run create_index.py maintenance script to avoid full table scans.")
 
                 self._get_connection().commit()
                 logger.info("Specialist tables initialized successfully")

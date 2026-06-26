@@ -22,10 +22,12 @@ except ImportError:
 import time
 import logging
 import json
+import os
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 from decimal import Decimal
 from contextlib import contextmanager
+from datetime import datetime
 
 from database.db_manager import get_db_manager
 
@@ -522,41 +524,94 @@ class BatchWikidataExtractor:
                 elif e == 'start_map':
                     depth += 1
 
+    def _ensure_matched_qids_table(self):
+        """Create matched_qids table if it doesn't exist (lost during emergency purges)."""
+        try:
+            self.db_manager.execute_query(
+                """CREATE TABLE IF NOT EXISTS matched_qids (
+                    qid TEXT PRIMARY KEY,
+                    source TEXT NOT NULL DEFAULT 'wikidata',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )"""
+            )
+        except Exception as e:
+            logger.warning(f"Failed to ensure matched_qids table: {e}")
+
     def _flush_qids(self):
         """Flush buffered matched QIDs to database in batch."""
         if not self._pending_qids:
             return
+        count = len(self._pending_qids)
+        # Make sure the target table exists
+        self._ensure_matched_qids_table()
+        for attempt in range(4):
+            try:
+                self.db_manager.execute_many(
+                    """INSERT OR IGNORE INTO matched_qids
+                       (qid, specialist_id, entity_id, domain)
+                       VALUES (?, ?, ?, ?)""",
+                    self._pending_qids
+                )
+                logger.info(f"Wikidata: saved {count} matched QIDs to matched_qids")
+                self._pending_qids = []
+                return
+            except Exception as e:
+                err_msg = str(e).lower()
+                if attempt < 3 and ("no such table" in err_msg):
+                    logger.warning(f"matched_qids table missing, creating and retrying: {e}")
+                    self._ensure_matched_qids_table()
+                    time.sleep(0.5)
+                    continue
+                if attempt < 3 and ("locked" in err_msg or "busy" in err_msg or "timeout" in err_msg):
+                    wait = 1.0 * (2 ** attempt)
+                    logger.warning(f"DB locked, retrying in {wait:.1f}s (attempt {attempt+1}/4): {e}")
+                    time.sleep(wait)
+                    continue
+                logger.warning(f"Wikidata QID batch insert failed ({count} qids): {e}")
+                # Safe dump: save to JSON on final failure
+                self._safe_dump(self._pending_qids, f"qids_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+                self._pending_qids = []
+                return
+
+    def _safe_dump(self, data, filename: str):
+        """Save failed batch to JSON crash dump for later re-ingestion."""
         try:
-            count = len(self._pending_qids)
-            self.db_manager.execute_many(
-                """INSERT OR IGNORE INTO matched_qids
-                   (qid, specialist_id, entity_id, domain)
-                   VALUES (?, ?, ?, ?)""",
-                self._pending_qids
-            )
-            logger.info(f"Wikidata: saved {count} matched QIDs to matched_qids")
-        except Exception as e:
-            logger.warning(f"Wikidata QID batch insert failed ({count} qids): {e}")
-        finally:
-            self._pending_qids = []
+            crash_dir = Path(self.output_dir) / "crash_dumps"
+            crash_dir.mkdir(parents=True, exist_ok=True)
+            path = crash_dir / filename
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            logger.warning(f"Safe dump saved: {path} ({len(data)} items)")
+        except Exception as dump_e:
+            logger.error(f"Safe dump failed: {dump_e}")
 
     def _flush_packages(self):
         """Flush buffered knowledge packages to database in batch."""
         if not self._pending_packages:
             return
-        try:
-            count = len(self._pending_packages)
-            self.db_manager.execute_many(
-                """INSERT OR IGNORE INTO knowledge_packages
-                   (topic, source_url, domain, qid, structured_knowledge, created_at)
-                   VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
-                self._pending_packages
-            )
-            logger.info(f"Wikidata: saved {count} knowledge packages directly from dump")
-        except Exception as e:
-            logger.warning(f"Wikidata package batch insert failed ({count} pkgs): {e}")
-        finally:
-            self._pending_packages = []
+        count = len(self._pending_packages)
+        for attempt in range(4):
+            try:
+                self.db_manager.execute_many(
+                    """INSERT OR IGNORE INTO knowledge_packages
+                       (topic, source_url, domain, qid, structured_knowledge, created_at)
+                       VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                    self._pending_packages
+                )
+                logger.info(f"Wikidata: saved {count} knowledge packages directly from dump")
+                self._pending_packages = []
+                return
+            except Exception as e:
+                err_msg = str(e).lower()
+                if attempt < 3 and ("locked" in err_msg or "busy" in err_msg or "timeout" in err_msg):
+                    wait = 1.0 * (2 ** attempt)
+                    logger.warning(f"DB locked, retrying packages in {wait:.1f}s (attempt {attempt+1}/4): {e}")
+                    time.sleep(wait)
+                    continue
+                logger.warning(f"Wikidata package batch insert failed ({count} pkgs): {e}")
+                self._safe_dump(self._pending_packages, f"packages_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+                self._pending_packages = []
+                return
 
     def _get_entity_qids(self, entity: Dict) -> Set[str]:
         """Extract all QIDs from entity claims (P31, P279, P2579, P921, P101)."""

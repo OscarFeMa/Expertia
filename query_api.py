@@ -25,11 +25,12 @@ from database.db_manager import get_db_manager
 from database.readonly_db import init as init_readonly_db
 from llm_manager import LLMRunner
 from api_router import router as api_router
+from config.settings import DATABASE_PATH
 
 
 async def _periodic_checkpoint():
     """Background task: checkpoint WAL every 60s to prevent WAL bloat."""
-    db_path = Path(__file__).parent / "storage" / "incubator.db"
+    db_path = DATABASE_PATH
     while True:
         await asyncio.sleep(60)
         try:
@@ -49,8 +50,10 @@ async def lifespan(app: FastAPI):
     # Reset stale ACTIVE statuses from crashed pipelines
     try:
         db = get_db_manager()
-        db.execute_query("UPDATE specialist_registry SET status = 'IDLE' WHERE status = 'ACTIVE'")
-        logger.info("Reset stale ACTIVE specialist statuses")
+        db.execute_query("UPDATE specialist_registry SET status = 'IDLE' WHERE status IN ('ACTIVE','INIT')")
+        logger.info("Reset stale ACTIVE/INIT specialist statuses")
+        db.execute_query("UPDATE pipeline_status SET status = 'IDLE' WHERE status IN ('ACTIVE','INIT')")
+        logger.info("Reset stale ACTIVE/INIT pipeline status")
     except Exception as e:
         logger.warning(f"Failed to reset stale ACTIVE: {e}")
     # Start periodic WAL checkpoint task
@@ -91,9 +94,9 @@ async def timeout_middleware(request: Request, call_next):
         logger.warning(f"TIMEOUT {request.method} {request.url.path}")
         return JSONResponse(status_code=503, content={"detail": "Request timed out"})
 
-# Simple in-memory rate limiter: 30 requests/min per IP
+# Simple in-memory rate limiter: 200 requests/min per IP
 _rate_store = defaultdict(list)
-_RATE_LIMIT = 30
+_RATE_LIMIT = 200
 _RATE_WINDOW = 60
 
 @app.middleware("http")
@@ -323,6 +326,4 @@ async def query(req: QueryRequest):
 
 
 if __name__ == "__main__":
-    # IPv6 dual-stack: localhost (::1) + 127.0.0.1 both work instantly
-    # On Windows, IPv6 sockets default to IPV6_V6ONLY=0 (dual-stack)
-    uvicorn.run(app, host="::", port=8011)
+    uvicorn.run(app, host="0.0.0.0", port=8011)
