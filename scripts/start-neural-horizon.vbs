@@ -4,23 +4,25 @@ Set FSO = CreateObject("Scripting.FileSystemObject")
 rootPath = FSO.GetParentFolderName(FSO.GetParentFolderName(WScript.ScriptFullName))
 WshShell.CurrentDirectory = rootPath
 
-' ── 1. KILL old Expertia background processes ───────────
-WshShell.Run "cmd.exe /c taskkill /F /IM pythonw.exe >nul 2>&1", 0, True
-WScript.Sleep 1000
+' ── 0. CONFIRM ───────────────────────────────────────────
+If MsgBox("¿Arrancar Expertia?" & vbCrLf & vbCrLf & _
+           "Se abrirá Neural Horizon en el navegador." & vbCrLf & _
+           "Configura fase, especialistas y duración desde el panel web.", _
+           vbYesNo + vbQuestion + vbDefaultButton2, _
+           "Neural Horizon — Expertia") <> vbYes Then
+    WScript.Quit
+End If
 
-' ── 2. CLEAN ports 8011 (API) and 8501 (Streamlit) ─────
-' NOTA: No matamos python.exe para no cargar procesos de usuario (dashboard, IDE, etc.)
+' ── 1. KILL old Expertia API process on port 8011 ────────
 WshShell.Run "cmd.exe /c for /f ""tokens=5"" %a in ('netstat -ano ^| findstr :8011') do taskkill /F /PID %a >nul 2>&1", 0, True
 WScript.Sleep 1000
-WshShell.Run "cmd.exe /c for /f ""tokens=5"" %a in ('netstat -ano ^| findstr :8501') do taskkill /F /PID %a >nul 2>&1", 0, True
-WScript.Sleep 1000
 
-' ── 3. START API server (minimized) ─────────────────────
+' ── 2. START API server (minimized) ─────────────────────
 WshShell.Run "cmd.exe /c title Expertia API && cd /d """ & rootPath & """ && python.exe query_api.py", 7, False
 
-' ── 4. WAIT for API health check (max 20s) ──────────────
+' ── 3. WAIT for API health check (max 30s) ──────────────
 ready = False
-For i = 1 To 20
+For i = 1 To 30
     WScript.Sleep 1000
     On Error Resume Next
     Set http = CreateObject("MSXML2.XMLHTTP")
@@ -34,10 +36,8 @@ For i = 1 To 20
 Next
 
 If ready Then
-    ' ── 5. OPEN Neural Horizon in Edge app mode ───────────
-    ' NOTA: El pipeline NO se inicia automaticamente.
-    '       El usuario decide desde el frontend que lanzar.
-    WshShell.Run """" & "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" & """ --app=http://localhost:8011/neural/", 1, False
+    ' ── 4. OPEN Neural Horizon in Edge app mode ───────────
+    WshShell.Run """" & "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" & """ --app=http://127.0.0.1:8011/neural/", 1, False
 Else
-    MsgBox "La API de Expertia no arrancó tras 20 segundos. Revisa los logs.", vbCritical, "Neural Horizon - Error"
+    MsgBox "La API de Expertia no arrancó tras 30 segundos. Revisa logs en " & rootPath & "\logs\", vbCritical, "Neural Horizon - Error"
 End If

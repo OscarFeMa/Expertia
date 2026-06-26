@@ -2,10 +2,12 @@
 Modern Web Scraper with Multi-Engine Fallback Chain
 
 Engines tried in order:
-  1. DuckDuckGo (ddgs) — primary web search
-  2. Wikipedia API — free, reliable fallback
-  3. Seed URLs — pre-selected high-quality sources per domain
+   1. Academic sources (ArXiv, PubMed, CrossRef, Semantic Scholar, Wikipedia)
+   2. DuckDuckGo (ddgs) — general web search
+   3. Wikipedia API — free, reliable fallback
+   4. Seed URLs — pre-selected high-quality sources per domain
 
+All extracted content is scored for quality before storage.
 """
 
 import random
@@ -13,11 +15,15 @@ import time
 import asyncio
 import logging
 import json
+import math
 import httpx
 from typing import List, Dict, Optional
 from pathlib import Path
 
-from ddgs import DDGS
+try:
+    from ddgs import DDGS
+except ModuleNotFoundError:
+    from duckduckgo_search import DDGS
 
 # Low-quality sources to exclude from scraping results
 EXCLUDED_DOMAINS = {
@@ -38,7 +44,13 @@ from config.settings import (
     WIKIPEDIA_API_URL,
     SEED_DIR,
     LANGUAGES,
+    QUALITY_THRESHOLD_MIN,
+    QUALITY_THRESHOLD_ACCEPTABLE,
 )
+from source_reputation import SourceReputationTracker, is_blocked
+from content_quality import ContentQualityScorer
+from academic_sources import search_all_academic
+from content_synthesizer import synthesize
 
 logger = logging.getLogger(__name__)
 
@@ -272,6 +284,7 @@ def load_seeds_for_domain(domain: str) -> List[Dict[str, str]]:
                 "title": s.get("title", ""),
                 "href": s.get("url", ""),
                 "body": s.get("description", ""),
+                "trust_score": s.get("trust", 70),
             })
         logger.info(f"[SEED] Loaded {len(results)} seed URLs for '{domain}'")
         return results
@@ -312,6 +325,16 @@ def multi_engine_search(
     domain: Optional[str] = None,
 ) -> List[Dict[str, str]]:
     errors = []
+
+    # Engine 0: Academic sources (high-quality, domain-aware)
+    try:
+        results = search_all_academic(query, max_results, domain=domain)
+        if results:
+            logger.info(f"[FALLBACK] Academic returned {len(results)} results — using them")
+            return results
+    except Exception as e:
+        errors.append(f"Academic: {e}")
+        logger.warning(f"[FALLBACK] Academic failed: {e}")
 
     # Engine 1: DuckDuckGo
     try:
@@ -358,6 +381,7 @@ class ContentExtractor:
         self.timeout = timeout
         self.headers = {"User-Agent": WIKIPEDIA_USER_AGENT}
         self.client = httpx.Client(timeout=timeout, headers=self.headers)
+        self.reputation_tracker = SourceReputationTracker()
 
     def extract_content(self, url: str) -> Optional[Dict[str, str]]:
         try:
@@ -372,14 +396,7 @@ class ContentExtractor:
             )
             if content:
                 content_dict = json.loads(content)
-                from urllib.parse import urlparse
-                domain = urlparse(url).netloc.lower()
-                high_trust = any(d in domain for d in [
-                    'wikipedia', 'britannica', 'nature.com', 'sciencedirect',
-                    'ieee', 'acm.org', 'arxiv', 'springer', 'pubmed',
-                    'reuters', 'bloomberg', 'ft.com', 'wsj',
-                ])
-                trust_score = 85 if high_trust else 65
+                trust_score = self.reputation_tracker.get_trust_score(url)
                 result = {
                     'title': content_dict.get('title', ''),
                     'content': content_dict.get('text', ''),
@@ -388,7 +405,7 @@ class ContentExtractor:
                     'url': url,
                     'trust_score': trust_score,
                 }
-                logger.info(f"Successfully extracted content from {url}")
+                logger.info(f"Successfully extracted content from {url} (trust={trust_score})")
                 return result
             logger.warning(f"Failed to extract content from {url}")
             return None
@@ -410,8 +427,61 @@ class ContentExtractor:
 
 
 # ──────────────────────────────────────────────
+#  BLOOM FILTER — en memoria, sin consultas a HDD
+# ──────────────────────────────────────────────
+
+class BloomFilter:
+    def __init__(self, capacity: int = 1_000_000, error_rate: float = 0.001):
+        self.capacity = capacity
+        self.error_rate = error_rate
+        self.bit_count = self._optimal_bits(capacity, error_rate)
+        self.hash_count = self._optimal_hashes(self.bit_count, capacity)
+        self.bit_array = bytearray((self.bit_count + 7) // 8)
+        self._inserted = 0
+
+    @staticmethod
+    def _optimal_bits(n: int, p: float) -> int:
+        return int(-n * math.log(p) / (math.log(2) ** 2)) + 1
+
+    @staticmethod
+    def _optimal_hashes(m: int, n: int) -> int:
+        return int(m / n * math.log(2)) + 1
+
+    def _hashes(self, item: str) -> List[int]:
+        h1 = hash(item)
+        h2 = h1 >> 16
+        return [(h1 + i * h2) % self.bit_count for i in range(self.hash_count)]
+
+    def add(self, item: str) -> None:
+        for bit in self._hashes(item):
+            byte_idx = bit >> 3
+            bit_offset = bit & 7
+            self.bit_array[byte_idx] |= (1 << bit_offset)
+        self._inserted += 1
+
+    def __contains__(self, item: str) -> bool:
+        for bit in self._hashes(item):
+            byte_idx = bit >> 3
+            bit_offset = bit & 7
+            if not (self.bit_array[byte_idx] & (1 << bit_offset)):
+                return False
+        return True
+
+    @property
+    def size(self) -> int:
+        return self._inserted
+
+
+# ──────────────────────────────────────────────
 #  MODERN WEB SCRAPER (public API)
 # ──────────────────────────────────────────────
+
+_search_cache: Dict[str, tuple] = {}  # query_key -> (timestamp, results)
+_SEARCH_CACHE_TTL = 300  # 5 min — corto para evitar servir resultados obsoletos
+
+_BATCH_FLUSH_INTERVAL_SECONDS = 30  # flush cada 30s aunque no se llene el buffer
+_BATCH_FLUSH_SIZE = 50  # flush cada 50 packages
+
 
 class ModernWebScraper:
     def __init__(self, timeout: int = 30):
@@ -419,6 +489,12 @@ class ModernWebScraper:
         self.content_extractor = ContentExtractor(timeout)
         self.db_manager = get_db_manager()
         self.search_count = 0
+        self.quality_scorer = ContentQualityScorer()
+        self.reputation_tracker = SourceReputationTracker()
+        self._batch_buffer: List[tuple] = []
+        self._last_batch_flush = time.time()
+        self._url_bloom = BloomFilter(capacity=500_000)
+        self._bloom_enabled = True
 
     async def search_and_extract(
         self,
@@ -427,15 +503,27 @@ class ModernWebScraper:
         domain: Optional[str] = None,
     ) -> List[Dict[str, str]]:
         self.search_count += 1
+        cache_key = f"{query}|{max_results}|{domain}"
+        now = time.time()
+
+        # Check search cache before hitting engines
+        if cache_key in _search_cache:
+            ts, cached = _search_cache[cache_key]
+            if now - ts < _SEARCH_CACHE_TTL:
+                logger.info(f"ModernWebScraper #{self.search_count}: cache HIT for '{query}' ({len(cached)} results)")
+                return cached
+
         logger.info(f"ModernWebScraper #{self.search_count}: '{query}' (domain={domain})")
 
         search_results = await asyncio.to_thread(multi_engine_search, query, max_results, domain)
+
+        # Cache results (even empty — avoids repeated empty searches)
+        _search_cache[cache_key] = (now, search_results)
 
         if not search_results:
             logger.warning(f"No results from any engine for '{query}'")
             return []
 
-        extracted_contents = []
         sem = asyncio.Semaphore(5)
 
         async def process_url(result):
@@ -446,6 +534,14 @@ class ModernWebScraper:
                 try:
                     content = await asyncio.to_thread(self.content_extractor.extract_content, url)
                     if content:
+                        trust = self.reputation_tracker.get_trust_score(url)
+                        content['trust_score'] = trust
+                        qs = self.quality_scorer.score(
+                            content.get('content', ''),
+                            title=content.get('title', ''),
+                        )
+                        content['quality_score'] = qs['composite']
+                        content['quality_details'] = qs
                         self._store_content(content, query, domain=domain or 'general')
                         return content
                 except (RateLimitError, ScraperTimeoutError, WebScraperError) as e:
@@ -458,29 +554,66 @@ class ModernWebScraper:
         results_gathered = await asyncio.gather(*tasks, return_exceptions=True)
         extracted_contents = [c for c in results_gathered if isinstance(c, dict)]
 
+        if extracted_contents:
+            synthesized = synthesize(query, domain or 'general', extracted_contents)
+            logger.info(f"Extracted content from {len(extracted_contents)} URLs -> synthesized to {len(synthesized)} packages")
+            return synthesized
+
         logger.info(f"Extracted content from {len(extracted_contents)} URLs")
         return extracted_contents
+
+    def _flush_batch(self) -> None:
+        if not self._batch_buffer:
+            return
+        try:
+            self.db_manager.execute_many(
+                """INSERT INTO knowledge_packages
+                   (topic, source_url, domain, structured_knowledge, created_at)
+                   VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                self._batch_buffer
+            )
+            logger.info(f"Batch flush: {len(self._batch_buffer)} packages written")
+            self._batch_buffer.clear()
+        except Exception as e:
+            logger.error(f"Batch flush failed ({len(self._batch_buffer)} packages lost): {e}")
 
     def _store_content(self, content: Dict[str, str], query: str, domain: str = 'general') -> None:
         url = content.get('url', '')
         text = content.get('content', '')
         if not text or len(text.strip()) < 200:
+            logger.debug(f"Content too short ({len(text or '')} chars) from {url}")
             return
         lower_text = text.lower()
         garbage = ['cookie', 'sign in', 'javascript is disabled', 'loading',
                     'captcha', 'access denied', 'page not found']
         if any(p in lower_text for p in garbage):
+            logger.debug(f"Garbage content detected from {url}")
             return
-        try:
-            self.db_manager.execute_query(
-                """INSERT INTO knowledge_packages
-                   (topic, source_url, domain, structured_knowledge, created_at)
-                   VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)""",
-                (query, url, domain, text)
-            )
-        except Exception as e:
-            logger.error(f"Failed to store content: {e}")
+        quality_score = content.get('quality_score', 0.0)
+        if quality_score < QUALITY_THRESHOLD_MIN:
+            logger.info(f"Quality score {quality_score:.3f} below min threshold {QUALITY_THRESHOLD_MIN} — skipping {url}")
+            return
+        trust_score = content.get('trust_score', 0)
+        if is_blocked(url):
+            logger.info(f"Blocked domain — skipping {url}")
+            return
+        # Bloom filter: dedup rápido en RAM sin consultar HDD
+        if self._bloom_enabled:
+            if url in self._url_bloom:
+                logger.debug(f"Bloom filter HIT — skipping duplicate URL: {url}")
+                return
+            self._url_bloom.add(url)
+        self._batch_buffer.append((query[:100], url, domain, text[:5000]))
+        now = time.time()
+        if len(self._batch_buffer) >= _BATCH_FLUSH_SIZE or (now - self._last_batch_flush) >= _BATCH_FLUSH_INTERVAL_SECONDS:
+            self._flush_batch()
+            self._last_batch_flush = now
+
+    def force_flush(self) -> None:
+        self._flush_batch()
+        self._last_batch_flush = time.time()
 
     def cleanup(self) -> None:
+        self.force_flush()
         self.content_extractor.cleanup()
-        logger.info("ModernWebScraper cleanup completed")
+        logger.info(f"ModernWebScraper cleanup completed (bloom filter had {self._url_bloom.size} unique URLs)")

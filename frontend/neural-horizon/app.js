@@ -17,6 +17,7 @@ class App {
     this.allSpecialistsData = [];
     this._highlightDomain = '';
     this.apiKey = sessionStorage.getItem('expertia-api-key') || '';
+    this._currentInterval = null;
     this.init();
   }
 
@@ -73,7 +74,20 @@ class App {
     this.refreshInterval = setInterval(async () => {
       if (document.hidden) return;
       await this.refreshActiveTab();
-    }, 10000);
+    }, 5000);
+  }
+
+  updateRefreshInterval(active) {
+    const interval = active ? 5000 : 10000;
+    if (this.refreshInterval) {
+      if (this._currentInterval === interval) return;
+      clearInterval(this.refreshInterval);
+    }
+    this.refreshInterval = setInterval(async () => {
+      if (document.hidden) return;
+      await this.refreshActiveTab();
+    }, interval);
+    this._currentInterval = interval;
   }
 
   async fetchJSON(url, timeoutMs = 60000) {
@@ -280,6 +294,7 @@ class App {
     const progress = totalSpec > 0 ? (doneSpec / totalSpec * 100) : 0;
     const pid = pidInfo.pid;
     const uptime = pidInfo.uptime_seconds || 0;
+    this.updateRefreshInterval(isActive);
 
     const logsList = logs?.logs || [];
 
@@ -300,6 +315,10 @@ class App {
         <div class="header-cell">
           <div class="header-label">Cycle</div>
           <div class="header-value sm">${s.current_cycle || 0}/${s.total_cycles || 0}</div>
+        </div>
+        <div class="header-cell">
+          <div class="header-label">Model (VRAM)</div>
+          <div class="header-value sm" style="color:var(--active);font-weight:600">${s.current_model || '—'}</div>
         </div>
         <div class="header-cell">
           <div class="header-label">Elapsed</div>
@@ -1350,6 +1369,9 @@ class App {
     const r = await this.postJSON(`${this.apiBase}/wikidata/download`, {});
     if (r && r.status === 'started') {
       setTimeout(() => this.renderWikidata(), 500);
+    } else if (r && r.error) {
+      alert('Error: ' + r.error);
+      if (btn) { btn.textContent = '📥 Descargar ahora'; btn.disabled = false; }
     }
   }
 
@@ -1359,6 +1381,9 @@ class App {
     const r = await this.postJSON(`${this.apiBase}/wikidata/feed`, {});
     if (r && r.status === 'started') {
       setTimeout(() => this.renderWikidata(), 500);
+    } else if (r && r.error) {
+      alert('Error: ' + r.error);
+      if (btns[1]) { btns[1].textContent = '🧠 Alimentar ahora'; btns[1].disabled = false; }
     }
   }
 
