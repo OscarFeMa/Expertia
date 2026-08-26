@@ -57,8 +57,19 @@ class DatabaseManager:
         self._connection: Optional[sqlite3.Connection] = None
         self._execute_lock = threading.Lock()
         self._initialized = True
+        self._wal_checkpoint_count = 0
         
         logger.info(f"DatabaseManager initialized with path: {self.db_path}")
+    
+    def _maybe_checkpoint(self):
+        self._wal_checkpoint_count += 1
+        if self._wal_checkpoint_count % 10 == 0:
+            try:
+                cp_result = self._connection.execute("PRAGMA wal_checkpoint(RESTART)").fetchone()
+                if cp_result and cp_result[1] > 0:
+                    logger.debug(f"WAL checkpoint: {cp_result[1]} pages written, WAL={cp_result[2]}")
+            except Exception:
+                pass
     
     def _get_connection(self) -> sqlite3.Connection:
         """
@@ -104,9 +115,9 @@ class DatabaseManager:
             else:
                 conn.execute("PRAGMA journal_mode=WAL;")
                 conn.execute("PRAGMA synchronous=NORMAL;")
-                conn.execute("PRAGMA busy_timeout=2000;")
-                conn.execute("PRAGMA mmap_size=268435456;")
-            conn.execute("PRAGMA cache_size=-64000;")
+                conn.execute("PRAGMA busy_timeout=60000;")
+                conn.execute("PRAGMA mmap_size=1073741824;")
+            conn.execute("PRAGMA cache_size=-1048576;")
             conn.execute("PRAGMA temp_store=MEMORY;")
             conn.execute("PRAGMA wal_autocheckpoint=500;")
             conn.execute("PRAGMA foreign_keys=ON;")
@@ -220,6 +231,7 @@ class DatabaseManager:
                     cursor.executemany(query, params_list)
                     self._get_connection().commit()
                     logger.info(f"Executed {len(params_list)} queries successfully")
+                    self._maybe_checkpoint()
                 except sqlite3.Error as e:
                     logger.error(f"Batch execution failed: {e}")
                     try:
@@ -242,6 +254,7 @@ class DatabaseManager:
                         cursor.execute(query, params)
                     cursor.connection.commit()
                     logger.info(f"Batch committed {len(statements)} statements")
+                    self._maybe_checkpoint()
                 except sqlite3.Error as e:
                     logger.error(f"Batch execution failed: {e}")
                     try:
@@ -249,32 +262,6 @@ class DatabaseManager:
                     except sqlite3.Error:
                         pass
                     raise
-    
-    async def execute_query_async(self, query: str, params: tuple = (), fetch: bool = False):
-        """Execute a SQL query asynchronously using aiosqlite."""
-        import aiosqlite
-        async with aiosqlite.connect(str(self.db_path)) as db:
-            await db.execute("PRAGMA journal_mode=WAL")
-            await db.execute("PRAGMA synchronous=NORMAL")
-            await db.execute("PRAGMA busy_timeout=15000")
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(query, params)
-            if fetch:
-                rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
-            await db.commit()
-            return None
-
-    async def execute_batch_async(self, statements: list[tuple]) -> None:
-        """Execute multiple SQL statements in a single async transaction."""
-        import aiosqlite
-        async with aiosqlite.connect(str(self.db_path)) as db:
-            await db.execute("PRAGMA journal_mode=WAL")
-            await db.execute("PRAGMA synchronous=NORMAL")
-            await db.execute("PRAGMA busy_timeout=15000")
-            for query, params in statements:
-                await db.execute(query, params)
-            await db.commit()
     
     def table_exists(self, table_name: str) -> bool:
         """
@@ -507,6 +494,7 @@ class DatabaseManager:
                     "ALTER TABLE knowledge_packages ADD COLUMN qid TEXT DEFAULT NULL",
                     "ALTER TABLE knowledge_packages ADD COLUMN subdomain_path TEXT DEFAULT NULL",
                     "ALTER TABLE knowledge_packages ADD COLUMN absorbed_at TIMESTAMP DEFAULT NULL",
+                    "ALTER TABLE cycle_history ADD COLUMN failure_type TEXT DEFAULT 'knowledge'",
                 ]:
                     try:
                         cursor.execute(col_sql)

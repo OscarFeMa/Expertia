@@ -134,24 +134,4 @@ class MetricsCollector:
             f"{total_contents} web contents"
         )
 
-    @property
-    def summary_dict(self) -> Dict:
-        """Return metrics as a dictionary for serialization.
-
-        Returns:
-            Dict with all collected metrics
-        """
-        return {
-            "elapsed_seconds": (self.pipeline_end or time.time()) - self.pipeline_start,
-            "phase_a": [
-                {"domain": r.domain, "success": r.success,
-                 "entities_processed": r.entities_processed,
-                 "entities_matched": r.entities_matched}
-                for r in self.phase_a_records
-            ],
-            "phase_b": [
-                {"domain": r.domain, "success": r.success,
-                 "contents_count": r.contents_count}
-                for r in self.phase_b_records
-            ],
-        }
+    

@@ -1,10 +1,12 @@
 """
-Watchdog v2 for nurture pipeline.
-- Kills + restarts nurture if stuck for 3h on same specialist
-- 10 strikes per specialist → marks BLOCKED, skips on restart
-- All fed (non-blocked >= Legend) → shutdown
-- All blocked → shutdown
-- Hard 96h timeout → shutdown
+Watchdog v3 — anti-congelación genérico para Expertia.
+- Monitorea el pipeline activo (web/nurture/feed/full) sin hardcodear especialistas.
+- Detección de congelación: si updated_at de pipeline_status no avanza Y no hay
+  filas nuevas en activity_log durante STUCK_MINUTES → kill + relanzamiento
+  con la MISMA config guardada en pipeline_state.json por tools/launcher.py.
+- Strike-limit por especialista: tras N congelaciones lo marca BLOCKED en DB.
+- Crash-loop guard: más de 5 relanzamientos en 30 min → abandona.
+- Hard timeout opcional (--max-hours, 0 = sin límite).
 """
 import argparse
 import json
@@ -29,20 +31,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger("watchdog")
 
+PYTHON = os.environ.get(
+    "EXPERTIA_PYTHON",
+    r"C:\Users\usuario\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe",
+)
+DB_PATH = Path(os.environ.get("EXPERTIA_DB", r"E:\expertia-data\incubator.db"))
 STATE_FILE = REPO_ROOT / "tools" / "watchdog_state.json"
 PIPELINE_STATE_FILE = REPO_ROOT / "pipeline_state.json"
-DB_PATH = REPO_ROOT / "storage" / "incubator.db"
-UV_PYTHON = os.environ.get("WATCHDOG_PYTHON_PATH") or shutil.which("python") or "python"
 
-STRIKE_LIMIT = 10       # max stuck detections per specialist before BLOCKED
-STUCK_HOURS = 3         # hours without new cycle to consider stuck
-HARD_TIMEOUT_HOURS = 96  # max total runtime
-CHECK_INTERVAL = 60      # seconds between checks
-
-# ── Nurture target specialist IDs ──────────────────────────────────────
-NURTURE_IDS = {5026: "Linguistics", 5027: "Psychology",
-               5028: "EnvironmentalScience", 5029: "Sociology"}
-ID_BY_DOMAIN = {v: k for k, v in NURTURE_IDS.items()}
+STRIKE_LIMIT = 5        # congelaciones por especialista antes de BLOCKED
+STUCK_MINUTES = 20      # sin heartbeat ni actividad -> congelado
+CHECK_INTERVAL = 60     # segundos entre chequeos
+HARD_TIMEOUT_HOURS = 0  # 0 = sin límite
+RESTART_BURST = 5       # máx relanzamientos
+RESTART_WINDOW = 1800   # en esta ventana (30 min)
 
 
 def _load_state() -> dict:
@@ -53,11 +55,12 @@ def _load_state() -> dict:
             pass
     return {
         "start_epoch": time.time(),
-        "stuck_counts": {d: 0 for d in NURTURE_IDS.values()},
+        "strike_counts": {},
         "blocked": [],
-        "last_cycle_id": {},
+        "last_activity_id": None,
+        "last_heartbeat": None,
         "stuck_since": None,
-        "current_specialist": None,
+        "current_config": None,
     }
 
 
@@ -68,22 +71,13 @@ def _save_state(state: dict):
         logger.warning(f"Failed to save state: {e}")
 
 
-def _find_pwsh() -> str:
-    candidates = [
-        r"C:\Program Files\PowerShell\7\pwsh.exe",
-        r"C:\Program Files\PowerShell\6\pwsh.exe",
-    ]
-    for p in candidates:
-        if Path(p).exists():
-            return p
+def _load_pipeline_config() -> dict:
+    """Lee la config original escrita por tools/launcher.py."""
     try:
-        r = subprocess.run(["where", "pwsh"], capture_output=True, text=True, timeout=3,
-                           creationflags=subprocess.CREATE_NO_WINDOW)
-        if r.returncode == 0:
-            return r.stdout.strip().splitlines()[0].strip()
+        data = json.loads(PIPELINE_STATE_FILE.read_text())
+        return data
     except Exception:
-        pass
-    return "pwsh"
+        return {}
 
 
 def _is_pid_alive(pid: int) -> bool:
@@ -92,259 +86,225 @@ def _is_pid_alive(pid: int) -> bool:
     try:
         r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"],
                            capture_output=True, text=True, timeout=5,
-                           creationflags=subprocess.CREATE_NO_WINDOW)
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         return bool(re.search(rf"\b{re.escape(str(pid))}\b", r.stdout))
     except Exception:
         return False
 
 
-def _get_nurture_pid() -> int | None:
+def _get_pipeline_pid() -> int | None:
+    cfg = _load_pipeline_config()
+    pid = cfg.get("pid")
+    if pid and _is_pid_alive(pid):
+        return int(pid)
     try:
-        if PIPELINE_STATE_FILE.exists():
-            data = json.loads(PIPELINE_STATE_FILE.read_text())
-            pid = data.get("pid")
-            if pid and _is_pid_alive(pid):
-                return pid
-    except Exception:
-        pass
-    try:
-        pwsh = _find_pwsh()
-        r = subprocess.run([pwsh, "-NoProfile", "-Command",
-            "Get-Process python -ErrorAction SilentlyContinue | "
-            "Where-Object { $_.CommandLine -match 'orchestrator' } | "
-            "Select-Object -ExpandProperty Id"],
-            capture_output=True, text=True, timeout=5,
-            creationflags=subprocess.CREATE_NO_WINDOW)
-        for line in r.stdout.strip().splitlines():
-            line = line.strip()
-            if line.isdigit():
-                return int(line)
+        r = subprocess.run(["tasklist", "/FO", "CSV", "/FI", "IMAGENAME eq python.exe"],
+                           capture_output=True, text=True, timeout=10,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        import csv, io
+        for row in csv.reader(io.StringIO(r.stdout)):
+            if len(row) >= 2 and row[0].strip('"') == "python.exe":
+                pid_candidate = int(row[1].strip('"'))
+                if pid_candidate and _is_pid_alive(pid_candidate):
+                    try:
+                        r2 = subprocess.run(
+                            ["wmic", "process", "where", f"ProcessId={pid_candidate}",
+                             "get", "CommandLine", "/value"],
+                            capture_output=True, text=True, timeout=8,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                        if "orchestrator.py" in r2.stdout and "--phase" in r2.stdout:
+                            return pid_candidate
+                    except Exception:
+                        continue
     except Exception:
         pass
     return None
 
 
-def _get_pipeline_info() -> tuple:
-    """Returns (current_specialist, current_cycle, updated_at_str) or None tuple."""
+def _get_pipeline_hb() -> tuple:
+    """Returns (updated_at_str, current_specialist) from pipeline_status (fila id=1)."""
     try:
-        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=2.0)
-        row = conn.execute(
-            "SELECT current_specialist, current_cycle, updated_at "
-            "FROM pipeline_status ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        conn.close()
-        if row:
-            return row[0], row[1], row[2]
+        with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=5) as conn:
+            row = conn.execute(
+                "SELECT updated_at, current_specialist FROM pipeline_status WHERE id=1"
+            ).fetchone()
+            return row if row else (None, None)
     except Exception:
-        pass
-    return None, None, None
+        return None, None
 
 
-def _get_max_cycle_id_for_specialist(domain: str) -> int | None:
-    sid = ID_BY_DOMAIN.get(domain)
-    if not sid:
-        return None
+def _get_max_activity_id() -> int | None:
     try:
-        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=2.0)
-        row = conn.execute(
-            "SELECT MAX(id) FROM cycle_history WHERE specialist_id = ?", (sid,)
-        ).fetchone()
-        conn.close()
-        return row[0] if row and row[0] else None
+        with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=5) as conn:
+            row = conn.execute("SELECT MAX(id) FROM activity_log").fetchone()
+            return row[0] if row and row[0] else None
     except Exception:
         return None
 
 
-def _get_non_blocked_tiers(state: dict) -> dict:
-    """Returns {domain: tier} for all non-blocked specialists."""
-    try:
-        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=2.0)
-        blocked = set(state.get("blocked", []))
-        rows = conn.execute(
-            "SELECT domain, tier FROM specialist_registry"
-        ).fetchall()
-        conn.close()
-        return {r[0]: r[1] for r in rows if r[0] not in blocked}
-    except Exception:
-        return {}
+def _relaunch_pipeline(state: dict) -> bool:
+    """Relanza el pipeline con la config original de pipeline_state.json."""
+    cfg = _load_pipeline_config() or state.get("current_config") or {}
+    mode = cfg.get("mode") or "web"
+    cmd = [str(PYTHON), "orchestrator.py", "--phase", mode]
+    if cfg.get("duration_hours"):
+        cmd += ["--duration", str(cfg["duration_hours"])]
+    if cfg.get("specialist") and cfg["specialist"] not in ("", "all"):
+        cmd += ["--specialist", cfg["specialist"]]
+    if cfg.get("model") and cfg["model"] not in ("", "all"):
+        cmd += ["--model", cfg["model"]]
+    if cfg.get("skip"):
+        cmd += ["--skip", cfg["skip"]]
+    if cfg.get("max_cycles"):
+        cmd += ["--max-cycles", str(cfg["max_cycles"])]
+    if cfg.get("max_duration"):
+        cmd += ["--max-duration", str(cfg["max_duration"])]
+    blocked = state.get("blocked", [])
+    if blocked and not cfg.get("skip"):
+        cmd += ["--skip", ",".join(blocked)]
 
-
-def _start_nurture(skip_list: list[str] = None) -> bool:
-    skip_list = skip_list or []
-    cmd = [str(UV_PYTHON), "orchestrator.py", "--phase", "nurture", "--duration", "99999"]
-    if skip_list:
-        cmd += ["--skip", ",".join(skip_list)]
     try:
-        log_path = LOG_DIR / f"orchestrator_watchdog_{int(time.time())}.log"
+        log_path = LOG_DIR / f"pipeline_watchdog_{int(time.time())}.log"
         log_file = open(log_path, "w", encoding="utf-8")
         proc = subprocess.Popen(cmd, stdout=log_file, stderr=log_file,
-                                 cwd=str(REPO_ROOT),
-                                 creationflags=subprocess.CREATE_NO_WINDOW)
-        logger.info(f"Nurture started PID={proc.pid}, skip={skip_list}, log={log_path.name}")
+                                cwd=str(REPO_ROOT),
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        cfg["pid"] = proc.pid
+        cfg["watchdog"] = True
+        PIPELINE_STATE_FILE.write_text(json.dumps(cfg, indent=2))
+        logger.info(f"Pipeline {mode} relanzado PID={proc.pid} (cmd={' '.join(cmd)})")
         return True
     except Exception as e:
-        logger.error(f"Failed to start nurture: {e}")
+        logger.error(f"Fallo al relanzar pipeline: {e}")
         return False
 
 
 def _kill_process(pid: int):
     try:
         subprocess.run(["taskkill", "/F", "/PID", str(pid)],
-                       capture_output=True, timeout=5,
-                       creationflags=subprocess.CREATE_NO_WINDOW)
+                       capture_output=True, timeout=10,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         logger.info(f"Killed PID {pid}")
     except Exception as e:
         logger.warning(f"Failed to kill PID {pid}: {e}")
 
 
 def _mark_blocked(domain: str):
-    sid = ID_BY_DOMAIN.get(domain)
-    if not sid:
-        return
     try:
-        conn = sqlite3.connect(str(DB_PATH), timeout=5.0)
-        conn.execute("UPDATE specialist_registry SET status = 'BLOCKED' WHERE id = ?", (sid,))
-        conn.commit()
-        conn.close()
-        logger.warning(f"Marked {domain} as BLOCKED in DB")
+        with sqlite3.connect(str(DB_PATH), timeout=10) as conn:
+            conn.execute(
+                "UPDATE specialist_registry SET status='BLOCKED', updated_at=CURRENT_TIMESTAMP "
+                "WHERE domain=?", (domain,))
+        logger.warning(f"Specialist {domain} marcado BLOCKED en DB")
     except Exception as e:
-        logger.error(f"Failed to mark BLOCKED: {e}")
+        logger.error(f"Fallo al marcar BLOCKED {domain}: {e}")
 
 
-def _shutdown_pc(reason: str):
-    logger.warning(f"SHUTDOWN DISABLED: {reason}")
-    logger.info("Shutdown skipped — watchdog solo monitorea, no apaga")
+def _shutdown(reason: str):
+    logger.warning(f"WATCHDOG APAGADO: {reason}")
+    logger.info("Watchdog finaliza — no apaga el PC (solo monitorea)")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Watchdog v2")
-    parser.add_argument("--max-hours", type=float, default=HARD_TIMEOUT_HOURS)
+    parser = argparse.ArgumentParser(description="Watchdog v3 anti-congelación")
     parser.add_argument("--check-interval", type=int, default=CHECK_INTERVAL)
-    parser.add_argument("--stuck-hours", type=float, default=STUCK_HOURS)
+    parser.add_argument("--stuck-minutes", type=int, default=STUCK_MINUTES)
     parser.add_argument("--strike-limit", type=int, default=STRIKE_LIMIT)
+    parser.add_argument("--max-hours", type=float, default=HARD_TIMEOUT_HOURS)
     args = parser.parse_args()
 
     state = _load_state()
-    initial_pid = _get_nurture_pid()
-
     logger.info("=" * 60)
-    logger.info("WATCHDOG V2 STARTED")
-    logger.info(f"Check: {args.check_interval}s | Stuck: {args.stuck_hours}h | Strike limit: {args.strike_limit}")
-    logger.info(f"Hard timeout: {args.max_hours}h")
-    logger.info(f"Nurture PID: {initial_pid}")
-    logger.info(f"Blocked so far: {state.get('blocked', [])}")
-    logger.info(f"Strikes: {state.get('stuck_counts', {})}")
+    logger.info("WATCHDOG V3 STARTED (anti-congelación genérico)")
+    logger.info(f"Check: {args.check_interval}s | Stuck: {args.stuck_minutes}min | Strikes: {args.strike_limit}")
+    logger.info(f"Hard timeout: {args.max_hours}h" if args.max_hours else "Sin hard timeout")
+    logger.info(f"DB: {DB_PATH}")
+    logger.info(f"PID inicial: {_get_pipeline_pid()}")
     logger.info("=" * 60)
 
     start_epoch = state.get("start_epoch", time.time())
-    deadline = start_epoch + args.max_hours * 3600
+    deadline = start_epoch + args.max_hours * 3600 if args.max_hours else None
+    restart_attempts: list[float] = []
     cycle_count = 0
-    restart_rate: list[float] = []
 
     while True:
         now = time.time()
         cycle_count += 1
-
-        # ── Heartbeat ──
         if cycle_count % 10 == 0:
-            logger.info(f"Heartbeat cycle={cycle_count} blocked={state.get('blocked',[])} strikes={state.get('stuck_counts',{})}")
+            logger.info(f"Heartbeat cycle={cycle_count} blocked={state.get('blocked', [])}")
 
-        # ── Hard timeout ──
-        if now >= deadline:
-            _shutdown_pc(f"Tiempo maximo de {args.max_hours}h alcanzado")
+        if deadline and now >= deadline:
+            _shutdown(f"Hard timeout de {args.max_hours}h alcanzado")
             break
 
-        # ── Check if ALL blocked ──
-        blocked = set(state.get("blocked", []))
-        all_targets = set(NURTURE_IDS.values())
-        if all_targets.issubset(blocked):
-            _shutdown_pc("Todos los especialistas estan bloqueados — nada que hacer")
-            break
+        pid = _get_pipeline_pid()
 
-        # ── Check all non-blocked reached Legend ──
-        remaining = _get_non_blocked_tiers(state)
-        non_blocked_done = all(tier >= 4 for tier in remaining.values()) if remaining else False
-        if non_blocked_done and remaining:
-            done_list = [d for d, t in remaining.items() if t >= 4]
-            logger.info(f"All non-blocked done: {done_list}")
-            _shutdown_pc("Todos los especialistas no bloqueados alcanzaron Legend")
-            break
-
-        # ── Get pipeline status ──
-        specialist, pipeline_cycle, updated_at = _get_pipeline_info()
-        if not specialist:
+        # ── Crash / proceso muerto: relanzar con la config original ──
+        if not pid:
+            logger.warning("Pipeline NOT RUNNING. Relanzando...")
+            restart_attempts = [t for t in restart_attempts if now - t < RESTART_WINDOW]
+            if len(restart_attempts) >= RESTART_BURST:
+                logger.error(f"Crash loop ({RESTART_BURST} restarts en {RESTART_WINDOW}s). Abandonando.")
+                _shutdown("Crash loop detectado")
+                break
+            restart_attempts.append(now)
+            if _relaunch_pipeline(state):
+                time.sleep(10)
+            else:
+                logger.error("Relanzamiento falló — reintento en 60s")
             time.sleep(args.check_interval)
             continue
 
-        # ── Check if specialist changed ──
-        if specialist != state.get("current_specialist"):
-            logger.info(f"Specialist changed: {state.get('current_specialist')} -> {specialist}")
-            state["current_specialist"] = specialist
+        # ── Congelación: heartbeat sin avanzar + sin actividad nueva ──
+        updated_at, specialist = _get_pipeline_hb()
+        max_activity = _get_max_activity_id()
+        hb_key = (updated_at or "") + f":{specialist or ''}:{max_activity or ''}"
+
+        if hb_key != state.get("last_heartbeat"):
+            state["last_heartbeat"] = hb_key
             state["stuck_since"] = None
             _save_state(state)
+            time.sleep(args.check_interval)
+            continue
 
-        # ── Check for new cycle ──
-        if specialist in ID_BY_DOMAIN:
-            max_id = _get_max_cycle_id_for_specialist(specialist)
-            prev_id = state.get("last_cycle_id", {}).get(specialist)
-            if max_id and max_id != prev_id:
-                logger.info(f"New cycle #{max_id} for {specialist} (was {prev_id})")
-                state.setdefault("last_cycle_id", {})[specialist] = max_id
+        # heartbeat sin cambios desde el último chequeo
+        if state.get("stuck_since") is None:
+            state["stuck_since"] = now
+            _save_state(state)
+        else:
+            stuck = now - state["stuck_since"]
+            if stuck >= args.stuck_minutes * 60:
+                domain = specialist or "desconocido"
+                strikes = state.setdefault("strike_counts", {}).get(domain, 0) + 1
+                state["strike_counts"][domain] = strikes
+                logger.warning(
+                    f"CONGELADO: {domain} sin heartbeat/actividad {stuck/60:.0f}min "
+                    f"(updated_at={updated_at}, activity_id={max_activity}) — Strike {strikes}/{args.strike_limit}")
+
+                if pid:
+                    _kill_process(pid)
+                    time.sleep(3)
+
+                if strikes >= args.strike_limit and domain != "desconocido":
+                    logger.warning(f">>> {domain} BLOQUEADO tras {strikes} congelaciones <<<")
+                    state.setdefault("blocked", [])
+                    if domain not in state["blocked"]:
+                        state["blocked"].append(domain)
+                    _mark_blocked(domain)
+                    state["strike_counts"][domain] = 0
+
                 state["stuck_since"] = None
                 _save_state(state)
 
-        # ── Stuck detection ──
-        if specialist in ID_BY_DOMAIN:
-            if state.get("stuck_since") is None:
-                state["stuck_since"] = now
-                _save_state(state)
-            else:
-                stuck_duration = now - state["stuck_since"]
-                if stuck_duration > args.stuck_hours * 3600:
-                    strikes = state.setdefault("stuck_counts", {}).get(specialist, 0) + 1
-                    state["stuck_counts"][specialist] = strikes
-                    logger.warning(f"STUCK: {specialist} ({stuck_duration/3600:.1f}h) Strike {strikes}/{args.strike_limit}")
-
-                    # Kill nurture
-                    nurture_pid = _get_nurture_pid()
-                    if nurture_pid:
-                        _kill_process(nurture_pid)
-                        time.sleep(3)
-
-                    # Check if strike limit reached
-                    if strikes >= args.strike_limit:
-                        logger.warning(f">>> {specialist} BLOQUEADO tras {strikes} strikes <<<")
-                        state.setdefault("blocked", [])
-                        if specialist not in state["blocked"]:
-                            state["blocked"].append(specialist)
-                        _mark_blocked(specialist)
-                        # Reset strike counter for this specialist
-                        state["stuck_counts"][specialist] = 0
-
-                    # Restart nurture with current skip list
-                    current_skip = state.get("blocked", [])
-                    _start_nurture(current_skip if current_skip else None)
-
-                    # Reset stuck timer
-                    state["stuck_since"] = None
-                    _save_state(state)
-
-                    # Brief pause after restart
+                restart_attempts = [t for t in restart_attempts if now - t < RESTART_WINDOW]
+                if len(restart_attempts) >= RESTART_BURST:
+                    logger.error("Crash loop tras congelación. Abandonando.")
+                    _shutdown("Crash loop detectado")
+                    break
+                restart_attempts.append(now)
+                if _relaunch_pipeline(state):
                     time.sleep(10)
-
-        # ── Process alive check ──
-        pid = _get_nurture_pid()
-        if not pid:
-            logger.warning("Nurture not running. Launching...")
-            restart_rate = [t for t in restart_rate if now - t < 1800]
-            if len(restart_rate) >= 5:
-                logger.error("Crash loop (5 restarts in 30min). Shutting down.")
-                _shutdown_pc("Crash loop detectado")
-                break
-            restart_rate.append(now)
-            current_skip = state.get("blocked", [])
-            _start_nurture(current_skip if current_skip else None)
-            time.sleep(5)
+                time.sleep(5)
 
         time.sleep(args.check_interval)
 

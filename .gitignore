@@ -133,3 +133,13 @@ tools/watchdog_state.json
 
 # Windows shortcuts
 *.lnk
+
+# Expertia - no subir a GitHub (documentado, no necesario)
+*.bak
+backups/
+archive/stray_empty_file
+.opencode/
+pipeline_state.json.stale
+frontend/assets/
+launch_all.cmd
+launcher.cmd

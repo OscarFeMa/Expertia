@@ -16,7 +16,6 @@ import subprocess
 import argparse
 import math
 import sqlite3
-import requests
 import threading
 from pathlib import Path
 from collections import defaultdict
@@ -28,7 +27,10 @@ from dissect_wikidata_mp import ParallelWikidataExtractor
 from tools.update_wikidata import fetch_entities_batch, build_structured_knowledge
 
 LLM_QUERY_TIMEOUT = 180
-PHASE_B_PER_SPECIALIST_TIMEOUT = 3600  # 60 min max per specialist per cycle
+PHASE_B_PER_SPECIALIST_TIMEOUT = 7200  # 120 min max per specialist per cycle
+MAX_PHASE_B_CONCURRENCY = 3  # máx. especialistas fase B simultáneos (1 GPU/6GB)
+# Concurrencia reducida para modelos pesados que saturan el GPU (phi4-mini:4k)
+MODEL_PHASE_B_CONCURRENCY = {'phi4-mini:4k': 2}
 MAX_PHASE_B_CYCLES = 100
 VRAM_WARN_THRESHOLD_MB = 2048
 _shutdown_event = threading.Event()
@@ -59,13 +61,13 @@ FAILURE_PENALTIES = {
 TIER_CRITERIA = {
     TIER_BRONZE: {"ema": 0.92, "quality": 0.60, "fail_rate": 0.15, "packages": 200},
     TIER_SILVER: {"ema": 0.95, "quality": 0.70, "fail_rate": 0.08, "packages": 500},
-    TIER_GOLD: {"ema": 0.97, "quality": 0.78, "fail_rate": 0.03, "packages": 1500},
+    TIER_GOLD: {"ema": 0.97, "quality": 0.75, "fail_rate": 0.05, "packages": 1500},
 }
 
-LEGEND_EMA_MIN = 0.999
-LEGEND_CYCLES_CLEAN = 50
+LEGEND_EMA_MIN = 0.995
+LEGEND_CYCLES_CLEAN = 25
 
-NURTURE_CYCLE_TIMEOUT = 1800  # 30 min per specialist cycle
+NURTURE_CYCLE_TIMEOUT = 7200  # 2 hours per specialist cycle
 NURTURE_MAX_CYCLES_PER_TARGET = 30  # max cycles before forcing target switch
 
 # ── Nurture Priority Scoring Weights ─────────────────────────────────────────
@@ -255,8 +257,6 @@ from llm_manager import LLMRunner
 from web_scraper import ModernWebScraper, WebScraperError, RateLimitError
 from metrics import MetricsCollector
 from knowledge_ingestor import KnowledgeIngestor
-from content_quality import ContentQualityScorer
-from source_reputation import SourceReputationTracker
 
 from config.settings import (
     LOGS_DIR,
@@ -264,18 +264,10 @@ from config.settings import (
     WIKIDATA_DUMP_PATH,
     WIKIDATA_OUTPUT_DIR as TARGET_OUTPUT_DIR,
     WIKIDATA_EXTRACTION_TIMEOUT_HOURS,
-    SUBSPECIALIST_THRESHOLD,
-    MAX_SUBSPECIALISTS,
-    SUBSPECIALIST_CYCLE_INTERVAL,
-    MAX_CHILDREN_PER_PARENT,
     MAX_CASCADE_ENTITIES,
-    BLOCKLIST_LABELS,
-    BLOCKLIST_LABEL_PREFIXES,
-    WIKIDATA_ENTITY_API,
-    WIKIDATA_SPARQL_ENDPOINT,
-    WIKIDATA_API_USER_AGENT,
     WIKIDATA_LABEL_BATCH_SIZE,
     LANGUAGES,
+    LLM_RETRY_MAX_ATTEMPTS,
 )
 from config.log_setup import setup_logging
 
@@ -286,22 +278,22 @@ logger = logging.getLogger(__name__)
 SPECIALIST_REGISTRY = [
     {"domain": "SoftwareEngineering", "model": "qwen2.5-coder:3b", "root": "Q80993", "props": ["P31", "P279", "P306", "P400"]},
     {"domain": "Mathematics", "model": "qwen2.5-coder:3b", "root": "Q395", "props": ["P31", "P279", "P2534", "P192"]},
-    {"domain": "Medicine", "model": "phi4-mini:3.8b", "root": "Q11190", "props": ["P31", "P279", "P923", "P780", "P699"]},
-    {"domain": "LegalSystem", "model": "llama3.2:3b", "root": "Q7748", "props": ["P31", "P279", "P1684", "P427"]},
-    {"domain": "PhilosophyHistory", "model": "phi4-mini:3.8b", "root": "Q5891", "props": ["P31", "P279", "P61"]},
-    {"domain": "FinanceEconomics", "model": "phi4-mini:3.8b", "root": "Q8134", "props": ["P31", "P279", "P2283", "P1441"]},
-    {"domain": "Physics", "model": "phi4-mini:3.8b", "root": "Q413", "props": ["P31", "P279", "P2067", "P2541"]},
+    {"domain": "Medicine", "model": "phi4-mini:4k", "root": "Q11190", "props": ["P31", "P279", "P923", "P780", "P699"]},
+    {"domain": "LegalSystem", "model": "gemma3:4b", "root": "Q7748", "props": ["P31", "P279", "P1684", "P427"]},
+    {"domain": "PhilosophyHistory", "model": "phi4-mini:4k", "root": "Q5891", "props": ["P31", "P279", "P61"]},
+    {"domain": "FinanceEconomics", "model": "phi4-mini:4k", "root": "Q8134", "props": ["P31", "P279", "P2283", "P1441"]},
+    {"domain": "Physics", "model": "phi4-mini:4k", "root": "Q413", "props": ["P31", "P279", "P2067", "P2541"]},
     {"domain": "Cybersecurity", "model": "qwen2.5-coder:3b", "root": "Q3510521", "props": ["P31", "P279", "P2824"]},
-    {"domain": "Geopolitics", "model": "llama3.2:3b", "root": "Q159385", "props": ["P31", "P279", "P30"]},
+    {"domain": "Geopolitics", "model": "gemma3:4b", "root": "Q159385", "props": ["P31", "P279", "P30"]},
     {"domain": "DataScience", "model": "qwen2.5-coder:3b", "root": "Q2374463", "props": ["P31", "P279", "P2078"]},
-    {"domain": "Chemistry", "model": "phi4-mini:3.8b", "root": "Q2329", "props": ["P31", "P279", "P662", "P2067"]},
-    {"domain": "ArtHistory", "model": "phi4-mini:3.8b", "root": "Q50637", "props": ["P31", "P279", "P170", "P136"]},
+    {"domain": "Chemistry", "model": "phi4-mini:4k", "root": "Q2329", "props": ["P31", "P279", "P662", "P2067"]},
+    {"domain": "ArtHistory", "model": "phi4-mini:4k", "root": "Q50637", "props": ["P31", "P279", "P170", "P136"]},
     {"domain": "Electronics", "model": "qwen2.5-coder:3b", "root": "Q11650", "props": ["P31", "P279", "P306", "P400"]},
-    {"domain": "Astronomy", "model": "phi4-mini:3.8b", "root": "Q333", "props": ["P31", "P279", "P2067"]},
-    {"domain": "Linguistics", "model": "phi4-mini:3.8b", "root": "Q81798", "props": ["P31", "P279", "P2826", "P1990"]},
-    {"domain": "Psychology", "model": "phi4-mini:3.8b", "root": "Q9418", "props": ["P31", "P279", "P921", "P659"]},
-    {"domain": "EnvironmentalScience", "model": "phi4-mini:3.8b", "root": "Q188069", "props": ["P31", "P279", "P361", "P527"]},
-    {"domain": "Sociology", "model": "llama3.2:3b", "root": "Q21201", "props": ["P31", "P279", "P2826", "P101"]}
+    {"domain": "Astronomy", "model": "phi4-mini:4k", "root": "Q333", "props": ["P31", "P279", "P2067"]},
+    {"domain": "Linguistics", "model": "phi4-mini:4k", "root": "Q81798", "props": ["P31", "P279", "P2826", "P1990"]},
+    {"domain": "Psychology", "model": "phi4-mini:4k", "root": "Q9418", "props": ["P31", "P279", "P921", "P659"]},
+    {"domain": "EnvironmentalScience", "model": "phi4-mini:4k", "root": "Q188069", "props": ["P31", "P279", "P361", "P527"]},
+    {"domain": "Sociology", "model": "gemma3:4b", "root": "Q21201", "props": ["P31", "P279", "P2826", "P101"]}
 ]
 
 # Derive WIKIDATA_SCHEMAS from single source of truth
@@ -404,11 +396,13 @@ SUPER_EXPERTS = {
 }
 
 
-def validate_paths() -> bool:
+def validate_paths(require_dump: bool = True) -> bool:
     all_valid = True
-    if not WIKIDATA_DUMP_PATH.exists():
+    if require_dump and not WIKIDATA_DUMP_PATH.exists():
         logger.critical(f"Wikidata dump not found: {WIKIDATA_DUMP_PATH}")
         all_valid = False
+    elif not WIKIDATA_DUMP_PATH.exists():
+        logger.warning(f"Wikidata dump not found (no requerido para esta fase): {WIKIDATA_DUMP_PATH}")
     else:
         logger.info(f"Wikidata dump found: {WIKIDATA_DUMP_PATH}")
     try:
@@ -610,12 +604,23 @@ class PipelineController:
                                  cascade_max=0, cascade_checkpoint=0):
         now = time.time()
         # Throttle: max once per 4 seconds to reduce synchronous DB writes.
-        # INIT, ERROR, COMPLETED always go through without advancing the timer
-        # so the *next* real status update (ACTIVE) isn't blocked.
-        if status not in ('INIT', 'ERROR', 'COMPLETED'):
-            if now - self._last_status_update < 4.0:
-                return
-            self._last_status_update = now
+        # INIT, ERROR, COMPLETED, ACTIVE always go through without advancing the timer
+        # so the *next* real status update isn't blocked.
+        # BUT elapsed_seconds and updated_at should ALWAYS be updated for ACTIVE.
+        should_throttle = status not in ('INIT', 'ERROR', 'COMPLETED', 'ACTIVE')
+        if should_throttle and now - self._last_status_update < 4.0:
+            # Still update elapsed_seconds and updated_at even when throttled
+            try:
+                elapsed = now - self._start_time if self._start_time else 0
+                self.db_manager.execute_query(
+                    """UPDATE pipeline_status SET
+                       elapsed_seconds=?, updated_at=CURRENT_TIMESTAMP WHERE id=1""",
+                    (elapsed,)
+                )
+            except Exception:
+                pass
+            return
+        self._last_status_update = now
         try:
             self.db_manager.execute_query(
                 "INSERT INTO pipeline_status (id, status, start_epoch) VALUES (1, ?, ?) "
@@ -648,50 +653,34 @@ class PipelineController:
             packages = row[0].get('packages_absorbed', 0) or 0
             wikidata_total = row[0].get('wikidata_total_entities', 0) or 0
 
-            # Knowledge coverage: % of available Wikidata entities consumed
-            if wikidata_total > 0:
-                coverage = min(packages / wikidata_total, 1.0)
-                effective_ema = ema * coverage
-            else:
-                coverage = 1.0  # sin datos de wikidata, no hay restriccion
-                effective_ema = ema
-            ema = effective_ema  # usar EMA efectivo para evaluar tiers
+            # Usar EMA raw para evaluar tiers (sin penalización de coverage)
+            # Knowledge coverage solo para métricas informativas, no para penaliza EMA
 
-            # Rolling window: use last 25 cycles for avg_quality to reflect recent improvements faster
+# Rolling window: use last 50 cycles for fail_rate and avg_quality to reflect recent improvements faster
+            # Only count knowledge failures (success=0 AND failure_type='knowledge') — system failures excluded
             ch = self.db_manager.execute_query(
                 """SELECT COUNT(*) as total,
-                          COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END), 0) as fails,
+                          COALESCE(SUM(CASE WHEN success=0 AND failure_type='knowledge' THEN 1 ELSE 0 END), 0) as fails,
                           COALESCE(AVG(CASE WHEN success=1 THEN quality ELSE NULL END), 0) as avg_q
-                   FROM (SELECT * FROM cycle_history WHERE specialist_id = ? ORDER BY id DESC LIMIT 25) recent""",
+                       FROM (SELECT * FROM cycle_history WHERE specialist_id = ? ORDER BY id DESC LIMIT 50) recent""",
                 (specialist_id,), fetch=True
             )
-            total_cycles_all = self.db_manager.execute_query(
-                "SELECT COUNT(*) as cnt FROM cycle_history WHERE specialist_id = ?",
-                (specialist_id,), fetch=True
-            )
-            all_count = total_cycles_all[0]['cnt'] if total_cycles_all else 0
 
             if ch and ch[0]['total'] > 0:
-                total_cycles = all_count
+                total_cycles = ch[0]['total']
                 failures = ch[0]['fails']
                 avg_quality = ch[0]['avg_q'] or 0.0
             else:
-                ema_count = self.db_manager.execute_query(
-                    "SELECT COUNT(*) as cnt FROM ema_history WHERE specialist_id = ?",
-                    (specialist_id,), fetch=True
-                )
-                total_cycles = ema_count[0]['cnt'] if ema_count else max(int(wf + ws), 1)
-                failures = int(wf)
-                successes = max(total_cycles - failures, 1)
-                avg_quality = ws / successes
+                # No recent cycles: assume clean slate
+                total_cycles = 1
+                failures = 0
+                avg_quality = 0.5
 
             fail_rate = failures / max(1, total_cycles)
 
             if current_tier == TIER_LEGEND:
-                if ema >= LEGEND_EMA_MIN:
-                    clean = self._clean_cycle_count(specialist_id)
-                    if clean >= LEGEND_CYCLES_CLEAN:
-                        return TIER_LEGEND
+                if self._window_failures(specialist_id, LEGEND_CYCLES_CLEAN) < 2:
+                    return TIER_LEGEND
                 return TIER_GOLD
 
             # Minimum real Phase B cycles required for tier promotion
@@ -728,20 +717,33 @@ class PipelineController:
     def _clean_cycle_count(self, specialist_id: int) -> int:
         try:
             rows = self.db_manager.execute_query(
-                "SELECT success FROM cycle_history WHERE specialist_id = ? ORDER BY id DESC LIMIT ?",
+                "SELECT success, failure_type FROM cycle_history WHERE specialist_id = ? ORDER BY id DESC LIMIT ?",
                 (specialist_id, LEGEND_CYCLES_CLEAN), fetch=True
             )
             if not rows:
                 return 0
             count = 0
             for r in rows:
-                if r['success']:
-                    count += 1
-                else:
+                if r['success'] == 0 and r['failure_type'] == 'knowledge':
                     break
+                count += 1
             return count
         except Exception as e:
             logger.warning(f"Clean cycle count failed: {e}")
+            return 0
+
+    def _window_failures(self, specialist_id: int, window: int) -> int:
+        try:
+            rows = self.db_manager.execute_query(
+                """SELECT COUNT(*) AS fails FROM (
+                       SELECT success, failure_type FROM cycle_history
+                       WHERE specialist_id = ? ORDER BY id DESC LIMIT ?
+                   ) WHERE success = 0 AND failure_type = 'knowledge'""",
+                (specialist_id, window), fetch=True
+            )
+            return rows[0]['fails'] if rows else 0
+        except Exception as e:
+            logger.warning(f"Window failure count failed for {specialist_id}: {e}")
             return 0
 
     def _check_cascade(self, specialist_id: int, current_ema: float) -> bool:
@@ -806,7 +808,7 @@ class PipelineController:
 
     def update_ema_score(self, specialist_id: int, success: bool, content_length: int = 0,
                          trust_score: int = 50, contents_count: int = 0, packages_saved: int = 0,
-                         is_feed: bool = False):
+                         is_feed: bool = False, failure_type: str = 'knowledge'):
         try:
             # Cascade detection: if specialist is in failure spiral, skip update entirely
             if not success and PipelineController._cascaded_specialists.get(specialist_id):
@@ -826,18 +828,6 @@ class PipelineController:
             # (they are consolidated, pipeline scheduling gaps should not punish them)
             packages_absorbed = row.get('packages_absorbed', 0) or 0
             updated_at = row.get('updated_at', '')
-            if updated_at and packages_absorbed <= 1000000:
-                try:
-                    last_update = datetime.strptime(str(updated_at)[:19], '%Y-%m-%d %H:%M:%S')
-                    hours_since = (datetime.now() - last_update).total_seconds() / 3600
-                    if hours_since > 168:
-                        decay_factor = 1.0 - (0.0001 * (hours_since - 168))
-                        decayed_ema = current_ema * max(decay_factor, 0.5)
-                        if decayed_ema < current_ema:
-                            logger.info(f"EMA decay for specialist {specialist_id}: {current_ema:.4f} -> {decayed_ema:.4f} (inactive {hours_since:.0f}h)")
-                            current_ema = decayed_ema
-                except (ValueError, TypeError):
-                    pass
             ws = row.get('weighted_success', 0.0) or 0.0
             wf = row.get('weighted_fail', 0.0) or 0.0
             current_tier = row.get('tier', TIER_NONE) or TIER_NONE
@@ -858,9 +848,12 @@ class PipelineController:
                 new_ema = current_ema + alpha * quality * (1.0 - current_ema)
             else:
                 quality = 0.0
-                wf += 1.0
-                penalty = FAILURE_PENALTIES.get(current_tier, 0.94)
-                new_ema = current_ema * penalty
+                if failure_type == 'knowledge':
+                    penalty = FAILURE_PENALTIES.get(current_tier, 0.94)
+                    new_ema = current_ema * penalty
+                else:
+                    # System failures (Ollama down, timeouts, network) do NOT penalize EMA
+                    new_ema = current_ema
 
             # Auto-cascade detection: if EMA just collapsed or failures spike
             if new_ema < 0.01 and current_ema >= 0.10:
@@ -868,27 +861,36 @@ class PipelineController:
                     logger.critical(f"CASCADE TRIGGERED: specialist {specialist_id} EMA collapsed {current_ema:.4f} -> {new_ema:.4f}")
                     return  # Skip saving the bad state
 
-            self.db_manager.execute_batch([
+            # O4: agrupar todas las escrituras de EMA en UNA sola transacción
+            # (update_ema + history + cycle + posible tier) para reducir la
+            # contención de escritura SQLite con --parallel 3.
+            batch = [
                 ("UPDATE specialist_registry SET ema_score=?, weighted_success=?, weighted_fail=?, "
                  "updated_at=CURRENT_TIMESTAMP WHERE id=?",
                  (new_ema, ws, wf, specialist_id)),
                 ("INSERT INTO ema_history (specialist_id, ema_score) VALUES (?, ?)",
                  (specialist_id, new_ema)),
-                ("INSERT INTO cycle_history (specialist_id, success, quality, ema_before, ema_after) VALUES (?, ?, ?, ?, ?)",
-                 (specialist_id, 1 if success else 0, quality, current_ema, new_ema)),
-            ])
+                ("INSERT INTO cycle_history (specialist_id, success, quality, ema_before, ema_after, failure_type) "
+                 "VALUES (?, ?, ?, ?, ?, ?)",
+                 (specialist_id, 1 if success else 0, quality, current_ema, new_ema, failure_type)),
+            ]
 
             new_tier = self._compute_tier(specialist_id, new_ema, current_tier)
             if new_tier != current_tier:
-                self.db_manager.execute_query(
-                    "UPDATE specialist_registry SET tier = ? WHERE id = ?",
-                    (new_tier, specialist_id)
+                batch.append(
+                    ("UPDATE specialist_registry SET tier = ? WHERE id = ?",
+                     (new_tier, specialist_id))
                 )
                 tier_change = f" TIER: {TIER_NAMES[current_tier]} -> {TIER_NAMES[new_tier]}"
                 if new_tier < current_tier:
                     logger.warning(f"TIER DOWN: specialist {specialist_id} {TIER_NAMES[current_tier]} -> {TIER_NAMES[new_tier]}")
             else:
                 tier_change = ""
+
+            try:
+                self.db_manager.execute_batch(batch)
+            except Exception as e:
+                logger.error(f"Failed to commit EMA batch for {specialist_id}: {e}")
 
             if new_tier == TIER_LEGEND:
                 display_ema = 100000
@@ -907,53 +909,6 @@ class PipelineController:
         except Exception as e:
             logger.error(f"Failed to update EMA: {e}")
 
-    def _batch_resolve_labels(self, qids: List[str], languages: str = LANGUAGES) -> Dict[str, str]:
-        """Resolve labels (in configured languages) for a batch of QIDs via Wikidata API.
-        Falls back to raw QID if API fails or label not found."""
-        if not qids:
-            return {}
-        result = {}
-        cached = getattr(self, '_label_cache', {})
-        uncached = [q for q in qids if q not in cached]
-        result.update({q: cached[q] for q in qids if q in cached})
-
-        for i in range(0, len(uncached), WIKIDATA_LABEL_BATCH_SIZE):
-            batch = uncached[i:i + WIKIDATA_LABEL_BATCH_SIZE]
-            try:
-                ids_str = '|'.join(batch)
-                resp = requests.get(
-                    WIKIDATA_ENTITY_API,
-                    params={
-                        'action': 'wbgetentities',
-                        'ids': ids_str,
-                        'props': 'labels',
-                        'format': 'json',
-                        'languages': languages,
-                    },
-                    headers={'User-Agent': WIKIDATA_API_USER_AGENT},
-                    timeout=15
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                if 'entities' in data:
-                    for qid, entity in data['entities'].items():
-                        label = self._pick_label(entity.get('labels', {}), languages, qid)
-                        cached[qid] = label
-                        result[qid] = label
-            except Exception as e:
-                logger.warning(f"Label resolution failed for batch starting at {batch[0]}: {e}")
-                for qid in batch:
-                    if qid not in result:
-                        result[qid] = qid
-                        cached[qid] = qid
-
-        if len(cached) > 100000:
-            # Evict oldest 50% to avoid thundering herd
-            items = list(cached.items())
-            cached = dict(items[len(items)//2:])
-        self._label_cache = cached
-        return result
-
     @staticmethod
     def _pick_label(labels: Dict, languages: str = LANGUAGES, fallback: str = '') -> str:
         """Pick the first available label from a language-keyed dict ordered by language preference."""
@@ -969,113 +924,6 @@ class PipelineController:
             if val:
                 return val
         return fallback
-
-    def _is_blocklisted_label(self, label: str) -> bool:
-        """Check if a label matches the generic blocklist (meta-categories, etc.)."""
-        label_lower = label.strip().lower()
-        if label_lower in BLOCKLIST_LABELS:
-            return True
-        for prefix in BLOCKLIST_LABEL_PREFIXES:
-            if label_lower.startswith(prefix):
-                return True
-        return False
-
-    def _validate_qid_for_spawning(self, qids: List[str], root_qid: str) -> Set[str]:
-        """Validate candidate QIDs by checking P279 parent-sharing with root.
-        A QID is valid if its P279 includes the root QID (direct subclass)
-        OR shares at least one P279 parent with the root QID (sibling subclass)."""
-        if not qids:
-            return set()
-        try:
-            # Shortcut: early return for small batches already cached
-            cache = getattr(self, '_p279_cache', {})
-            if len(cache) > 100000:
-                cache = dict(list(cache.items())[-50000:])
-            target_root_p279 = self._fetch_p279_parents(root_qid, cache)
-
-            if not target_root_p279:
-                # Root has no P279 parents — only direct children qualify
-                all_qids = list(set(qids + [root_qid]))
-                self._batch_fetch_p279(all_qids, cache)
-                self._p279_cache = cache
-                return {q for q in qids if root_qid in cache.get(q, set())}
-
-            # Batch-fetch P279 for all candidates
-            all_candidates = [q for q in qids if q not in cache]
-            if all_candidates:
-                self._batch_fetch_p279(all_candidates, cache)
-            self._p279_cache = cache
-
-            valid = set()
-            for qid in qids:
-                cand_p279 = cache.get(qid, set())
-                if root_qid in cand_p279:
-                    valid.add(qid)
-                elif cand_p279 & target_root_p279:
-                    valid.add(qid)
-            return valid
-        except Exception as e:
-            logger.warning(f"P279 validation failed for {len(qids)} QIDs: {e}")
-            return set()
-
-    def _fetch_p279_parents(self, qid: str, cache: dict) -> Set[str]:
-        """Fetch P279 (subclass of) parents for a QID, using cache."""
-        if qid in cache:
-            return cache[qid]
-        try:
-            resp = requests.get(
-                WIKIDATA_ENTITY_API,
-                params={'action': 'wbgetentities', 'ids': qid, 'props': 'claims', 'format': 'json'},
-                headers={'User-Agent': WIKIDATA_API_USER_AGENT},
-                timeout=15
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            entity = data.get('entities', {}).get(qid, {})
-            p279 = set()
-            for claim in entity.get('claims', {}).get('P279', []):
-                try:
-                    p279.add(claim['mainsnak']['datavalue']['value']['id'])
-                except (KeyError, TypeError):
-                    pass
-            cache[qid] = p279
-            return p279
-        except Exception as e:
-            logger.warning(f"Failed to fetch P279 for {qid}: {e}")
-            cache[qid] = set()
-            return set()
-
-    def _batch_fetch_p279(self, qids: List[str], cache: dict):
-        """Batch-fetch P279 parents for multiple QIDs via single API call."""
-        uncached = [q for q in qids if q not in cache]
-        if not uncached:
-            return
-        for i in range(0, len(uncached), WIKIDATA_LABEL_BATCH_SIZE):
-            batch = uncached[i:i + WIKIDATA_LABEL_BATCH_SIZE]
-            try:
-                ids_str = '|'.join(batch)
-                resp = requests.get(
-                    WIKIDATA_ENTITY_API,
-                    params={'action': 'wbgetentities', 'ids': ids_str, 'props': 'claims', 'format': 'json'},
-                    headers={'User-Agent': WIKIDATA_API_USER_AGENT},
-                    timeout=15
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                for qid, entity in data.get('entities', {}).items():
-                    if qid not in cache:
-                        p279 = set()
-                        for claim in entity.get('claims', {}).get('P279', []):
-                            try:
-                                p279.add(claim['mainsnak']['datavalue']['value']['id'])
-                            except (KeyError, TypeError):
-                                pass
-                        cache[qid] = p279
-            except Exception as e:
-                logger.warning(f"Batch P279 fetch failed for batch: {e}")
-                for qid in batch:
-                    if qid not in cache:
-                        cache[qid] = set()
 
     # ── Super-Expert Methods ──────────────────────────────────────────────────
 
@@ -1142,99 +990,6 @@ class PipelineController:
                 logger.info(f"Super-expert '{se_domain}' initialized with {len(se_config['members'])} members")
             except Exception as e:
                 logger.error(f"Failed to initialize super-expert '{se_domain}': {e}")
-
-    def get_super_expert_members(self, se_domain: str) -> List[Dict]:
-        """Return members of a super-expert with current EMA and packages."""
-        try:
-            rows = self.db_manager.execute_query("""
-                SELECT se.domain AS se_domain, se.description,
-                       s.id, s.domain, s.ema_score, s.packages_absorbed, sem.weight
-                FROM super_experts se
-                JOIN super_expert_members sem ON sem.super_expert_id = se.id
-                JOIN specialist_registry s ON s.id = sem.specialist_id
-                WHERE se.domain = ?
-                ORDER BY sem.weight DESC
-            """, (se_domain,), fetch=True)
-            return rows if rows else []
-        except Exception as e:
-            logger.error(f"Failed to get super-expert {se_domain}: {e}")
-            return []
-
-    def get_all_super_experts(self) -> List[Dict]:
-        """Return all super-experts with aggregated info."""
-        try:
-            rows = self.db_manager.execute_query("""
-                SELECT se.id, se.domain, se.description,
-                       COUNT(sem.id) AS member_count,
-                       AVG(s.ema_score) AS avg_ema,
-                       SUM(s.packages_absorbed * sem.weight) / SUM(sem.weight) AS weighted_ema,
-                       SUM(s.packages_absorbed) AS total_packages
-                FROM super_experts se
-                LEFT JOIN super_expert_members sem ON sem.super_expert_id = se.id
-                LEFT JOIN specialist_registry s ON s.id = sem.specialist_id
-                GROUP BY se.id
-                ORDER BY se.domain
-            """, fetch=True)
-            return rows if rows else []
-        except Exception as e:
-            logger.error(f"Failed to get all super-experts: {e}")
-            return []
-
-    def query_super_expert(self, se_domain: str, question: str, top_k: int = 5) -> List[Dict]:
-        """Synthesize knowledge from member specialists weighted by relevance.
-        Returns ranked knowledge packages."""
-        members = self.get_super_expert_members(se_domain)
-        if not members:
-            return []
-
-        # Extract keywords from question for relevance scoring
-        question_lower = question.lower()
-        keywords = [w for w in re.split(r'\W+', question_lower) if len(w) > 3]
-
-        results = []
-        for m in members:
-            try:
-                pkgs = self.db_manager.execute_query("""
-                    SELECT topic, structured_knowledge, source_url, created_at
-                    FROM knowledge_packages
-                    WHERE domain = ?
-                    ORDER BY created_at DESC
-                    LIMIT ?
-                """, (m['domain'], top_k * 2), fetch=True) or []
-                for pkg in pkgs:
-                    # Keyword relevance scoring
-                    text = ((pkg.get('topic') or '') + ' ' + (pkg.get('structured_knowledge') or '')).lower()
-                    relevance = sum(1 for kw in keywords if kw in text) / max(len(keywords), 1)
-                    results.append({
-                        'specialist': m['domain'],
-                        'weight': m['weight'],
-                        'ema': m['ema_score'],
-                        'relevance': relevance,
-                        'topic': pkg['topic'],
-                        'knowledge': pkg['structured_knowledge'],
-                        'source': pkg['source_url'],
-                        'timestamp': pkg['created_at'],
-                    })
-            except Exception as e:
-                logger.debug(f"Query super-expert member {m['domain']}: {e}")
-
-        # Sort by relevance * weight * EMA
-        results.sort(key=lambda r: (r['relevance'] * r['weight'] * r['ema']), reverse=True)
-        return results[:top_k]
-
-    @staticmethod
-    def _make_schema_matcher(schema: Dict) -> Callable[[Dict], bool]:
-        root_qid = schema['root']
-        def matches_schema(entity: Dict) -> bool:
-            for prop in ('P31', 'P279'):
-                for claim in entity.get('claims', {}).get(prop, []):
-                    try:
-                        if claim['mainsnak']['datavalue']['value']['id'] == root_qid:
-                            return True
-                    except (KeyError, TypeError):
-                        continue
-            return False
-        return matches_schema
 
     async def run_phase_a_cascade(self, specialists: List[Dict], max_entities: int = MAX_CASCADE_ENTITIES, resume_offset: int = 0) -> Dict[int, bool]:
         """Cascade Phase A: scan dump once with progressive checkpoints and QID expansion.
@@ -1499,7 +1254,7 @@ class PipelineController:
 
     async def run_phase_b(self, specialist: Dict, cycle: int = 1) -> Dict:
         sid, domain, model = specialist['id'], specialist['domain'], specialist['model']
-        result = {'success': False, 'contents_count': 0, 'total_length': 0, 'avg_trust': 50.0, 'packages_saved': 0}
+        result = {'success': False, 'contents_count': 0, 'total_length': 0, 'avg_trust': 50.0, 'packages_saved': 0, 'failure_type': 'system'}
 
         self._log_activity(f"Iniciando {domain} (ciclo {cycle}) con {model}")
 
@@ -1507,10 +1262,11 @@ class PipelineController:
         # Domain-specific academic seed topics rotated across cycles.
         seed_topics = DOMAIN_QUERY_SEEDS.get(domain, [])
         if seed_topics:
-            idx = ((cycle - 1) * 8) % len(seed_topics)
-            queries = seed_topics[idx:idx+8]
-            if len(queries) < 8:
-                queries = queries + seed_topics[:8-len(queries)]
+            queries_per_cycle = 32
+            idx = ((cycle - 1) * queries_per_cycle) % len(seed_topics)
+            queries = seed_topics[idx:idx+queries_per_cycle]
+            if len(queries) < queries_per_cycle:
+                queries = queries + seed_topics[:queries_per_cycle-len(queries)]
             queries = [f"{q} academic research" for q in queries]
         else:
             keywords = _domain_to_keywords(domain)
@@ -1529,6 +1285,7 @@ class PipelineController:
             else:
                 logger.warning(f"Circuit breaker OPEN — skipping {domain} (Ollama {PipelineController._ollama_consecutive_failures} consecutive failures)")
                 self._log_activity(f"SKIP {domain} — circuit breaker open (Ollama unavailable)", 'WARNING')
+                result['failure_type'] = 'system'
                 return result
 
         try:
@@ -1542,6 +1299,7 @@ class PipelineController:
                     PipelineController._ollama_circuit_open = True
                     PipelineController._ollama_circuit_opened_at = time.time()
                     logger.critical(f"Circuit breaker OPENED after {PipelineController._ollama_consecutive_failures} consecutive Ollama failures")
+                result['failure_type'] = 'system'
                 return result
             
             # Model loaded successfully — reset circuit breaker
@@ -1553,6 +1311,7 @@ class PipelineController:
 
             total_c, total_l, trusts, pkgs_saved = 0, 0, [], 0
             distill_buffer: List[tuple] = []
+            system_ctx = self.ingestor.get_system_context(domain=domain, max_chars=2000)
 
             def flush_distill_buffer():
                 nonlocal distill_buffer
@@ -1569,7 +1328,17 @@ class PipelineController:
                 except Exception as e:
                     logger.error(f"Distill batch flush failed: {e}")
 
-            for query in queries:
+            _last_hb = time.time()
+            for qi, query in enumerate(queries):
+                # Heartbeat: update pipeline_status every 30s so dashboard reflects live activity
+                _now = time.time()
+                if _now - _last_hb >= 30:
+                    _last_hb = _now
+                    self._update_pipeline_status(
+                        specialist=domain, model=model, cycle=cycle,
+                        phase=f'Phase B: {domain} (query {qi+1}/{len(queries)})',
+                        status='ACTIVE'
+                    )
                 self._log_activity(f"{domain} > Buscando: \"{query[:60]}\"")
                 try:
                     results = await asyncio.wait_for(
@@ -1578,6 +1347,8 @@ class PipelineController:
                     )
                     total_c += len(results)
                     self._log_activity(f"{domain} > {len(results)} resultados para \"{query[:40]}\"")
+                    # Filter valid content items
+                    valid_items = []
                     for content in results:
                         ct = content.get('content', '')
                         if not ct or len(ct.strip()) < 200:
@@ -1587,38 +1358,51 @@ class PipelineController:
                             continue
                         total_l += estimate_tokens(ct)
                         trust = content.get('trust_score', 50)
-                        trusts.append(trust)
                         quality = content.get('quality_score', 0.0)
                         url = content.get('url', '') or content.get('source', '')
                         if quality < 0.30:
                             logger.info(f"Low quality content ({quality:.3f}) from {url} — skipping distill")
                             continue
-                        self._log_activity(f"{domain} > Destilando: {url[:60]} (quality={quality:.3f}, trust={trust})...")
-                        system_ctx = self.ingestor.get_system_context(domain=domain, max_chars=2000)
+                        valid_items.append({'ct': ct, 'trust': trust, 'url': url})
+                    batch_size = 6
+                    for i in range(0, len(valid_items), batch_size):
+                        batch = valid_items[i:i+batch_size]
+                        # Build combined prompt
+                        parts = []
+                        for j, item in enumerate(batch):
+                            parts.append(f"--- Item {j+1} ---\n{item['ct'][:1500]}")
+                        prefix = f"{system_ctx}\n\n" if system_ctx else ""
+                        combined = f"{prefix}Summarize each {domain} item in 3 bullet points. " \
+                                   f"Separate each summary with '===NEXT==='.\n\n" + "\n\n".join(parts)
                         try:
-                            if system_ctx:
-                                prompt = f"{system_ctx}\n\nSummarize the following {domain} knowledge in 3 bullet points:\n\n{ct[:2000]}"
-                            else:
-                                prompt = f"Summarize the following {domain} knowledge in 3 bullet points:\n\n{ct[:2000]}"
-                            dist = await asyncio.wait_for(self.llm_runner.query_llm(model_name=model, prompt=prompt), timeout=LLM_QUERY_TIMEOUT)
-                            logger.debug(f"Distill: {dist[:100]}...")
+                            # Per-item LLM timeout with aggressive kill
+                            dist = await asyncio.wait_for(
+                                self.llm_runner.query_llm(model_name=model, prompt=combined),
+                                timeout=LLM_QUERY_TIMEOUT * 2
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(f"LLM query timed out for batch of {len(batch)} items — skipping batch")
+                            continue
                         except Exception as e:
-                            logger.warning(f"Distill failed for {url[:60]}: {e}")
+                            logger.warning(f"Batch distill failed for {len(batch)} items: {e}")
                             continue
-                        if not domain:
-                            continue
-                        if not dist or len(dist.strip()) < 10:
-                            logger.debug(f"Distill too short ({len(dist or '')} chars), skipping")
-                            continue
-                        if trust < 40:
-                            logger.warning(f"Low trust source ({trust}), skipping {url[:60]}")
-                            continue
-                        if dist and url:
-                            distill_buffer.append((query[:100], url, domain, None, dist[:500]))
+
+                        # Parse batched response
+                        summaries = [s.strip() for s in dist.split("===NEXT===") if s.strip()]
+                        for j, item in enumerate(batch):
+                            if item['trust'] < 40:
+                                logger.warning(f"Low trust source ({item['trust']}), skipping {item['url'][:60]}")
+                                continue
+                            summary = summaries[j] if j < len(summaries) else dist
+                            if not summary or len(summary) < 10:
+                                logger.debug(f"Distill too short, skipping {item['url'][:60]}")
+                                continue
+                            distill_buffer.append((query[:100], item['url'], domain, None, summary[:500]))
                             pkgs_saved += 1
+                            trusts.append(item['trust'])
                             if len(distill_buffer) >= 20:
                                 flush_distill_buffer()
-                            self._log_activity(f"{domain} > Package guardado: {query[:40]}")
+                    self._log_activity(f"{domain} > {pkgs_saved} packages tras destilar {len(valid_items)} items en {((len(valid_items)+batch_size-1)//batch_size)} batches")
                 except (RateLimitError, WebScraperError) as e:
                     logger.warning(f"Search failed '{query}': {e}")
 
@@ -1636,6 +1420,13 @@ class PipelineController:
             logger.info(f"Phase B complete for {domain} (cycle {cycle}): {total_c} contents, {pkgs_saved} packages")
             self._log_activity(f"{domain} completado — {pkgs_saved} paquetes en ciclo {cycle}")
             result.update(success=total_c > 0, contents_count=total_c, total_length=total_l, avg_trust=avg_t, packages_saved=pkgs_saved)
+            if total_c == 0:
+                result['failure_type'] = 'system'
+            elif pkgs_saved == 0:
+                result['failure_type'] = 'knowledge'
+                result['success'] = False
+            else:
+                result['failure_type'] = None  # success: no failure type
             return result
         except Exception as e:
             logger.error(f"Phase B failed for {domain}: {e}")
@@ -1643,108 +1434,34 @@ class PipelineController:
         finally:
             self.db_manager.execute_query("UPDATE specialist_registry SET status='IDLE' WHERE id=?", (sid,))
 
-    async def _generate_report(self, elapsed_seconds: float):
-        """Generate EMA evolution report with chart, saved to storage/reports/."""
-        try:
-            import matplotlib
-            matplotlib.use('Agg')
-            import matplotlib.pyplot as plt
-        except ImportError:
-            logger.warning("matplotlib not available — skipping report chart")
-            plt = None
-
-        report_dir = Path('storage/reports')
-        report_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-
-        specialists = self.db_manager.execute_query(
-            "SELECT id, domain, model, ema_score, packages_absorbed, tier FROM specialist_registry ORDER BY ema_score DESC",
-            fetch=True
-        ) or []
-
-        history = self.db_manager.execute_query(
-            "SELECT specialist_id, ema_score, timestamp FROM ema_history ORDER BY id",
-            fetch=True
-        ) or []
-
-        # Build time-aligned series per specialist
-        series_raw = defaultdict(list)
-        time_labels = []
-        for row in history:
-            sid = row['specialist_id']
-            t = row['timestamp'][:16] if row['timestamp'] else ''
-            series_raw[sid].append((t, row['ema_score']))
-        for sid, pts in series_raw.items():
-            time_labels = [p[0] for p in pts]
-
-        # Chart: combined EMA evolution (×100.000 scale)
-        if plt is not None:
-            plt.figure(figsize=(14, 8))
-            colors = plt.cm.tab20.colors + plt.cm.tab20b.colors
-            for i, s in enumerate(specialists):
-                sid = s['id']
-                pts = series_raw.get(sid, [])
-                if len(pts) < 2:
-                    continue
-                times = [p[0] for p in pts]
-                vals = [p[1] * 100000 for p in pts]
-                tier_val = s['tier'] or TIER_NONE
-                display_pts = "100.000" if tier_val == TIER_LEGEND else f"{int(s['ema_score']*100000):,}"
-                label = f"{s['domain']} ({display_pts}) [{TIER_NAMES.get(tier_val, '?')}]"
-                plt.plot(range(len(vals)), vals, color=colors[i % len(colors)],
-                         marker='o', markersize=3, linewidth=1.2, label=label)
-
-            plt.title(f'Puntuación EMA — {ts}', fontsize=14)
-            plt.xlabel('Ciclo #')
-            plt.ylabel('Puntuación /100.000')
-            plt.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=7)
-            plt.grid(True, alpha=0.3)
-            plt.tight_layout()
-            chart_path = report_dir / f'ema_evolution_{ts}.png'
-            plt.savefig(chart_path, dpi=150)
-            plt.close()
-
-        # Markdown report
-        lines = [f"# Pipeline Report — {ts}\n"]
-        lines.append(f"**Elapsed:** {elapsed_seconds/3600:.2f}h ({elapsed_seconds/60:.1f} min)\n")
-        lines.append(f"**Total history records:** {len(history)}\n")
-        lines.append(f"\n## Puntuaciones\n")
-        lines.append(f"| # | Domain | Model | Puntuación | Tier | Racha 25 | Paquetes |")
-        lines.append(f"|---|--------|-------|------------|------|----------|----------|")
-        for i, s in enumerate(specialists, 1):
-            sid = s['id']
-            tier_val = s['tier'] or TIER_NONE
-            if tier_val == TIER_LEGEND:
-                pts_str = "100.000"
-            else:
-                pts_str = f"{int(s['ema_score'] * 100000):,}/100.000"
-            racha = self._get_racha_25(sid)
-            tier_name = TIER_NAMES.get(tier_val, 'None')
-            racha_str = f"{racha*100:.1f}%" if racha > 0 else "-"
-            lines.append(f"| {i} | {s['domain']} | {s['model']} | {pts_str} | {tier_name} | {racha_str} | {s['packages_absorbed']} |")
-
-        if plt is not None:
-            lines.append(f"\n## Charts\n")
-            lines.append(f"![EMA Evolution](ema_evolution_{ts}.png)\n")
-
-        report_path = report_dir / f'report_{ts}.md'
-        report_path.write_text('\n'.join(lines), encoding='utf-8')
-        logger.info(f"Report saved: {report_path}")
-
     def _compute_nurture_priority(self, specialist: dict) -> float:
         """Compute nurture priority score. Higher = more urgent.
         Domain-aware staleness: volatile domains (Geopolitics) decay faster
         than stable ones (Mathematics).
-        Base staleness: all specialists gain urgency after 4h without a cycle."""
+        Base staleness: all specialists gain urgency after 4h without a cycle.
+        Fail rate uses rolling 25-cycle window (knowledge failures only)."""
         ema = specialist.get('ema_score', 0.5)
         packages = specialist.get('packages_absorbed', 0)
         updated_at = specialist.get('updated_at', '')
-        weighted_success = specialist.get('weighted_success', 0.0)
-        weighted_fail = specialist.get('weighted_fail', 0.0)
         domain = specialist.get('domain', '')
+        sid = specialist.get('id', 0)
 
-        total_ws_wf = weighted_success + weighted_fail
-        fail_rate = weighted_fail / total_ws_wf if total_ws_wf > 0 else 0.0
+        # Rolling fail rate from last 25 cycles (only knowledge failures)
+        fail_rate = 0.0
+        try:
+            ch = self.db_manager.execute_query(
+                """SELECT COUNT(*) as total,
+                          COALESCE(SUM(CASE WHEN success=0 AND failure_type='knowledge' THEN 1 ELSE 0 END), 0) as fails
+                   FROM (SELECT * FROM cycle_history WHERE specialist_id = ? ORDER BY id DESC LIMIT 25) recent""",
+                (sid,), fetch=True
+            )
+            if isinstance(ch, list) and len(ch) > 0 and isinstance(ch[0], dict):
+                total = ch[0].get('total', 0) or 0
+                fails = ch[0].get('fails', 0) or 0
+                if total > 0:
+                    fail_rate = fails / max(1, total)
+        except Exception:
+            pass
 
         # Domain-aware staleness: volatile domains (< 1.0) increase urgency faster
         stability = DOMAIN_STABILITY.get(domain, 0.7)
@@ -1776,22 +1493,32 @@ class PipelineController:
                                  max_cycles: int, report_interval_minutes: int,
                                  skip_list: str = ''):
         logger.info("=" * 80)
-        logger.info("NURTURE V2 — Model-Batched Tier Ascension")
-        logger.info("Target: all specialists to GOLD, then LEGEND. Domain-aware decay.")
-        logger.info("Each cycle processes all specialists of a model together (1 load/swap per model).")
+        logger.info("NURTURE SEQUENTIAL — 1 specialist at a time, 1h min per specialist")
+        logger.info("Model loaded once per group, all same-model specialists fed sequentially")
         logger.info("=" * 80)
 
-        global_cycle = 0
+        feed_counter = 0
         last_report_time = 0.0
         current_target_tier = TIER_GOLD
         skip_domains = set(d.strip() for d in skip_list.split(',') if d.strip())
+        _consec_fails = {}  # specialist_id -> consecutive knowledge failures
+        _auto_paused = set()  # specialist_ids auto-paused after 3 consecutive fails
 
         while True:
             if _shutdown_event.is_set():
                 logger.info("Shutdown signal received. Stopping nurture.")
                 break
 
-            # ── Check if all specialists reached current target tier ──
+            # Check duration limits
+            elapsed = time.time() - pipeline_start
+            if max_duration_hours > 0 and elapsed >= max_duration_hours * 3600:
+                logger.info(f"Hard max duration reached ({max_duration_hours}h). Stopping nurture.")
+                return
+            if max_cycles > 0 and feed_counter >= max_cycles:
+                logger.info(f"Max cycles reached ({max_cycles}). Stopping nurture.")
+                return
+
+            # Get all specialists
             all_parents = self.db_manager.execute_query(
                 "SELECT id, domain, ema_score, tier, model, weighted_success, weighted_fail, "
                 "packages_absorbed, updated_at FROM specialist_registry "
@@ -1801,6 +1528,7 @@ class PipelineController:
             if not all_parents:
                 break
 
+            # Check if all reached current target tier
             all_done = all(s['tier'] >= current_target_tier for s in all_parents)
             if all_done:
                 if current_target_tier == TIER_GOLD:
@@ -1812,115 +1540,110 @@ class PipelineController:
                     await asyncio.sleep(60)
                     continue
 
-            # ── Score and collect specialists needing nurture ──
-            candidates = []
+            # Priority-score every specialist (lower EMA + higher staleness = higher priority)
+            scored = []
             for s in all_parents:
                 if s['tier'] >= current_target_tier:
                     continue
                 if s['domain'] in skip_domains:
                     continue
-                score = self._compute_nurture_priority(s)
-                candidates.append((score, s))
+                scored.append((self._compute_nurture_priority(s), s))
 
-            if not candidates:
+            if not scored:
                 await asyncio.sleep(10)
                 continue
 
-            # ── Group by model, sort each group by priority (worst first) ──
-            by_model: Dict[str, List[tuple]] = {}
-            for score_s, s in candidates:
-                by_model.setdefault(s['model'], []).append((score_s, s))
+            # Sort by priority descending (most urgent first)
+            scored.sort(key=lambda x: x[0], reverse=True)
 
-            for model_name, group in by_model.items():
-                group.sort(key=lambda x: x[0], reverse=True)  # highest priority = worst first
+            # Most urgent specialist → its model
+            target_model = scored[0][1]['model']
+            model_group = [s for _, s in scored if s['model'] == target_model]
 
-            models_order = sorted(by_model.keys())
-            logger.info(f"Nurture cycle {global_cycle + 1}: {len(candidates)} specialists across {len(models_order)} models: {models_order}")
-            logger.info(f"  Groups: " + " | ".join(f"{m}={len(by_model[m])}" for m in models_order))
+            domains_str = ', '.join(f"{s['domain']}(EMA={s['ema_score']:.4f})" for s in model_group)
+            logger.info(f"Nurture: model={target_model}, {len(model_group)} specialists — {domains_str}")
 
-            # ── Process each model group ──
-            global_cycle += 1
-            effective_cycle = ((global_cycle - 1) % 12) + 1
+            # Load model ONCE for the entire group
+            self._update_pipeline_status(
+                specialist=model_group[0]['domain'],
+                model=target_model, cycle=feed_counter + 1, total_cycles=999,
+                phase=f'Nurture: loading {target_model} ({len(model_group)} specs)',
+                status='ACTIVE'
+            )
+            model_ready = await self.llm_runner.ensure_model_ready(target_model)
+            if not model_ready:
+                logger.error(f"Model {target_model} unavailable — skipping {len(model_group)} specialists")
+                self._log_activity(f"SKIP model {target_model} — no disponible", 'WARNING')
+                for s in model_group:
+                    self.update_ema_score(s['id'], False, failure_type='system')
+                continue
 
-            for model_name in models_order:
-                group = by_model[model_name]
-
-                # Check duration limits before starting a new model
-                elapsed = time.time() - pipeline_start
-                if max_duration_hours > 0 and elapsed >= max_duration_hours * 3600:
-                    logger.info(f"Hard max duration reached ({max_duration_hours}h). Stopping nurture.")
-                    return
-                if max_cycles > 0 and global_cycle > max_cycles:
-                    logger.info(f"Max cycles reached ({max_cycles}). Stopping nurture.")
-                    return
-
-                # Load model ONCE for the entire group
-                self._update_pipeline_status(
-                    specialist=', '.join(s['domain'] for _, s in group[:3]) + ('...' if len(group) > 3 else ''),
-                    model=model_name, cycle=global_cycle, total_cycles=999,
-                    phase=f'Nurture: loading {model_name} ({len(group)} specs)',
-                    status='ACTIVE'
-                )
-                model_ready = await self.llm_runner.ensure_model_ready(model_name)
-                if not model_ready:
-                    logger.error(f"Model {model_name} unavailable — skipping {len(group)} specialists")
-                    self._log_activity(f"SKIP model {model_name} — no disponible", 'WARNING')
-                    # Mark all as failures
-                    for _, s in group:
-                        self.update_ema_score(s['id'], False)
+            # Feed each specialist of this model SEQUENTIALLY
+            for s in model_group:
+                # Skip auto-paused specialists (3+ consecutive knowledge failures)
+                if s['id'] in _auto_paused:
+                    logger.info(f"  SKIP {s['domain']} — auto-paused (consecutive knowledge failures)")
                     continue
 
-                # Log the group
-                domains_str = ', '.join(f"{s['domain']}(EMA={s['ema_score']:.4f})" for _, s in group)
-                logger.info(f"  Model {model_name}: processing {len(group)} specialists: {domains_str}")
+                feed_counter += 1
+                effective_cycle = ((feed_counter - 1) % 12) + 1
 
-                # Process all specialists of this model IN PARALLEL
-                specialists_for_model = [s for _, s in group]
+                logger.info(f"  Feed #{feed_counter}: {s['domain']}(EMA={s['ema_score']:.4f}) "
+                            f"model={target_model} cycle={effective_cycle}")
+
                 self._update_pipeline_status(
-                    specialist=', '.join(s['domain'] for s in specialists_for_model[:3]) + ('...' if len(specialists_for_model) > 3 else ''),
-                    model=model_name, cycle=global_cycle, total_cycles=999,
-                    phase=f'Nurture: {model_name} ({len(specialists_for_model)} specs)',
+                    specialist=s['domain'],
+                    model=target_model, cycle=feed_counter, total_cycles=999,
+                    phase=f'Nurture: {s["domain"]} ({target_model})',
                     status='ACTIVE'
                 )
 
-                tasks = []
-                for s in specialists_for_model:
-                    tasks.append(
-                        asyncio.wait_for(
-                            self._run_nurture_cycle(s, effective_cycle, global_cycle, current_target_tier),
-                            timeout=NURTURE_CYCLE_TIMEOUT + 60
-                        )
+                try:
+                    result = await asyncio.wait_for(
+                        self._run_nurture_cycle(s, effective_cycle, feed_counter, current_target_tier),
+                        timeout=NURTURE_CYCLE_TIMEOUT + 60
                     )
+                except asyncio.TimeoutError:
+                    logger.warning(f"Nurture outer timeout for {s['domain']} — marking as system failure")
+                    result = {'success': False, 'contents_count': 0, 'total_length': 0, 'avg_trust': 50.0, 'packages_saved': 0, 'failure_type': 'system'}
 
-                results = await asyncio.gather(*tasks, return_exceptions=True)
+                if isinstance(result, dict):
+                    ok = result.get('success', False)
+                    failure_type = result.get('failure_type', 'knowledge')
+                    self.update_ema_score(
+                        s['id'], ok,
+                        result.get('total_length', 0),
+                        result.get('avg_trust', 50),
+                        result.get('contents_count', 0),
+                        result.get('packages_saved', 0),
+                        failure_type=failure_type,
+                    )
+                    # Auto-pause: track consecutive knowledge failures
+                    if not ok and failure_type == 'knowledge':
+                        _consec_fails[s['id']] = _consec_fails.get(s['id'], 0) + 1
+                        if _consec_fails[s['id']] >= 3 and s['id'] not in _auto_paused:
+                            _auto_paused.add(s['id'])
+                            logger.warning(f"AUTO-PAUSE: {s['domain']} paused after {_consec_fails[s['id']]} consecutive knowledge failures")
+                            self._log_activity(f"AUTO-PAUSE {s['domain']} — {_consec_fails[s['id']]} fallos knowledge consecutivos", 'WARNING')
+                    else:
+                        # Reset on success or system failure
+                        if s['id'] in _consec_fails:
+                            _consec_fails[s['id']] = 0
 
-                # Process results
-                for s, result in zip(specialists_for_model, results):
-                    sid = s['id']
-                    if isinstance(result, Exception):
-                        logger.error(f"Nurture failed for {s['domain']}: {result}")
-                        self.update_ema_score(sid, False)
-                        continue
-                    if isinstance(result, dict) and result.get('success'):
-                        ok = result['success']
-                        self.update_ema_score(
-                            sid, ok,
-                            result.get('total_length', 0),
-                            result.get('avg_trust', 50),
-                            result.get('contents_count', 0),
-                            result.get('packages_saved', 0),
-                        )
+            # Unload model after all specialists of this model are done
+            logger.info(f"Unloading model {target_model} after feeding {len(model_group)} specialists")
+            await asyncio.to_thread(self.llm_runner._stop_model, target_model)
 
-            # ── After all model groups processed this cycle ──
+            # Periodic report
             elapsed = time.time() - pipeline_start
             if elapsed - last_report_time >= report_interval_minutes * 60:
                 last_report_time = elapsed
 
-            # Check duration limits between cycles
+            # Check duration limits between model groups
             if max_duration_hours > 0 and elapsed >= max_duration_hours * 3600:
                 logger.info(f"Hard max duration reached ({max_duration_hours}h). Stopping nurture.")
                 return
-            if max_cycles > 0 and global_cycle >= max_cycles:
+            if max_cycles > 0 and feed_counter >= max_cycles:
                 logger.info(f"Max cycles reached ({max_cycles}). Stopping nurture.")
                 return
 
@@ -1932,6 +1655,11 @@ class PipelineController:
         result = {'success': False, 'contents_count': 0, 'total_length': 0, 'avg_trust': 50.0, 'packages_saved': 0}
 
         try:
+            # Pre-cycle Ollama health check
+            if not await self._check_ollama_health():
+                logger.warning(f"Ollama unhealthy before cycle for {domain} — skipping cycle")
+                return result
+
             phase_b = await asyncio.wait_for(
                 self.run_phase_b(specialist, effective_cycle),
                 timeout=NURTURE_CYCLE_TIMEOUT
@@ -1947,20 +1675,57 @@ class PipelineController:
                 total_length=phase_b.get('total_length', 0),
                 avg_trust=phase_b.get('avg_trust', 50),
                 packages_saved=phase_b.get('packages_saved', 0),
+                failure_type=phase_b.get('failure_type', 'system'),
             )
             return result
 
         except asyncio.TimeoutError:
-            logger.warning(f"Nurture cycle timed out for {domain}")
+            logger.warning(f"Nurture cycle timed out for {domain} — marking as system failure")
+            result['success'] = False
+            result['failure_type'] = 'system'
             return result
         except Exception as e:
             logger.error(f"Nurture cycle failed for {domain}: {e}")
+            result['failure_type'] = 'system'
             return result
+
+    async def _check_ollama_health(self) -> bool:
+        """Quick Ollama health check before starting a cycle."""
+        try:
+            # Quick check via subprocess (non-blocking with timeout)
+            proc = await asyncio.wait_for(
+                asyncio.create_subprocess_exec(
+                    "ollama", "ps",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                ),
+                timeout=10
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            if proc.returncode == 0 and stdout:
+                logger.debug("Ollama health check passed")
+                return True
+            else:
+                logger.warning("Ollama health check failed: ollama ps returned error")
+                return False
+        except asyncio.TimeoutError:
+            logger.warning("Ollama health check timed out")
+            return False
+        except Exception as e:
+            logger.warning(f"Ollama health check failed: {e}")
+            return False
 
     async def _run_wikidata_feed(self, all_specialists: list):
         logger.info("=" * 80)
         logger.info("WIKIDATA FEED MODE — absorbing pending Wikidata packages")
         logger.info("=" * 80)
+
+        # Drop FTS5 AFTER UPDATE trigger before mass UPDATE to avoid 430M FTS ops
+        # (only absorbed_at changes, not topic/structured_knowledge/domain)
+        try:
+            self.db_manager.execute_query("DROP TRIGGER IF EXISTS kp_au")
+        except Exception as e:
+            logger.warning(f"Could not drop kp_au trigger: {e}")
 
         # Single mass UPDATE instead of 18 per-domain COUNT+UPDATE pairs
         # This avoids scanning the 430M-row table 18 times
@@ -2015,6 +1780,19 @@ class PipelineController:
             logger.info(f"Feed complete: {total} packages absorbed")
         except Exception as e:
             logger.error(f"[Feed] error: {e}")
+        finally:
+            # Always recreate FTS5 AFTER UPDATE trigger if we dropped it
+            try:
+                self.db_manager.execute_query("""
+                    CREATE TRIGGER IF NOT EXISTS kp_au AFTER UPDATE ON knowledge_packages BEGIN
+                        INSERT INTO knowledge_packages_fts(knowledge_packages_fts, rowid, topic, structured_knowledge, domain)
+                        VALUES ('delete', old.id, old.topic, old.structured_knowledge, old.domain);
+                        INSERT INTO knowledge_packages_fts(rowid, topic, structured_knowledge, domain)
+                        VALUES (new.id, new.topic, new.structured_knowledge, new.domain);
+                    END
+                """)
+            except Exception as e:
+                logger.warning(f"Could not recreate kp_au trigger: {e}")
 
     async def run_pipeline(self, sample_size: Optional[int] = None,
                            min_duration_hours: float = 5.0,
@@ -2048,7 +1826,7 @@ class PipelineController:
         ) or []
         self._ema_snapshot = {r['id']: r['ema_score'] for r in ema_rows}
 
-        if not validate_paths():
+        if not validate_paths(require_dump=(phase in ('full', 'cascade'))):
             self._update_pipeline_status(status='ERROR', phase='Path validation failed')
             return
         if not self.initialize_specialists():
@@ -2075,6 +1853,8 @@ class PipelineController:
         logger.info(f"Selected specialists ({len(all_specialists)}): {domains_str}")
 
         max_entities = sample_size or MAX_CASCADE_ENTITIES
+        if max_entities <= 0:
+            max_entities = 110_000_000
         model_groups = defaultdict(list)
         for specialist in all_specialists:
             model_groups[specialist['model']].append(specialist)
@@ -2082,7 +1862,9 @@ class PipelineController:
 
         try:
             # Phase A: Cascade — reanudable desde el último checkpoint
-            phase_a_results = {s['id']: True for s in all_specialists}
+            # NOTA: solo en full/cascade cuenta el éxito de fase A como éxito global.
+            # En web/nurture NO existe fase A → phase_a_results vacío para no inflar EMA.
+            phase_a_results = {s['id']: True for s in all_specialists} if phase in ('full', 'cascade') else {}
             if phase in ('full', 'cascade'):
                 # Obtener el último checkpoint como offset de reanudación
                 if from_zero:
@@ -2165,7 +1947,7 @@ class PipelineController:
                             if not model_ready:
                                 self._update_pipeline_status(status='SKIPPED', phase=f'Model unavailable: {model_name}')
                                 for specialist in group:
-                                    self.update_ema_score(specialist['id'], False)
+                                    self.update_ema_score(specialist['id'], False, failure_type='system')
                                 model_groups[model_name] = []
                                 continue
 
@@ -2176,25 +1958,37 @@ class PipelineController:
                         self._update_pipeline_status(
                             specialist=', '.join(domains[:3]) + ('...' if len(domains) > 3 else ''),
                             model=model_name, cycle=global_cycle, total_cycles=999,
-                            phase=f'Phase B: Web + LLM ({len(group)} paralelo)', status='ACTIVE'
+                            phase=f'Phase B: Web + LLM (max {MAX_PHASE_B_CONCURRENCY} paralelo)', status='ACTIVE'
                         )
-                        tasks = [asyncio.wait_for(self.run_phase_b(s, effective_cycle), timeout=PHASE_B_PER_SPECIALIST_TIMEOUT) for s in group]
-                        phase_b_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-                        for specialist, phase_b in zip(group, phase_b_results):
-                            sid, domain = specialist['id'], specialist['domain']
-                            if isinstance(phase_b, Exception):
-                                logger.error(f"Phase B failed for {domain}: {phase_b}")
-                                self.update_ema_score(sid, False)
-                                continue
-                            ok = phase_a_results.get(sid, False) or phase_b.get('success', False)
-                            self.update_ema_score(
-                                sid, ok,
-                                phase_b.get('total_length', 0),
-                                phase_b.get('avg_trust', 50),
-                                phase_b.get('contents_count', 0),
-                                phase_b.get('packages_saved', 0),
+                        # BUG-2 fix: procesar de a MAX_PHASE_B_CONCURRENCY especialistas como máximo.
+                        # Un solo GPU/Ollama no soporta 10 fase-B simultáneas → saturación + timeouts.
+                        chunk_size = MODEL_PHASE_B_CONCURRENCY.get(model_name, MAX_PHASE_B_CONCURRENCY)
+                        for start in range(0, len(group), chunk_size):
+                            chunk = group[start:start + chunk_size]
+                            chunk_domains = [s['domain'] for s in chunk]
+                            self._update_pipeline_status(
+                                specialist=', '.join(chunk_domains[:3]),
+                                model=model_name, cycle=global_cycle, total_cycles=999,
+                                phase=f'Phase B: Web + LLM ({len(chunk)} de {len(group)})', status='ACTIVE'
                             )
+                            tasks = [asyncio.wait_for(self.run_phase_b(s, effective_cycle), timeout=PHASE_B_PER_SPECIALIST_TIMEOUT) for s in chunk]
+                            phase_b_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                            for specialist, phase_b in zip(chunk, phase_b_results):
+                                sid, domain = specialist['id'], specialist['domain']
+                                if isinstance(phase_b, Exception):
+                                    logger.error(f"Phase B failed for {domain}: {phase_b}")
+                                    self.update_ema_score(sid, False, failure_type='system')
+                                    continue
+                                ok = phase_a_results.get(sid, False) or phase_b.get('success', False)
+                                self.update_ema_score(
+                                    sid, ok,
+                                    phase_b.get('total_length', 0),
+                                    phase_b.get('avg_trust', 50),
+                                    phase_b.get('contents_count', 0),
+                                    phase_b.get('packages_saved', 0),
+                                    failure_type=phase_b.get('failure_type', 'knowledge'),
+                                )
 
                         # Auto-spawning disabled — use manual spawn tool (tools/spawn_specialist.py)
 
@@ -2261,13 +2055,13 @@ class PipelineController:
 def parse_args():
     parser = argparse.ArgumentParser(description='Expertia Pipeline Orchestrator')
     parser.add_argument('--phase', choices=['full', 'cascade', 'web', 'nurture', 'feed'], default='full',
-                        help='Pipeline phase: full=cascade+web+nurture, nurture=maintenance+growth mode (default: full)')
+                        help='Pipeline phase: web=alimentacion continua (sin limite temporal), nurture=growth continuo, feed=una pasada, full=cascade+feed+nurture, cascade=solo Phase A')
     parser.add_argument('--specialist', type=str, default='all',
                         help='Run only this specialist domain (default: all)')
     parser.add_argument('--model', type=str, default='all',
                         help='Run only specialists using this model (default: all)')
-    parser.add_argument('--duration', type=float, default=5.0,
-                        help='Minimum duration in hours for Phase B (default: 5.0)')
+    parser.add_argument('--duration', type=float, default=None,
+                        help='Duration in hours for Phase B. En web actúa como TECHO (no mínimo); omitirlo o --duration 0 = continuo sin límite. Default full: 5.0')
     parser.add_argument('--max-duration', type=float, default=0,
                         help='Hard max duration in hours (0 = no limit)')
     parser.add_argument('--max-cycles', type=int, default=0,
@@ -2337,6 +2131,17 @@ async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.
         logger.warning("psutil no disponible — limpieza de zombies saltada")
 
     try:
+        # --duration es opcional: None = default por fase; 0 = sin límite.
+        if min_duration_hours is None:
+            min_duration_hours = 999999 if phase == 'web' else 5.0
+        if phase == 'web':
+            # Alimentación continua: sin tope de duración ni ciclos salvo petición explícita.
+            if min_duration_hours <= 0:
+                min_duration_hours = 999999  # effectively infinite
+            if max_cycles <= 0:
+                max_cycles = 0  # infinite (el loop rompe solo con señal o --max-duration)
+        if max_cycles <= 0 and phase not in ('web', 'nurture'):
+            max_cycles = MAX_PHASE_B_CYCLES
         if phase == 'nurture':
             max_cycles = 0  # runs indefinitely
             min_duration_hours = 999999  # effectively infinite
@@ -2370,7 +2175,7 @@ async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.
 
 if __name__ == "__main__":
     args = parse_args()
-    max_retries = 1
+    max_retries = LLM_RETRY_MAX_ATTEMPTS
     retry_delay = 30
     for attempt in range(1, max_retries + 1):
         logger.info(f"Pipeline attempt {attempt}/{max_retries}")
@@ -2382,7 +2187,7 @@ if __name__ == "__main__":
                 specialist_filter=args.specialist,
                 model_filter=args.model,
                 max_duration_hours=args.max_duration,
-                max_cycles=args.max_cycles if args.max_cycles > 0 else MAX_PHASE_B_CYCLES,
+                max_cycles=args.max_cycles,
                 from_zero=args.from_zero,
                 parallel_workers=args.parallel,
                 skip_list=args.skip,

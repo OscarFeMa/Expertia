@@ -144,7 +144,6 @@ class App {
       case 'super-experts': this.renderSuperExperts(); break;
       case 'certified': this.renderCertified(); break;
       case 'incidents': this.renderIncidents(); break;
-      case 'wikidata': this.renderWikidata(); break;
     }
   }
 
@@ -256,13 +255,12 @@ class App {
   // ── DASHBOARD ──────────────────────────────────────────────────────────
   async renderDashboard() {
     const el = document.getElementById('tab-dashboard');
-    const [status, specialists, logs, health, pidData] = await Promise.all([
-      this.fetchJSON(`${this.apiBase}/status`),
-      this.fetchJSON(`${this.apiBase}/specialists`),
-      this.fetchJSON(`${this.apiBase}/activity-log?limit=1`),
-      this.fetchJSON(`${this.apiBase}/health`),
-      this.fetchJSON(`${this.apiBase}/pipeline/pid`),
-    ]);
+    const dash = await this.fetchJSON(`${this.apiBase}/dashboard`);
+    const status = dash?.status || null;
+    const specialists = dash ? { specialists: dash.specialists } : null;
+    const logs = dash ? { logs: dash.activity_log } : null;
+    const health = dash?.health || null;
+    const pidData = dash?.pipeline_pid || null;
     if (!status && !health) { el.innerHTML = '<div class="card">Error connecting to API</div>'; return; }
 
     const s = status || {};
@@ -286,6 +284,10 @@ class App {
         <div class="header-cell">
           <div class="header-label">Status</div>
           <div class="header-value" style="color:${isActive ? '#FF6B6B' : '#4ECDC4'}">${isActive ? '<span class="coral-dot"></span>' : ''}${pState}</div>
+        </div>
+        <div class="header-cell">
+          <div class="header-label">Modo</div>
+          <div class="header-value sm">${(s.mode || (s.phase || '—')).toUpperCase()}</div>
         </div>
         <div class="header-cell">
           <div class="header-label">Phase</div>
@@ -1191,158 +1193,6 @@ class App {
     const hidden = more.style.display === 'none';
     more.style.display = hidden ? 'block' : 'none';
     btn.textContent = hidden ? 'Hide' : `Show ${more.children.length} more incidents`;
-  }
-
-  // ── WIKIDATA ───────────────────────────────────────────────────────────
-  async renderWikidata() {
-    const el = document.getElementById('tab-wikidata');
-    const status = await this.fetchJSON(`${this.apiBase}/wikidata/status`);
-
-    if (!status) {
-      el.innerHTML = '<div class="card">Error connecting to API</div>';
-      return;
-    }
-
-    const pending = status.total_pendientes || 0;
-    const dlDays = status.dias_sin_descargar;
-    const feedDays = status.dias_pendientes_alimentar;
-    const dlRunning = status.download_running || false;
-    const running = status.download_running ? '🟢 Downloading...' : '⏹ Idle';
-
-    const dlDisplay = dlDays !== null && dlDays !== undefined
-      ? `${dlDays.toFixed(1)} days` : '— never downloaded';
-    const feedDisplay = feedDays !== null && feedDays !== undefined
-      ? `${feedDays.toFixed(1)} days` : '—';
-
-    const pendingByDomain = status.pendientes_por_dominio || {};
-    const domainEntries = Object.entries(pendingByDomain).sort((a, b) => b[1] - a[1]);
-    const maxP = Math.max(...domainEntries.map(e => e[1]), 1);
-
-    let domainBars = '';
-    for (const [domain, count] of domainEntries) {
-      const pct = (count / maxP * 100).toFixed(0);
-      domainBars += `
-        <div class="wd-domain-row">
-          <span class="wd-domain-name">${this.escapeHtml(domain)}</span>
-          <div class="wd-bar-wrap">
-            <div class="wd-bar" style="width:${pct}%"></div>
-          </div>
-          <span class="wd-domain-count">${count}</span>
-        </div>`;
-    }
-    if (!domainBars) {
-      domainBars = '<div style="color:var(--dim);padding:8px">All packages absorbed — nothing pending</div>';
-    }
-
-    const lastDl = status.ultima_descarga ? this.utcToLocal(status.ultima_descarga) : '—';
-    const lastFeed = status.ultima_alimentacion ? this.utcToLocal(status.ultima_alimentacion) : '—';
-
-    let progressHtml = '';
-    if (dlRunning && status.current_domain) {
-      progressHtml = `
-        <div class="card" style="text-align:center;padding:12px;background:#1a3a2a;border-color:#2ecc71">
-          <div style="font-size:13px;color:#2ecc71">⬇ Descargando: <strong>${this.escapeHtml(status.current_domain)}</strong></div>
-          <div style="font-size:24px;font-weight:700;color:#fff;margin:4px 0">${status.packages_downloaded || 0}</div>
-          <div style="font-size:12px;color:var(--dim)">paquetes descargados hasta ahora</div>
-        </div>`;
-    } else if (dlRunning) {
-      progressHtml = `
-        <div class="card" style="text-align:center;padding:12px;background:#1a3a2a;border-color:#2ecc71">
-          <div style="font-size:13px;color:#2ecc71">⬇ Descargando...</div>
-          <div style="font-size:24px;font-weight:700;color:#fff;margin:4px 0">${status.packages_downloaded || 0}</div>
-          <div style="font-size:12px;color:var(--dim)">paquetes descargados hasta ahora</div>
-        </div>`;
-    }
-
-    el.innerHTML = `
-      <div class="header-bar">
-        <div class="header-cell">
-          <div class="header-label">Last Download</div>
-          <div class="header-value sm">${this.escapeHtml(lastDl)}</div>
-        </div>
-        <div class="header-cell">
-          <div class="header-label">Last Feed</div>
-          <div class="header-value sm">${this.escapeHtml(lastFeed)}</div>
-        </div>
-        <div class="header-cell">
-          <div class="header-label">Process</div>
-          <div class="header-value sm">${running}</div>
-        </div>
-      </div>
-
-      ${progressHtml}
-
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0">
-        <div class="card" style="text-align:center;padding:24px">
-          <div style="font-size:36px;font-weight:700;color:${dlDays !== null && dlDays > 2 ? '#FF6B6B' : '#4ECDC4'}">${dlDisplay}</div>
-          <div style="color:var(--dim);margin-top:8px">Días sin descargar</div>
-          <div style="font-size:12px;color:var(--dim)">Última: ${this.escapeHtml(lastDl)}</div>
-        </div>
-        <div class="card" style="text-align:center;padding:24px">
-          <div style="font-size:36px;font-weight:700;color:${pending > 0 ? '#FFA500' : '#4ECDC4'}">${pending > 0 ? feedDisplay : '0'}</div>
-          <div style="color:var(--dim);margin-top:8px">Días pendientes de alimentar</div>
-          <div style="font-size:12px;color:var(--dim)">${pending} packages sin absorber</div>
-        </div>
-      </div>
-
-      <div style="display:flex;gap:12px;margin:12px 0">
-        <button class="wd-btn" onclick="app.wikidataDownload()" ${dlRunning ? 'disabled' : ''}>
-          📥 Descargar ahora
-        </button>
-        <button class="wd-btn" onclick="app.wikidataFeed()" ${dlRunning ? 'disabled' : ''}>
-          🧠 Alimentar ahora
-        </button>
-        <button class="wd-btn wd-btn-stop" onclick="app.wikidataStop()" ${!dlRunning ? 'disabled' : ''}>
-          ⏹ Detener
-        </button>
-      </div>
-
-      <div class="section-title" style="margin-top:20px"><h2>Paquetes pendientes por especialista</h2></div>
-      <div class="card">${domainBars}</div>
-    `;
-
-    if (this._wdPollTimer) {
-      clearTimeout(this._wdPollTimer);
-      this._wdPollTimer = null;
-    }
-    if (dlRunning) {
-      this._wdPollTimer = setTimeout(() => this.renderWikidata(), 3000);
-    }
-  }
-
-  async wikidataDownload() {
-    const btn = document.querySelector('.wd-btn:first-child');
-    if (btn) { btn.textContent = '📥 Descargando...'; btn.disabled = true; }
-    const r = await this.postJSON(`${this.apiBase}/wikidata/download`, {});
-    if (r && r.status === 'started') {
-      setTimeout(() => this.renderWikidata(), 500);
-    } else if (r && r.error) {
-      alert('Error: ' + r.error);
-      if (btn) { btn.textContent = '📥 Descargar ahora'; btn.disabled = false; }
-    }
-  }
-
-  async wikidataFeed() {
-    const btns = document.querySelectorAll('.wd-btn');
-    if (btns[1]) { btns[1].textContent = '🧠 Alimentando...'; btns[1].disabled = true; }
-    const r = await this.postJSON(`${this.apiBase}/wikidata/feed`, {});
-    if (r && r.status === 'started') {
-      setTimeout(() => this.renderWikidata(), 500);
-    } else if (r && r.error) {
-      alert('Error: ' + r.error);
-      if (btns[1]) { btns[1].textContent = '🧠 Alimentar ahora'; btns[1].disabled = false; }
-    }
-  }
-
-  async wikidataStop() {
-    if (this._wdPollTimer) {
-      clearTimeout(this._wdPollTimer);
-      this._wdPollTimer = null;
-    }
-    const r = await this.postJSON(`${this.apiBase}/wikidata/stop`, {});
-    if (r && r.status === 'stopped') {
-      this.renderWikidata();
-    }
   }
 }
 

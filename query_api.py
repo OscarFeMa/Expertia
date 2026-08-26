@@ -41,6 +41,22 @@ async def _periodic_checkpoint():
             logger.warning(f"WAL checkpoint failed: {e}")
 
 
+async def _periodic_cleanup():
+    """Daily purge of old activity_log and ema_history (>90 days) to prevent unbounded growth."""
+    while True:
+        await asyncio.sleep(86400)  # 24h
+        try:
+            conn = sqlite3.connect(DATABASE_PATH, timeout=30)
+            a = conn.execute("DELETE FROM activity_log WHERE timestamp < datetime('now', '-90 days')").rowcount
+            e = conn.execute("DELETE FROM ema_history WHERE timestamp < datetime('now', '-90 days')").rowcount
+            conn.commit()
+            conn.close()
+            if a or e:
+                logger.info(f"Cleanup purged {a} activity_log + {e} ema_history rows older than 90d")
+        except Exception as ex:
+            logger.warning(f"Periodic cleanup failed: {ex}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global llm
@@ -56,12 +72,18 @@ async def lifespan(app: FastAPI):
         logger.info("Reset stale ACTIVE/INIT pipeline status")
     except Exception as e:
         logger.warning(f"Failed to reset stale ACTIVE: {e}")
-    # Start periodic WAL checkpoint task
+    # Start periodic background tasks
     task = asyncio.create_task(_periodic_checkpoint())
+    cleanup_task = asyncio.create_task(_periodic_cleanup())
     yield
     task.cancel()
+    cleanup_task.cancel()
     try:
         await task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await cleanup_task
     except asyncio.CancelledError:
         pass
     if llm:
@@ -88,8 +110,11 @@ app.add_middleware(
 
 @app.middleware("http")
 async def timeout_middleware(request: Request, call_next):
+    # LLM queries can take 60-180s; exclude them from the global timeout
+    if request.url.path == "/query":
+        return await call_next(request)
     try:
-        return await asyncio.wait_for(call_next(request), timeout=10.0)
+        return await asyncio.wait_for(call_next(request), timeout=30.0)
     except asyncio.TimeoutError:
         logger.warning(f"TIMEOUT {request.method} {request.url.path}")
         return JSONResponse(status_code=503, content={"detail": "Request timed out"})
@@ -122,13 +147,19 @@ async def add_security_headers(request, call_next):
     return response
 app.include_router(api_router)
 
-frontend_path = Path(__file__).parent / "frontend" / "control-center"
-if frontend_path.exists():
-    app.mount("/admin", StaticFiles(directory=str(frontend_path), html=True), name="admin")
+from fastapi.responses import RedirectResponse
+
+
+@app.get("/admin")
+@app.get("/admin/{rest:path}")
+async def redirect_admin():
+    return RedirectResponse(url="/neural")
+
 
 neural_path = Path(__file__).parent / "frontend" / "neural-horizon"
 if neural_path.exists():
     app.mount("/neural", StaticFiles(directory=str(neural_path), html=True), name="neural")
+    app.mount("/", StaticFiles(directory=str(neural_path), html=True), name="neural-horizon")
 
 llm: Optional[LLMRunner] = None
 

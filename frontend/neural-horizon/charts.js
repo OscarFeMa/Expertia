@@ -1,165 +1,154 @@
 /**
- * Neural Horizon Charts
- * Lightweight chart rendering for the dashboard.
- * Only historical EMA trend chart and activity wave chart are kept.
+ * EXPERTIA · Charts (v5) — Command Console palette
+ * Canvas sin dependencias. Multi-línea EMA, throughput bars, sparklines.
  */
+const EMA_COLORS = [
+  '#E8913A','#D4A843','#4BAE6C','#5B8DB8','#D96A5C',
+  '#9B7EB8','#5BB5A0','#C98A4B','#6A9DC6','#B8A24A',
+  '#7D8BB0','#C47D5A','#5BA08A','#A87DAD','#8A8A5A',
+  '#CC6E5A','#4A8DB8','#D4A07A',
+];
 
-// ── Historical EMA Trend ────────────────────────────────────
-function makeEMAHistoryChart(canvasId, data) {
-    if (!data || data.length === 0) return;
-    const canvas = document.getElementById(canvasId);
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const { width, height } = canvas.parentElement.getBoundingClientRect();
-    canvas.width = width || 600;
-    canvas.height = height || 200;
-
-    const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
-    const fg = isDark ? '#E8EDF5' : '#1A1A2E';
-    const dim = isDark ? '#6B7B8D' : '#8A9BAB';
-    const grid = isDark ? 'rgba(0,212,255,0.08)' : 'rgba(0,153,204,0.1)';
-    const accent = isDark ? '#00D4FF' : '#0099CC';
-    const pulse = isDark ? '#FF6B9D' : '#D32F2F';
-
-    const pad = { top: 10, bottom: 20, left: 40, right: 10 };
-    const plotW = canvas.width - pad.left - pad.right;
-    const plotH = canvas.height - pad.top - pad.bottom;
-
-    // Parse timestamps -> labels
-    const labels = data.map(d => {
-        const t = new Date(d.created_at);
-        return t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    });
-    const values = data.map(d => d.ema_score);
-    const minVal = Math.min(...values);
-    const maxVal = Math.max(...values);
-    const range = maxVal - minVal || 0.1;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Grid lines
-    ctx.strokeStyle = grid;
-    ctx.lineWidth = 1;
-    for (let i = 0; i <= 4; i++) {
-        const y = pad.top + (plotH * i / 4);
-        ctx.beginPath();
-        ctx.moveTo(pad.left, y);
-        ctx.lineTo(canvas.width - pad.right, y);
-        ctx.stroke();
-        ctx.fillStyle = dim;
-        ctx.font = '10px Inter, sans-serif';
-        ctx.textAlign = 'right';
-        const v = maxVal - (range * i / 4);
-        ctx.fillText(v.toFixed(2), pad.left - 4, y + 4);
-    }
-
-    // Data line
-    ctx.beginPath();
-    ctx.strokeStyle = accent;
-    ctx.lineWidth = 2;
-    ctx.lineJoin = 'round';
-    for (let i = 0; i < values.length; i++) {
-        const x = pad.left + (i / (values.length - 1)) * plotW;
-        const y = pad.top + plotH - ((values[i] - minVal) / range) * plotH;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-
-    // Dot on latest
-    if (values.length > 1) {
-        const lx = pad.left + plotW;
-        const ly = pad.top + plotH - ((values[values.length-1] - minVal) / range) * plotH;
-        ctx.fillStyle = pulse;
-        ctx.beginPath();
-        ctx.arc(lx, ly, 3, 0, Math.PI * 2);
-        ctx.fill();
-    }
+function parseDbUtcToLocal(s) {
+  if (!s) return NaN;
+  const m = /(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(s);
+  if (!m) return NaN;
+  return Date.UTC(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]);
 }
 
-// ── Activity Wave / Packages by Time ────────────────────────
-function makeActivityWaveChart(canvasId, data) {
-    if (!data || data.length === 0) return;
-    const canvas = document.getElementById(canvasId);
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const { width, height } = canvas.parentElement.getBoundingClientRect();
-    canvas.width = width || 600;
-    canvas.height = height || 80;
-
-    const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
-    const accent = isDark ? '#00D4FF' : '#0099CC';
-    const fillColor = isDark ? 'rgba(0,212,255,0.12)' : 'rgba(0,153,204,0.12)';
-
-    const pad = { left: 0, right: 0, top: 4, bottom: 4 };
-    const plotW = canvas.width - pad.left - pad.right;
-    const plotH = canvas.height - pad.top - pad.bottom;
-
-    const values = data.map(d => d.count || 0);
-    const maxVal = Math.max(...values) || 1;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Fill area
-    ctx.beginPath();
-    ctx.moveTo(pad.left, pad.top + plotH);
-    for (let i = 0; i < values.length; i++) {
-        const x = pad.left + (i / (values.length - 1)) * plotW;
-        const y = pad.top + plotH - (values[i] / maxVal) * plotH;
-        ctx.lineTo(x, y);
-    }
-    ctx.lineTo(pad.left + plotW, pad.top + plotH);
-    ctx.closePath();
-    ctx.fillStyle = fillColor;
-    ctx.fill();
-
-    // Line
-    ctx.beginPath();
-    ctx.strokeStyle = accent;
-    ctx.lineWidth = 1.5;
-    ctx.lineJoin = 'round';
-    for (let i = 0; i < values.length; i++) {
-        const x = pad.left + (i / (values.length - 1)) * plotW;
-        const y = pad.top + plotH - (values[i] / maxVal) * plotH;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
+function _chartTheme() {
+  const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
+  return {
+    isDark,
+    fg: isDark ? '#C8CDD4' : '#2A2520',
+    dim: isDark ? '#6B747F' : '#7A7063',
+    grid: isDark ? 'rgba(232,145,58,0.06)' : 'rgba(196,100,26,0.08)',
+    accent: isDark ? '#E8913A' : '#C4641A',
+    accent2: isDark ? '#D4A843' : '#B8892A',
+    fill: isDark ? 'rgba(232,145,58,0.10)' : 'rgba(196,100,26,0.10)',
+  };
 }
 
-// ── Pie Chart for Specialist Knowledge Share ────────────────
-function makeKnowledgePieChart(canvasId, data) {
-    if (!data || data.length === 0) return;
-    const canvas = document.getElementById(canvasId);
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const size = Math.min(canvas.width, canvas.height) || 180;
+function _prepareCanvas(canvas, height) {
+  const wrap = canvas.parentElement;
+  const dpr = window.devicePixelRatio || 1;
+  const W = Math.max((wrap.clientWidth || 600), 120);
+  const H = height || (wrap.clientHeight || 240);
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  return { ctx, W, H, dpr };
+}
 
-    const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
-    const colors = ['#00D4FF', '#FF6B9D', '#FFD700', '#00E676', '#FF8A65', '#CE93D8', '#4FC3F7', '#AED581'];
+function drawEmaMultiLine(canvasId, series, legendEl, rangeHours) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas || !series || !series.length) return;
+  const C = _chartTheme();
+  const { ctx, W, H } = _prepareCanvas(canvas, 230);
+  const pad = { top:12, bottom:26, left:44, right:12 };
+  const plotW = W - pad.left - pad.right;
+  const plotH = H - pad.top - pad.bottom;
+  const now = Date.now();
+  const rangeMs = (rangeHours > 0 ? rangeHours : 24) * 3600 * 1000;
+  const tStart = now - rangeMs;
+  const tEnd = now;
 
-    const total = data.reduce((s, d) => s + (d.value || 0), 0) || 1;
-    const cx = canvas.width / 2;
-    const cy = canvas.height / 2;
-    const r = size / 2 - 10;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    let angle = -Math.PI / 2;
-    data.forEach((d, i) => {
-        const slice = ((d.value || 0) / total) * Math.PI * 2;
-        if (slice < 0.001) return;
-        ctx.beginPath();
-        ctx.moveTo(cx, cy);
-        ctx.arc(cx, cy, r, angle, angle + slice);
-        ctx.closePath();
-        ctx.fillStyle = colors[i % colors.length];
-        ctx.fill();
-        angle += slice;
+  let eMin = Infinity, eMax = -Infinity;
+  const usable = [];
+  series.forEach((s, i) => {
+    const pts = (s.points || []).filter(p => p && p.e != null);
+    if (pts.length < 2) return;
+    const color = EMA_COLORS[i % EMA_COLORS.length];
+    usable.push({ ...s, points: pts, color });
+    pts.forEach(p => {
+      const t = parseDbUtcToLocal(p.t);
+      if (t >= tStart && t <= tEnd) { if (p.e < eMin) eMin = p.e; if (p.e > eMax) eMax = p.e; }
     });
+  });
+  if (!usable.length || !isFinite(eMin)) {
+    if (ctx) { ctx.clearRect(0,0,W,H); ctx.fillStyle=C.dim; ctx.font='11px '+getComputedStyle(document.body).getPropertyValue('--mono'); ctx.fillText('Sin datos en el rango', pad.left, H/2); }
+    return;
+  }
+  const spare = (eMax - eMin) || 0.05;
+  eMin = Math.max(0, eMin - spare * 0.15);
+  eMax = Math.min(1.2, eMax + spare * 0.15);
 
-    ctx.fillStyle = isDark ? '#0A0E17' : '#F0F2F5';
-    ctx.beginPath();
-    ctx.arc(cx, cy, r * 0.55, 0, Math.PI * 2);
-    ctx.fill();
+  ctx.clearRect(0, 0, W, H);
+  ctx.strokeStyle = C.grid; ctx.lineWidth = 1;
+  const mono = getComputedStyle(document.body).getPropertyValue('--mono').trim();
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.top + (plotH * i / 4);
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+    ctx.fillStyle = C.dim; ctx.font = '10px ' + mono; ctx.textAlign = 'right';
+    ctx.fillText((eMax - (eMax - eMin) * i / 4).toFixed(3), pad.left - 6, y + 4);
+  }
+  ctx.textAlign = 'center';
+  const xTicks = 5;
+  for (let i = 0; i <= xTicks; i++) {
+    const t = tStart + (tEnd - tStart) * i / xTicks;
+    const x = pad.left + plotW * i / xTicks;
+    ctx.fillText(new Date(t).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' }), x, H - 8);
+  }
+
+  usable.forEach(s => {
+    ctx.beginPath(); ctx.strokeStyle = s.color; ctx.lineWidth = 1.5; ctx.lineJoin = 'round';
+    let drawn = false;
+    s.points.forEach(p => {
+      const t = parseDbUtcToLocal(p.t);
+      if (t < tStart || t > tEnd) return;
+      const x = pad.left + ((t - tStart) / (tEnd - tStart)) * plotW;
+      const y = pad.top + plotH - ((p.e - eMin) / (eMax - eMin)) * plotH;
+      if (!drawn) { ctx.moveTo(x, y); drawn = true; } else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    // end point
+    let lastPt = null;
+    for (const p of s.points) { const t = parseDbUtcToLocal(p.t); if (p.e != null && t >= tStart && t <= tEnd) lastPt = p; }
+    if (lastPt) {
+      const lt = parseDbUtcToLocal(lastPt.t);
+      const lx = pad.left + ((lt - tStart) / (tEnd - tStart)) * plotW;
+      const ly = pad.top + plotH - ((lastPt.e - eMin) / (eMax - eMin)) * plotH;
+      ctx.fillStyle = s.color; ctx.beginPath(); ctx.arc(lx, ly, 3, 0, Math.PI * 2); ctx.fill();
+      // legend-highlight: thicker + glow for Legend-tier series
+    }
+  });
+
+  if (legendEl) {
+    const top = usable.slice(0, 10);
+    legendEl.innerHTML = top.map(s =>
+      `<span class="lg"><span class="sw" style="background:${s.color}"></span>${escapeHtml(s.domain)}</span>`
+    ).join('');
+  }
+}
+
+function drawThroughputBars(canvasId, data) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas || !data || !data.length) return;
+  const C = _chartTheme();
+  const { ctx, W, H } = _prepareCanvas(canvas, 160);
+  const pad = { top:10, bottom:22, left:34, right:8 };
+  const plotW = W - pad.left - pad.right;
+  const plotH = H - pad.top - pad.bottom;
+  const max = Math.max(...data.map(d => d.cycles || 0), 1);
+  const mono = getComputedStyle(document.body).getPropertyValue('--mono').trim();
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.strokeStyle = C.grid; ctx.lineWidth = 1;
+  for (let i = 0; i <= 3; i++) {
+    const y = pad.top + (plotH * i / 3);
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+    ctx.fillStyle = C.dim; ctx.font = '9px ' + mono; ctx.textAlign = 'right';
+    ctx.fillText(Math.round(max - max * i / 3), pad.left - 5, y + 3);
+  }
+  const barW = plotW / data.length;
+  data.forEach((d, i) => {
+    const h = (d.cycles / max) * plotH;
+    const x = pad.left + i * barW + barW * 0.15;
+    const y = pad.top + plotH - h;
+    ctx.fillStyle = C.fill;
+    ctx.fillRect(x, y, Math.max(2, barW * 0.7), h);
+    ctx.fillStyle = C.accent;
+    ctx.fillRect(x, y, Math.max(2, barW * 0.7), 2);
+  });
 }

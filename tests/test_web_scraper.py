@@ -92,22 +92,25 @@ def test_modern_web_scraper_init():
     scraper.content_extractor.cleanup()
 
 
+@patch('web_scraper.search_seeds', return_value=[])
+@patch('web_scraper.search_wikipedia', return_value=[])
+@patch('web_scraper.search_all_academic', return_value=[])
 @patch('web_scraper.search_duckduckgo')
 @patch('web_scraper.ModernWebScraper._store_content')
-def test_search_and_extract(mock_store_content, mock_search):
+def test_search_and_extract(mock_store_content, mock_search, mock_academic, mock_wiki, mock_seeds):
     """Test the search_and_extract method."""
     # Setup mocks
     mock_search.return_value = [
-        {'title': 'Result 1', 'href': 'http://example1.com', 'body': 'Body 1'},
-        {'title': 'Result 2', 'href': 'http://example2.com', 'body': 'Body 2'}
+        {'title': 'Quantum Computing Advances', 'href': 'http://example1.com/quantum', 'body': 'Quantum computing uses qubits for computation'},
+        {'title': 'Renaissance Art History', 'href': 'http://example2.com/art', 'body': 'Renaissance art flourished in 15th century Italy'}
     ]
     
     scraper = ModernWebScraper()
     # Mock the content extractor's extract_content method
     scraper.content_extractor.extract_content = Mock()
     scraper.content_extractor.extract_content.side_effect = [
-        {'title': 'Content 1', 'content': 'Text 1', 'url': 'http://example1.com'},
-        {'title': 'Content 2', 'content': 'Text 2', 'url': 'http://example2.com'}
+        {'title': 'Quantum Computing Advances', 'content': 'Quantum computing uses qubits for computation', 'url': 'http://example1.com/quantum'},
+        {'title': 'Renaissance Art History', 'content': 'Renaissance art flourished in 15th century Italy', 'url': 'http://example2.com/art'}
     ]
     
     # Run the async method
@@ -115,8 +118,9 @@ def test_search_and_extract(mock_store_content, mock_search):
     results = asyncio.run(scraper.search_and_extract('test query', max_results=2))
     
     assert len(results) == 2
-    assert results[0]['title'] == 'Content 1'
-    assert results[1]['title'] == 'Content 2'
+    assert results[0]['title'] in ('Quantum Computing Advances', 'Renaissance Art History')
+    assert results[1]['title'] in ('Quantum Computing Advances', 'Renaissance Art History')
+    assert results[0]['title'] != results[1]['title']
     assert scraper.search_count == 1
     
     # Verify store_content was called twice

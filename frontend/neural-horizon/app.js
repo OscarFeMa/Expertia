@@ -1,1560 +1,636 @@
+/**
+ * EXPERTIA · Neural Horizon — Command Console (v5)
+ * 3 tabs: FLOTA · MÉTRICAS · ACTIVIDAD
+ * Tracking denso con especialistas Legend prominentes.
+ */
 class App {
   constructor() {
     this.apiBase = '/api';
-    this.refreshInterval = null;
-    this.theme = localStorage.getItem('expertia-theme') || 'light';
+    this.theme = localStorage.getItem('expertia-theme') || 'dark';
     document.documentElement.setAttribute('data-theme', this.theme);
-    this.activeTab = 'dashboard';
-    this.dataCache = {};
-    this.memoryHistory = [];
-    this.monitorHistory = [];
-    this._lastEntities = 0;
-    this._lastCheckpointId = 0;
-    this._monitorTimer = null;
-    this._lastPidInfo = null;
-    this._lastFetchTime = 0;
-    this.dashSpecSort = 'domain-asc';
-    this.allSpecialistsData = [];
-    this._highlightDomain = '';
-    this.apiKey = sessionStorage.getItem('expertia-api-key') || '';
-    this._currentInterval = null;
+    this.tab = 'fleet';
+    this.sortKey = 'ema';
+    this.sortDir = -1; // desc
+    this.rangeHours = 720;
+    this.actFilter = 'ALL';
+    this.pollMs = 3000;
+    this._timer = null;
+    this._apiKey = sessionStorage.getItem('expertia-api-key') || '';
+    this.spark = { cpu: [], ram: [], disk: [] };
+    this.emaSeries = {};
+    this.emaSeriesEmpty = true;
+    this.activityHistory = [];
+    this.rawSpecs = [];
+    this.rawOverview = null;
     this.init();
   }
 
   async init() {
-    await this.loadHealth();
-    await this.updateSidebarStats();
-    this.startAutoRefresh();
     this.updateClock();
-    setInterval(() => this.updateClock(), 5000);
-    setInterval(() => this.updateDashboardTimers(), 1000);
+    setInterval(() => this.updateClock(), 1000);
+    // Restore persistent UI state
+    this.legendCollapsed = localStorage.getItem('expertia-legend-collapsed') === '1';
+    this.actFilter = localStorage.getItem('expertia-act-filter') || 'ALL';
+    let storedRange = localStorage.getItem('expertia-range');
+    if (storedRange === '24' || storedRange === '168' || !storedRange) storedRange = '720';
+    this.rangeHours = Number(storedRange);
+    localStorage.setItem('expertia-range', '720');
+    await this.refresh();
+    this.startPolling();
+    document.addEventListener('visibilitychange', () => this.startPolling());
+    document.addEventListener('keydown', e => this.onKey(e));
+    this.applyLegendState();
   }
 
-  formatRemaining(uptimeSec, durationHours) {
-    if (!durationHours || durationHours <= 0) return '∞';
-    const total = durationHours * 3600;
-    const left = Math.max(0, total - uptimeSec);
-    const h = Math.floor(left / 3600);
-    const m = Math.floor((left % 3600) / 60);
-    const s = Math.floor(left % 60);
-    return `${h}h ${m.toString().padStart(2,'0')}m ${s.toString().padStart(2,'0')}s`;
+  onKey(e) {
+    if (e.target.tagName === 'INPUT') return;
+    if (e.key === 'F1') { e.preventDefault(); this.switchTab('fleet'); }
+    else if (e.key === 'F2') { e.preventDefault(); this.switchTab('metrics'); }
+    else if (e.key === 'F3') { e.preventDefault(); this.switchTab('activity'); }
+    else if (e.key === 'r' || e.key === 'R') { this.refresh(); }
+    else if (e.key === 't' || e.key === 'T') { this.toggleTheme(); }
+    else if (e.key === '?' || (e.key === '/' && e.shiftKey)) { e.preventDefault(); this.toggleHelp(); }
+    else if (e.key === 'Escape') { this.toggleHelp(false); }
   }
 
-  updateDashboardTimers() {
-    const clockEl = document.getElementById('dash-clock');
-    if (clockEl) clockEl.textContent = new Date().toLocaleTimeString();
-    const remEl = document.getElementById('dash-remaining');
-    if (remEl && this._lastPidInfo && this._lastPidInfo.alive) {
-      const uptime = this._lastPidInfo.uptime_seconds + Math.floor((Date.now() - this._lastFetchTime) / 1000);
-      remEl.textContent = this.formatRemaining(uptime, this._lastPidInfo.duration_hours);
+  // ── Toast notifications ──
+  toast(title, message, kind = 'info', duration = 5000) {
+    const c = document.getElementById('toast-container');
+    if (!c) return;
+    const icons = { success: '✓', error: '✕', info: '◆', 'legend-promo': '★' };
+    const t = document.createElement('div');
+    t.className = `toast ${kind}`;
+    t.innerHTML = `<span class="t-icon">${icons[kind] || '◆'}</span><div class="t-body"><div class="t-title">${escapeHtml(title)}</div><div>${escapeHtml(message)}</div></div>`;
+    c.appendChild(t);
+    setTimeout(() => {
+      t.classList.add('out');
+      setTimeout(() => t.remove(), 300);
+    }, duration);
+  }
+
+  // ── Keyboard help overlay ──
+  toggleHelp(force) {
+    const el = document.getElementById('help-overlay');
+    if (!el) return;
+    const show = force !== undefined ? force : !el.classList.contains('show');
+    el.classList.toggle('show', show);
+  }
+
+  // ── Legend strip collapsable ──
+  toggleLegend() {
+    this.legendCollapsed = !this.legendCollapsed;
+    localStorage.setItem('expertia-legend-collapsed', this.legendCollapsed ? '1' : '0');
+    this.applyLegendState();
+  }
+
+  applyLegendState() {
+    const strip = document.getElementById('legend-strip');
+    const btn = document.getElementById('legend-toggle');
+    if (strip) strip.classList.toggle('collapsed', this.legendCollapsed);
+    if (btn) btn.textContent = this.legendCollapsed ? '▶' : '▼';
+  }
+
+  // ── Persistent filters ──
+  setRange(h) {
+    this.rangeHours = h;
+    localStorage.setItem('expertia-range', String(h));
+    document.querySelectorAll('.range-btn').forEach(b =>
+      b.classList.toggle('active', Number(b.dataset.hours) === h));
+    this.loadEmaChart();
+  }
+
+  setActFilter(lvl) {
+    this.actFilter = lvl;
+    localStorage.setItem('expertia-act-filter', lvl);
+    document.querySelectorAll('.filter-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.lvl === lvl));
+    this.renderActivity();
+  }
+
+  switchTab(name) {
+    this.tab = name;
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    const panel = document.getElementById('tab-' + name);
+    if (panel) panel.classList.add('active');
+    this.render();
+    if (name === 'metrics') {
+      // necesita el panel visible para dimensionar canvas
+      requestAnimationFrame(() => {
+        this.renderMetrics();
+        this.renderInsights();
+        this.loadEmaChart();
+      });
     }
+  }
+
+  startPolling() {
+    if (this._timer) clearInterval(this._timer);
+    this.pollMs = document.hidden ? 30000 : 3000;
+    this._timer = setInterval(() => {
+      if (document.hidden) return;
+      this.refresh();
+    }, this.pollMs);
   }
 
   updateClock() {
-    const now = new Date();
-    document.getElementById('sb-time').textContent = now.toLocaleTimeString();
-  }
-
-  async updateSidebarStats() {
-    const [specData, health] = await Promise.all([
-      this.fetchJSON(`${this.apiBase}/specialists`),
-      this.fetchJSON(`${this.apiBase}/health`),
-    ]);
-    const setText = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
-    const specs = specData?.specialists || [];
-    setText('ss-specs', specs.length || '-');
-    setText('ss-pkgs', (health?.package_count || 0).toLocaleString());
-    setText('ss-incidents', health?.incident_count || '-');
-    setText('ss-reliable', specs.filter(s => s.is_reliable).length + '/' + specs.length);
-    if (specData) this._lastSpecialists = specs;
-  }
-
-  startAutoRefresh() {
-    if (this.refreshInterval) clearInterval(this.refreshInterval);
-    this.refreshInterval = setInterval(async () => {
-      if (document.hidden) return;
-      await this.refreshActiveTab();
-    }, 5000);
-  }
-
-  updateRefreshInterval(active) {
-    const interval = active ? 5000 : 10000;
-    if (this.refreshInterval) {
-      if (this._currentInterval === interval) return;
-      clearInterval(this.refreshInterval);
-    }
-    this.refreshInterval = setInterval(async () => {
-      if (document.hidden) return;
-      await this.refreshActiveTab();
-    }, interval);
-    this._currentInterval = interval;
-  }
-
-  async fetchJSON(url, timeoutMs = 60000) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const res = await fetch(url, { signal: controller.signal });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
-    } catch (e) {
-      if (e.name === 'AbortError') console.error('Fetch timeout:', url);
-      else console.error('Fetch error:', url, e);
-      return null;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  async postJSON(url, body, timeoutMs = 30000) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const headers = { 'Content-Type': 'application/json' };
-      if (this.apiKey) headers['X-API-Key'] = this.apiKey;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body || {}),
-        signal: controller.signal,
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || `HTTP ${res.status}`);
-      }
-      return await res.json();
-    } catch (e) {
-      if (e.name === 'AbortError') console.error('POST timeout:', url);
-      else console.error('POST error:', url, e);
-      return { error: e.message };
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  async loadHealth() {
-    const h = await this.fetchJSON(`${this.apiBase}/health`);
-    const sb = document.getElementById('sb-status');
-    if (h) {
-      const dot = h.database === 'ok' ? '🟢' : '🔴';
-      sb.textContent = `${dot} DB: ${h.database} · ${h.specialist_count} specialists · ${h.package_count} packages · ${h.incident_count} incidents`;
-    } else {
-      sb.textContent = '🔴 Connection error';
-    }
-  }
-
-  async refreshActiveTab() {
-    if (this.activeTab === 'dashboard') await this.renderDashboard();
-  }
-
-  switchTab(tab) {
-    this.activeTab = tab;
-    document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.tab === tab));
-    document.querySelectorAll('.tab-content').forEach(el => el.classList.toggle('active', el.id === `tab-${tab}`));
-    switch (tab) {
-      case 'dashboard': this.renderDashboard(); break;
-      case 'specialists': this.renderSpecialists(); break;
-      case 'fleet': this.renderFleet(); break;
-      case 'map': this.renderMap(); break;
-      case 'super-experts': this.renderSuperExperts(); break;
-      case 'certified': this.renderCertified(); break;
-      case 'incidents': this.renderIncidents(); break;
-      case 'wikidata': this.renderWikidata(); break;
-      case 'monitor': this.renderMonitor(); break;
-    }
-  }
-
-  clickReliable(domain) {
-    this._highlightDomain = domain;
-    this.switchTab('certified');
-  }
-
-  killAll() {
-    if (!confirm('Kill all processes? This will stop the pipeline and API.')) return;
-    const btn = document.querySelector('.kill-btn');
-    if (btn) { btn.textContent = '⏹ Killing...'; btn.disabled = true; }
-    this.postJSON(`${this.apiBase}/kill`, {}).then(r => {
-      alert('All processes killed. API shutting down.');
-    }).catch(() => {
-      alert('Kill signal sent. API is shutting down.');
-    });
+    const el = document.getElementById('sb-time');
+    if (el) el.textContent = new Date().toLocaleTimeString();
   }
 
   toggleTheme() {
-    this.theme = this.theme === 'light' ? 'dark' : 'light';
-    document.documentElement.setAttribute('data-theme', this.theme);
+    this.theme = this.theme === 'dark' ? 'light' : 'dark';
     localStorage.setItem('expertia-theme', this.theme);
-    this.refreshActiveTab();
+    document.documentElement.setAttribute('data-theme', this.theme);
   }
 
-  escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
+  setRange(h) {
+    this.rangeHours = h;
+    document.querySelectorAll('.range-btn').forEach(b =>
+      b.classList.toggle('active', Number(b.dataset.hours) === h));
+    this.loadEmaChart();
   }
 
-  utcToLocal(ts) {
-    if (!ts) return '-';
+  setActFilter(lvl) {
+    this.actFilter = lvl;
+    document.querySelectorAll('.filter-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.lvl === lvl));
+    this.renderActivity();
+  }
+
+  sortBy(key) {
+    if (this.sortKey === key) this.sortDir *= -1;
+    else { this.sortKey = key; this.sortDir = -1; }
+    this.render();
+  }
+
+  async fetchJSON(url, opts = {}) {
+    const headers = { ...(opts.headers || {}) };
+    if (this._apiKey) headers['X-API-Key'] = this._apiKey;
     try {
-      const d = new Date(ts);
-      if (isNaN(d.getTime())) return String(ts).slice(11, 19);
-      return d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-    } catch {
-      return String(ts).slice(11, 19) || '-';
-    }
-  }
-
-  narrativeHumor(level, message) {
-    const msg = String(message).slice(0, 200);
-    if (msg.includes('403')) return 'El bibliotecario jefe denegó el acceso a la estantería';
-    if (msg.includes('404')) return 'El libro solicitado no se encuentra en los anaqueles';
-    if (msg.includes('500')) return 'Los duendes del servidor están de huelga';
-    if (msg.includes('Package guardado')) return 'Un tomo más descansa en los estantes del archivo';
-    if (msg.toLowerCase().includes('package saved')) return 'Un volumen ha sido catalogado exitosamente';
-    if (msg.toLowerCase().includes('timeout')) return 'El mensajero tardó demasiado y perdió la paciencia';
-    if ((msg.toLowerCase().includes('connection') || msg.toLowerCase().includes('refused')) && (msg.toLowerCase().includes('error') || msg.toLowerCase().includes('fail')))
-      return 'El cableado entre anaqueles falló — alguien tropezó con el cable';
-    if (msg.toUpperCase().includes('HTTP') && (msg.toLowerCase().includes('error') || msg.toLowerCase().includes('fail')))
-      return 'El archivista reporta problemas técnicos con la conexión';
-    if (msg.includes('Buscan') || msg.includes('Search') || msg.includes('DDGS')) return 'Hojeando el catálogo en busca de referencias...';
-    if (msg.toLowerCase().includes('trafilatura')) return 'El fotocopiador digital está extrayendo páginas';
-    if (msg.includes('Destilando') || msg.toLowerCase().includes('query')) return 'Las neuronas están sudando — proceso cognitivo en marcha';
-    if (level === 'ERROR' || level === 'CRITICAL') return `Incidente en la sala de lectura: ${msg.slice(0, 150)}`;
-    if (level === 'WARNING') return `El bibliotecario frunce el ceño: ${msg.slice(0, 150)}`;
-    if (level === 'DEBUG') return `El archivista anota en sus cuadernos: ${msg.slice(0, 150)}`;
-    return msg;
-  }
-
-  specSortFn(key) {
-    const order = { ACTIVE: 0, IDLE: 1, COMPLETED: 2, ERROR: 3, STOPPED: 4 };
-    const sortMap = {
-      'domain-asc': (a, b) => a.domain.localeCompare(b.domain),
-      'domain-desc': (a, b) => b.domain.localeCompare(a.domain),
-      'pkg-asc': (a, b) => (a.packages_absorbed || 0) - (b.packages_absorbed || 0),
-      'pkg-desc': (a, b) => (b.packages_absorbed || 0) - (a.packages_absorbed || 0),
-      'ema-asc': (a, b) => (a.ema_score || 0) - (b.ema_score || 0),
-      'ema-desc': (a, b) => (b.ema_score || 0) - (a.ema_score || 0),
-      'status': (a, b) => (order[a.status] || 99) - (order[b.status] || 99),
-      'status-desc': (a, b) => (order[b.status] || 99) - (order[a.status] || 99),
-      'model': (a, b) => a.model.localeCompare(b.model),
-    };
-    return sortMap[key] || sortMap['domain-asc'];
-  }
-
-  tierIcon(tier) {
-    if (tier === 4) return '<span class="tier-legend" title="Legend">👑</span>';
-    if (tier === 3) return '<span class="tier-gold" title="Gold">⭐⭐</span>';
-    if (tier === 2) return '<span class="tier-silver" title="Silver">⭐</span>';
-    if (tier === 1) return '<span class="tier-bronze" title="Bronze">◆</span>';
-    return '';
-  }
-
-  tierBorder(tier) {
-    if (tier === 4) return 'spec-card-legend';
-    if (tier === 3) return 'spec-card-gold';
-    if (tier === 2) return 'spec-card-silver';
-    if (tier === 1) return 'spec-card-bronze';
-    return '';
-  }
-
-  logIcon(level) {
-    return { INFO: '📝', WARNING: '👀', ERROR: '🔥', CRITICAL: '🔥', DEBUG: '📋' }[level] || '📝';
-  }
-
-  renderLogEntry(row, highlight) {
-    const ts = this.utcToLocal(row.timestamp);
-    const icon = this.logIcon(row.level);
-    const msg = this.escapeHtml(this.narrativeHumor(row.level, String(row.message).slice(0, 200)));
-    const hl = highlight ? ' style="background:rgba(255,107,107,0.1)"' : '';
-    return `<div class="log-entry"${hl}><span class="log-ts">${this.escapeHtml(ts)}</span><span class="log-icon">${icon}</span><span class="log-msg">${msg}</span></div>`;
-  }
-
-  // ── DASHBOARD ──────────────────────────────────────────────────────────
-  async renderDashboard() {
-    const el = document.getElementById('tab-dashboard');
-    const [status, specialists, logs, health, pidData] = await Promise.all([
-      this.fetchJSON(`${this.apiBase}/status`),
-      this.fetchJSON(`${this.apiBase}/specialists`),
-      this.fetchJSON(`${this.apiBase}/activity-log?limit=1`),
-      this.fetchJSON(`${this.apiBase}/health`),
-      this.fetchJSON(`${this.apiBase}/pipeline/pid`),
-    ]);
-    if (!status && !health) { el.innerHTML = '<div class="card">Error connecting to API</div>'; return; }
-
-    const s = status || {};
-    const pidInfo = pidData || {};
-    this._lastPidInfo = pidInfo;
-    this._lastFetchTime = Date.now();
-    const procAlive = pidInfo.alive || false;
-    const pState = procAlive || s.status === 'ACTIVE' || s.status === 'RUNNING' ? (s.status || 'ACTIVE') : 'STOPPED';
-    const isActive = procAlive || s.status === 'ACTIVE' || s.status === 'RUNNING';
-    const specialistsList = specialists?.specialists || [];
-    const totalSpec = specialistsList.length;
-    const doneSpec = specialistsList.filter(sp => sp.status === 'IDLE' || sp.status === 'COMPLETED').length;
-    const progress = totalSpec > 0 ? (doneSpec / totalSpec * 100) : 0;
-    const pid = pidInfo.pid;
-    const uptime = pidInfo.uptime_seconds || 0;
-    this.updateRefreshInterval(isActive);
-
-    const logsList = logs?.logs || [];
-
-    let html = `
-      <div class="header-bar">
-        <div class="header-cell">
-          <div class="header-label">Status</div>
-          <div class="header-value" style="color:${isActive ? '#FF6B6B' : '#4ECDC4'}">${isActive ? '<span class="coral-dot"></span>' : ''}${pState}</div>
-        </div>
-        <div class="header-cell">
-          <div class="header-label">Phase</div>
-          <div class="header-value sm">${s.phase || '-'}</div>
-        </div>
-        <div class="header-cell">
-          <div class="header-label">Specialist</div>
-          <div class="header-value sm">${s.current_specialist || '-'}</div>
-        </div>
-        <div class="header-cell">
-          <div class="header-label">Cycle</div>
-          <div class="header-value sm">${s.current_cycle || 0}/${s.total_cycles || 0}</div>
-        </div>
-        <div class="header-cell">
-          <div class="header-label">Model (VRAM)</div>
-          <div class="header-value sm" style="color:var(--active);font-weight:600">${s.current_model || '—'}</div>
-        </div>
-        <div class="header-cell">
-          <div class="header-label">Elapsed</div>
-          <div class="header-value sm">${s.elapsed_seconds ? Math.floor(s.elapsed_seconds / 60) + 'm' : '--'}</div>
-        </div>
-        <div class="header-cell">
-          <div class="header-label">Remaining</div>
-          <div class="header-value sm" id="dash-remaining">${isActive ? this.formatRemaining(uptime, pidInfo.duration_hours) : '--'}</div>
-        </div>
-        <div class="header-cell">
-          <div class="header-label">Clock</div>
-          <div class="header-value sm" id="dash-clock">${new Date().toLocaleTimeString()}</div>
-        </div>
-      </div>
-
-      <!-- Synaptic activity pulse -->
-      <div class="synaptic-pulse" id="synaptic-pulse">
-        <div class="pulse-dot ${isActive ? 'active' : 'idle'}"></div>
-        <div class="pulse-label">${isActive ? '🧠 Synaptic activity' : '🌙 Archive dormant'}</div>
-        <div class="pulse-sub">${isActive ? (s.phase || 'Processing...') : 'Idle'}</div>
-        <div class="wave-bars ${isActive ? '' : 'idle'}" id="wave-bars">
-          <div class="bar"></div><div class="bar"></div><div class="bar"></div>
-          <div class="bar"></div><div class="bar"></div><div class="bar"></div>
-          <div class="bar"></div><div class="bar"></div><div class="bar"></div>
-        </div>
-        <div class="pulse-activity-text" id="pulse-activity-text">${logsList.length ? this.escapeHtml(this.narrativeHumor(logsList[0].level, logsList[0].message)) : ''}</div>
-      </div>
-    `;
-
-    if (!isActive) {
-      html += `<div class="card" id="launch-form" style="padding:10px 14px">
-        <div class="launch-row">
-          <div>
-            <label>Phase</label>
-            <select id="lp-phase" class="lp-phase">
-              <option value="full">Full Cascade</option>
-              <option value="cascade">Cascade</option>
-              <option value="web">Web + LLM</option>
-              <option value="nurture">🌱 Nurture</option>
-            </select>
-            <div class="launch-phase-desc" id="lp-phase-desc">Cascade → Web → LLM</div>
-          </div>
-          <div>
-            <label>Specialists</label>
-            <select id="lp-spec" class="lp-spec" onchange="app.onLaunchSpecChange()">
-              <option value="all">All</option>
-              <option value="model">By Model</option>
-              <option value="single">One</option>
-            </select>
-          </div>
-          <div id="lp-model-container" style="display:none">
-            <label>Model</label>
-            <select id="lp-model" class="lp-dyn"><option value="all">all</option></select>
-          </div>
-          <div id="lp-single-container" style="display:none">
-            <label>Specialist</label>
-            <select id="lp-single" class="lp-dyn"></select>
-          </div>
-          <div>
-            <label>Duration (h)</label>
-            <input type="number" id="lp-dur" class="lp-dur" value="5.0" min="1" max="24" step="0.5">
-          </div>
-          <div>
-            <button onclick="app.startPipeline()" class="primary lp-start-btn">▶ Start</button>
-          </div>
-        </div>
-        <div id="lp-msg" style="margin-top:4px;font-size:11px"></div>
-      </div>`;
-
-      html += `<div class="progress-bar"><div style="width:0%"></div></div>
-      <div class="progress-info">System idle</div>`;
-    } else {
-      html += `<div class="card" style="display:flex;gap:12px;align-items:center">
-        <button id="lp-stop-btn" onclick="app.stopPipeline()" style="background:var(--error);color:#fff;border-color:var(--error)">■ Stop</button>
-        <span style="font-size:12px;color:var(--dim)">PID: ${pid || '--'} · Uptime: ${Math.floor(uptime / 60)}m</span>
-        <div id="lp-msg" style="font-size:12px;flex:1"></div>
-      </div>`;
-
-      html += `<div class="progress-bar active"><div style="width:${progress}%"></div></div>
-      <div class="progress-info">${doneSpec}/${totalSpec} specialists completed · Cycle ${s.current_cycle || 0} · ${s.phase || ''}</div>`;
-    }
-
-    // Monitor section
-    const mon = await this.fetchJSON(`${this.apiBase}/monitor/status`);
-    const monAlive = mon?.alive || false;
-    html += `<div class="card" style="margin-top:8px;padding:8px 12px;display:flex;align-items:center;gap:10px;font-size:12px">
-      <span style="font-weight:600">📊 Monitor</span>
-      <span style="color:${monAlive ? 'var(--success)' : 'var(--dim)'}">${monAlive ? '● Running' : '○ Stopped'}</span>
-      ${monAlive ? `<span style="color:var(--dim)">PID: ${mon.pid} · Uptime: ${Math.floor((mon.uptime_seconds || 0) / 60)}m</span>` : ''}
-      <span style="flex:1"></span>
-      ${monAlive
-        ? `<button onclick="app.stopMonitor()" style="background:var(--error);color:#fff;border:none;border-radius:4px;padding:2px 10px;cursor:pointer">■ Stop</button>`
-        : `<button onclick="app.startMonitor()" class="primary" style="padding:2px 10px;font-size:11px">▶ Start</button>`
-      }
-    </div>`;
-
-    // Monitor reports section
-    if (mon?.reports?.length) {
-      const lastReport = mon.reports[mon.reports.length - 1];
-      html += `<div class="card" style="margin-top:4px;padding:6px 12px;font-size:11px;color:var(--dim)">
-        📋 Last monitor: ${this.escapeHtml(JSON.stringify(lastReport).slice(0, 300))}
-      </div>`;
-    }
-
-    // Specialist tree with sort
-    let sortKey = this.dashSpecSort || 'domain-asc';
-    const sortedSpecs = [...specialistsList].sort(this.specSortFn(sortKey));
-    const roots = sortedSpecs.filter(sp => !sp.parent_id);
-    const children = sortedSpecs.filter(sp => sp.parent_id);
-    const childMap = {};
-    children.forEach(c => { if (!childMap[c.parent_id]) childMap[c.parent_id] = []; childMap[c.parent_id].push(c); });
-    const badgeMap = { ACTIVE: 'badge-active', IDLE: 'badge-idle', COMPLETED: 'badge-done', ERROR: 'badge-error', STOPPED: 'badge-idle' };
-    const colorMap = { ACTIVE: '#FF6B6B', IDLE: '#4ECDC4', COMPLETED: '#4ECDC4', ERROR: '#C44536', STOPPED: '#6B7A8A' };
-
-    html += `<div class="section-title"><h2>📚 Specialist Registry</h2>
-      <select id="dash-spec-sort" onchange="app.dashSpecSort=this.value;app.renderDashboard()" style="font-size:11px;padding:2px 6px;height:auto">
-        <option value="domain-asc" ${sortKey==='domain-asc'?'selected':''}>Domain ↑</option>
-        <option value="domain-desc" ${sortKey==='domain-desc'?'selected':''}>Domain ↓</option>
-        <option value="pkg-desc" ${sortKey==='pkg-desc'?'selected':''}>Packages ↓</option>
-        <option value="pkg-asc" ${sortKey==='pkg-asc'?'selected':''}>Packages ↑</option>
-        <option value="ema-desc" ${sortKey==='ema-desc'?'selected':''}>EMA ↓</option>
-        <option value="ema-asc" ${sortKey==='ema-asc'?'selected':''}>EMA ↑</option>
-        <option value="status" ${sortKey==='status'?'selected':''}>⚡ Active ↑</option>
-        <option value="status-desc" ${sortKey==='status-desc'?'selected':''}>Status ↓</option>
-        <option value="model" ${sortKey==='model'?'selected':''}>Model</option>
-      </select>
-    </div>`;
-    html += '<div class="spec-grid-3">';
-    const childSort = this.specSortFn(sortKey);
-    roots.forEach(r => {
-      const badge = badgeMap[r.status] || 'badge-idle';
-      const bc = colorMap[r.status] || '#6B7A8A';
-      const tier_class = this.tierBorder(r.tier);
-      const ticon = this.tierIcon(r.tier);
-      const base_class = `spec-card spec-card-${r.status === 'ACTIVE' ? 'active' : r.status === 'ERROR' ? 'error' : 'idle'}`;
-      const card_class = tier_class ? `${base_class} ${tier_class}` : base_class;
-      const reliable = r.tier >= 1;
-      html += `<div class="${card_class}"${reliable ? ` data-domain="${this.escapeHtml(r.domain)}" onclick="app.clickReliable(this.dataset.domain)" title="Click to view stats"` : ''}>
-        <div class="spec-card-inner"><span class="spec-name">${this.escapeHtml(r.domain)} ${ticon}</span><span class="spec-badge ${badge}" style="background:${bc}22;color:${bc}">${this.escapeHtml(r.status)}</span></div>
-        <div class="spec-meta">📦 ${r.packages_absorbed} · 📈 ${r.ema_score != null ? r.ema_score.toFixed(3) : '—'} · 🎯 ${this.escapeHtml(r.model || '')}</div>`;
-      (childMap[r.id] || []).sort(childSort).forEach(c => {
-        html += `<div class="spec-meta" style="margin-top:2px;padding-top:2px;border-top:1px dashed var(--border)">
-          └─ ${this.escapeHtml(c.domain)} · 📦${c.packages_absorbed} · 📈${c.ema_score != null ? c.ema_score.toFixed(2) : '—'} · 🎯 ${this.escapeHtml(c.model || '')}
-          <span class="spec-badge ${badgeMap[c.status] || 'badge-idle'}" style="background:${colorMap[c.status]}22;color:${colorMap[c.status]};font-size:9px;padding:0 4px;margin-left:4px">${this.escapeHtml(c.status || '')}</span>
-        </div>`;
-      });
-      html += `</div>`;
-    });
-    html += '</div>';
-
-    // Activity log — single line
-    html += `<div class="section-title" style="margin-top:16px"><h2>📜 Library Whispers</h2></div>`;
-    if (logsList.length) {
-      html += this.renderLogEntry(logsList[0], true);
-    } else {
-      html += `<div class="card" style="color:var(--dim)">-- silence in the library --</div>`;
-    }
-
-    // Save launch form values before re-render
-    const savedForm = !isActive ? {
-      phase: document.getElementById('lp-phase')?.value,
-      spec: document.getElementById('lp-spec')?.value,
-      model: document.getElementById('lp-model')?.value,
-      single: document.getElementById('lp-single')?.value,
-      dur: document.getElementById('lp-dur')?.value,
-    } : null;
-
-    el.innerHTML = html;
-
-    // Populate model/specialist selects and restore saved values
-    if (!isActive) {
-      this.populateLaunchForm(specialistsList);
-      if (savedForm) {
-        if (savedForm.phase) document.getElementById('lp-phase').value = savedForm.phase;
-        if (savedForm.spec) {
-          document.getElementById('lp-spec').value = savedForm.spec;
-          this.onLaunchSpecChange();
-        }
-        if (savedForm.model) document.getElementById('lp-model').value = savedForm.model;
-        if (savedForm.single) document.getElementById('lp-single').value = savedForm.single;
-        if (savedForm.dur) document.getElementById('lp-dur').value = savedForm.dur;
-      }
-    }
-    this.updateSidebarStats();
-  }
-
-  onLaunchSpecChange() {
-    const v = document.getElementById('lp-spec')?.value;
-    document.getElementById('lp-model-container').style.display = v === 'model' ? 'block' : 'none';
-    document.getElementById('lp-single-container').style.display = v === 'single' ? 'block' : 'none';
-  }
-
-  _toggleNurtureMode(isNurture) {
-    const elIds = ['lp-spec', 'lp-model', 'lp-single', 'lp-dur'];
-    elIds.forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.disabled = isNurture;
-    });
-    document.getElementById('lp-model-container').style.display = isNurture ? 'none' : (document.getElementById('lp-spec')?.value === 'model' ? 'block' : 'none');
-    document.getElementById('lp-single-container').style.display = isNurture ? 'none' : (document.getElementById('lp-spec')?.value === 'single' ? 'block' : 'none');
-  }
-
-  populateLaunchForm(specialists) {
-    const phaseSel = document.getElementById('lp-phase');
-    if (phaseSel) {
-      phaseSel.onchange = () => {
-        const isNurture = phaseSel.value === 'nurture';
-        const desc = { full: 'Cascade → Web → LLM', cascade: 'Wikidata scan only', web: 'Web search + LLM loop', nurture: 'Raise low EMA → 0.96 one by one' };
-        document.getElementById('lp-phase-desc').textContent = desc[phaseSel.value] || '';
-        this._toggleNurtureMode(isNurture);
-      };
-      // Apply on initial load if nurture was previously saved
-      this._toggleNurtureMode(phaseSel.value === 'nurture');
-    }
-    const modelSel = document.getElementById('lp-model');
-    if (modelSel) {
-      const models = [...new Set(specialists.map(s => s.model))];
-      modelSel.innerHTML = '<option value="all">all</option>' + models.map(m => `<option value="${this.escapeHtml(m)}">${this.escapeHtml(m)}</option>`).join('');
-    }
-    const singleSel = document.getElementById('lp-single');
-    if (singleSel) {
-      const domains = specialists.filter(s => !s.parent_id).map(s => s.domain);
-      singleSel.innerHTML = domains.map(d => `<option value="${this.escapeHtml(d)}">${this.escapeHtml(d)}</option>`).join('');
-    }
-  }
-
-  async startPipeline() {
-    const msgEl = document.getElementById('lp-msg');
-    if (!msgEl) return;
-    const btn = document.querySelector('.lp-start-btn');
-    if (btn) btn.disabled = true;
-    try {
-      const phase = document.getElementById('lp-phase')?.value || 'full';
-      let specialist = 'all', model = 'all', duration = 5.0;
-      if (phase !== 'nurture') {
-        const specMode = document.getElementById('lp-spec')?.value || 'all';
-        if (specMode === 'model') model = document.getElementById('lp-model')?.value || 'all';
-        if (specMode === 'single') specialist = document.getElementById('lp-single')?.value || 'all';
-        duration = parseFloat(document.getElementById('lp-dur')?.value) || 5.0;
-      }
-
-      msgEl.textContent = 'Starting...';
-      const result = await this.postJSON(`${this.apiBase}/pipeline/start`, { phase, specialist, model, duration });
-      if (result.error) {
-        msgEl.textContent = `❌ ${result.error}`;
-        msgEl.style.color = 'var(--error)';
-      } else {
-        msgEl.textContent = `✅ Started PID: ${result.pid}`;
-        msgEl.style.color = 'var(--inactive)';
-        setTimeout(() => this.renderDashboard(), 2000);
-      }
-    } finally {
-      if (btn) btn.disabled = false;
-    }
-  }
-
-  async startMonitor() {
-    await this.postJSON(`${this.apiBase}/monitor/start`, {});
-    await this.renderDashboard();
-  }
-
-  async stopMonitor() {
-    await this.postJSON(`${this.apiBase}/monitor/stop`, {});
-    await this.renderDashboard();
-  }
-
-  async stopPipeline() {
-    const msgEl = document.getElementById('lp-msg');
-    if (!msgEl) return;
-    const btn = document.getElementById('lp-stop-btn');
-    if (btn) btn.disabled = true;
-    try {
-      msgEl.textContent = 'Stopping...';
-      const result = await this.postJSON(`${this.apiBase}/pipeline/stop`, {});
-      if (result.error) {
-        msgEl.textContent = `❌ ${result.error}`;
-        msgEl.style.color = 'var(--error)';
-      } else {
-        msgEl.textContent = `✅ Stopped PID: ${result.pid}`;
-        msgEl.style.color = 'var(--inactive)';
-        setTimeout(() => this.renderDashboard(), 2000);
-      }
-    } finally {
-      if (btn) btn.disabled = false;
-    }
-  }
-
-  // ── SPECIALISTS ─────────────────────────────────────────────────────────
-  async renderSpecialists() {
-    const el = document.getElementById('tab-specialists');
-    const [data, qualifiedData] = await Promise.all([
-      this.fetchJSON(`${this.apiBase}/specialists`),
-      this.fetchJSON(`${this.apiBase}/qualified-specialists`),
-    ]);
-    const list = data?.specialists || [];
-    const qualified = qualifiedData?.specialists || [];
-    let html = `<div class="section-title"><h2>📚 Specialist Registry</h2></div>`;
-    html += `<div class="filter-bar">
-      <input type="text" id="spec-search" placeholder="🔍 filter by domain or model..." oninput="app.filterSpecialists()">
-      <select id="spec-sort" onchange="app.filterSpecialists()">
-        <option value="domain-asc">Domain ↑</option>
-        <option value="domain-desc">Domain ↓</option>
-        <option value="pkg-desc">Packages ↓</option>
-        <option value="pkg-asc">Packages ↑</option>
-        <option value="ema-desc">EMA ↓</option>
-        <option value="ema-asc">EMA ↑</option>
-        <option value="status">⚡ Active ↑</option>
-        <option value="status-desc">Status ↓</option>
-        <option value="model">Model</option>
-      </select>
-    </div><div id="spec-table"></div>`;
-
-    if (qualified.length > 0) {
-      html += `<div class="section-title" style="margin-top:16px"><h2>✨ Spawn Sub-Specialist</h2></div>
-        <div class="card">
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
-            <label style="font-size:12px">Parent:</label>
-            <select id="spawn-parent" onchange="app.onSpawnParentChange()" style="flex:1;min-width:180px">
-              ${qualified.map(s => `<option value="${s.id}" data-model="${this.escapeHtml(s.model || '')}">${this.escapeHtml(s.domain)} (${s.packages_absorbed} pkgs, EMA ${s.ema_score != null ? s.ema_score.toFixed(3) : '—'})</option>`).join('')}
-            </select>
-          </div>
-          <div id="spawn-expansions" style="max-height:200px;overflow-y:auto;margin-bottom:8px;font-size:12px">
-            <span class="dim">Select a qualified specialist to load expansions...</span>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <label style="font-size:12px">Model:</label>
-            <input type="text" id="spawn-model" style="flex:1;min-width:120px">
-            <button id="spawn-btn" onclick="app.spawnSubSpecialists()" disabled class="primary">▶ Spawn Selected</button>
-          </div>
-          <div id="spawn-log" style="margin-top:8px;max-height:200px;overflow-y:auto;font-size:11px;font-family:monospace;background:var(--bg);padding:4px;border-radius:4px"></div>
-        </div>`;
-    }
-
-    el.innerHTML = html;
-    this.allSpecialistsData = list;
-    this.filterSpecialists();
-    if (qualified.length > 0) this.onSpawnParentChange();
-  }
-
-  async onSpawnParentChange() {
-    const sel = document.getElementById('spawn-parent');
-    if (!sel) return;
-    const sid = sel.value;
-    const opt = sel.options[sel.selectedIndex];
-    document.getElementById('spawn-model').value = opt?.dataset?.model || '';
-    const data = await this.fetchJSON(`${this.apiBase}/specialists/${sid}/expansions`);
-    const expansions = data?.expansions || [];
-    const container = document.getElementById('spawn-expansions');
-    const btn = document.getElementById('spawn-btn');
-    if (expansions.length === 0) {
-      container.innerHTML = '<span class="dim">No QID expansions available for this specialist</span>';
-      btn.disabled = true;
-      return;
-    }
-    const existing = await this.fetchJSON(`${this.apiBase}/specialists`);
-    const existingQids = new Set((existing?.specialists || []).filter(s => s.parent_id == sid).map(s => s.root_qid));
-    let html = '<table style="width:100%;border-collapse:collapse">';
-    html += '<tr style="font-weight:600"><td style="padding:2px 6px"><input type="checkbox" id="spawn-select-all" onchange="app.toggleAllSpawn()" checked></td><td style="padding:2px 6px">QID</td><td style="padding:2px 6px">Label</td><td style="padding:2px 6px">Status</td></tr>';
-    let validCount = 0;
-    expansions.forEach(e => {
-      const alreadyExists = existingQids.has(e.qid);
-      const valid = e.valid_p279 && !e.blocklisted && !alreadyExists;
-      if (valid) validCount++;
-      const status = alreadyExists ? '⚠ already exists' :
-        !e.valid_p279 ? '✗ P279 fail' :
-        e.blocklisted ? '✗ blocklisted' : '✓ valid';
-      const color = alreadyExists ? '#FFA500' : !e.valid_p279 || e.blocklisted ? 'var(--error)' : 'var(--active)';
-      html += `<tr>
-        <td style="padding:2px 6px"><input type="checkbox" class="spawn-qid-cb" value="${e.qid}" ${valid ? 'checked' : 'disabled'}></td>
-        <td style="padding:2px 6px;font-family:monospace">${e.qid}</td>
-        <td style="padding:2px 6px">${e.label}</td>
-        <td style="padding:2px 6px;color:${color}">${status}</td>
-      </tr>`;
-    });
-    html += '</table>';
-    container.innerHTML = html;
-    btn.disabled = validCount === 0;
-    if (validCount === 0) document.getElementById('spawn-log').innerHTML = '<span class="dim">No valid QIDs available to spawn</span>';
-  }
-
-  toggleAllSpawn() {
-    const checked = document.getElementById('spawn-select-all')?.checked || false;
-    document.querySelectorAll('.spawn-qid-cb:not(:disabled)').forEach(cb => cb.checked = checked);
-  }
-
-  async spawnSubSpecialists() {
-    const sel = document.getElementById('spawn-parent');
-    const sid = parseInt(sel?.value);
-    const model = document.getElementById('spawn-model')?.value?.trim();
-    const qids = [...document.querySelectorAll('.spawn-qid-cb:checked')].map(cb => cb.value);
-    if (!sid || !model || qids.length === 0) return;
-    const btn = document.getElementById('spawn-btn');
-    const logEl = document.getElementById('spawn-log');
-    btn.disabled = true;
-    logEl.innerHTML = '<span style="color:var(--active)">Starting spawn...</span>';
-    try {
-      const res = await fetch(`${this.apiBase}/specialists/${sid}/spawn`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': this.apiKey || '' },
-        body: JSON.stringify({ qids, model }),
-      });
-      if (!res.ok) {
-        logEl.innerHTML = `<span style="color:var(--error)">HTTP ${res.status}: ${res.statusText}</span>`;
-        return;
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      logEl.innerHTML = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          let data;
-          try { data = JSON.parse(line.slice(6)); } catch { continue; }
-          if (data.type === 'progress') {
-            logEl.innerHTML += `<div style="color:var(--dim)">[${data.current}/${data.total}] Validating ${this.escapeHtml(String(data.qid || ''))}...</div>`;
-          } else if (data.type === 'done') {
-            logEl.innerHTML += `<div style="color:var(--active)">✓ ${this.escapeHtml(String(data.domain || ''))} created</div>`;
-          } else if (data.type === 'error') {
-            logEl.innerHTML += `<div style="color:var(--error)">✗ ${this.escapeHtml(String(data.qid || ''))}: ${this.escapeHtml(String(data.error || ''))}</div>`;
-          }
-        }
-        logEl.scrollTop = logEl.scrollHeight;
-      }
-      const finalLine = buffer ? buffer.replace('data:', '').trim() : '';
-      if (finalLine) {
-        try {
-          const fin = JSON.parse(finalLine);
-          if (fin.type === 'complete') logEl.innerHTML += '<div style="color:var(--info);font-weight:600">✓ Spawn complete</div>';
-        } catch (_) {}
-      }
-      logEl.scrollTop = logEl.scrollHeight;
-      this.renderSpecialists();
+      const r = await fetch(url, { ...opts, headers, cache: 'no-store' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.json();
     } catch (e) {
-      logEl.innerHTML += `<div style="color:var(--error)">Error: ${e.message}</div>`;
-    } finally {
-      btn.disabled = false;
+      console.warn(`[Expertia] fetchJSON falló ${url}: ${e.message}`);
+      return null;
     }
   }
 
-  filterSpecialists() {
-    const search = (document.getElementById('spec-search')?.value || '').toLowerCase();
-    const sort = document.getElementById('spec-sort')?.value || 'domain-asc';
-    let list = [...(this.allSpecialistsData || [])];
-
-    if (search) {
-      list = list.filter(s => s.domain.toLowerCase().includes(search) || s.model.toLowerCase().includes(search));
-    }
-
-    const order = { ACTIVE: 0, IDLE: 1, COMPLETED: 2, ERROR: 3, STOPPED: 4 };
-    const sortMap = {
-      'domain-asc': (a, b) => a.domain.localeCompare(b.domain),
-      'domain-desc': (a, b) => b.domain.localeCompare(a.domain),
-      'pkg-asc': (a, b) => (a.packages_absorbed || 0) - (b.packages_absorbed || 0),
-      'pkg-desc': (a, b) => (b.packages_absorbed || 0) - (a.packages_absorbed || 0),
-      'ema-asc': (a, b) => (a.ema_score || 0) - (b.ema_score || 0),
-      'ema-desc': (a, b) => (b.ema_score || 0) - (a.ema_score || 0),
-      'status': (a, b) => (order[a.status] || 99) - (order[b.status] || 99),
-      'status-desc': (a, b) => (order[b.status] || 99) - (order[a.status] || 99),
-      'model': (a, b) => a.model.localeCompare(b.model),
-    };
-    list.sort(sortMap[sort] || sortMap['domain-asc']);
-
-    const badgeMap = { ACTIVE: 'badge-active', IDLE: 'badge-idle', COMPLETED: 'badge-done', ERROR: 'badge-error', STOPPED: 'badge-idle' };
-    const colorMap = { ACTIVE: '#FF6B6B', IDLE: '#4ECDC4', COMPLETED: '#4ECDC4', ERROR: '#C44536', STOPPED: '#6B7A8A' };
-
-    const allRoots = list.filter(s => !s.parent_id);
-    const childMap = {};
-    list.filter(s => s.parent_id).forEach(c => { if (!childMap[c.parent_id]) childMap[c.parent_id] = []; childMap[c.parent_id].push(c); });
-
-    // Only show specialists that have children (sub-specialists)
-    const roots = allRoots.filter(r => (childMap[r.id] || []).length > 0);
-    let html = '<div class="spec-grid-3">';
-    roots.forEach(r => {
-      const bc = colorMap[r.status] || '#6B7A8A';
-      const tier_class = this.tierBorder(r.tier);
-      const ticon = this.tierIcon(r.tier);
-      const base_class = `spec-card spec-card-${r.status === 'ACTIVE' ? 'active' : r.status === 'ERROR' ? 'error' : 'idle'}`;
-      const card_class = tier_class ? `${base_class} ${tier_class}` : base_class;
-      html += `<div class="${card_class}">
-        <div class="spec-card-inner"><span class="spec-name">${r.domain} ${ticon}</span><span class="spec-badge ${badgeMap[r.status] || 'badge-idle'}" style="background:${bc}22;color:${bc}">${r.status}</span></div>
-        <div class="spec-meta">📦 ${r.packages_absorbed} · 📈 ${r.ema_score?.toFixed(3)} · 🎯 ${r.model}</div>`;
-      (childMap[r.id] || []).forEach(c => {
-        html += `<div class="spec-meta" style="margin-top:2px;padding-top:2px;border-top:1px dashed var(--border)">
-          └─ ${c.domain} · 📦${c.packages_absorbed} · 📈${c.ema_score?.toFixed(2)} · 🎯${c.model}
-          <span class="spec-badge ${badgeMap[c.status] || 'badge-idle'}" style="background:${colorMap[c.status]}22;color:${colorMap[c.status]};font-size:9px;padding:0 4px;margin-left:4px">${c.status}</span>
-        </div>`;
-      });
-      html += `</div>`;
-    });
-    html += '</div>';
-
-    if (roots.length === 0) html = '<div class="card" style="color:var(--dim)">No specialists found</div>';
-    document.getElementById('spec-table').innerHTML = html;
-  }
-
-  // ── CERTIFIED ───────────────────────────────────────────────────────────
-  async renderCertified() {
-    const el = document.getElementById('tab-certified');
-    const specData = await this.fetchJSON(`${this.apiBase}/specialists`);
-    const specialists = specData?.specialists || [];
-    const certified = specialists.filter(s => s.is_reliable && !s.parent_id);
-
-    if (certified.length === 0) {
-      el.innerHTML = `<div class="section-title"><h2>🏆 Certified Experts</h2></div>
-        <div class="card" style="text-align:center;padding:40px;color:var(--dim)">
-          <div style="font-size:48px;margin-bottom:12px">🏆</div>
-          <div style="font-size:18px;font-weight:600">No certified experts yet</div>
-          <div style="font-size:13px;margin-top:6px">Specialists must reach Silver tier or higher to appear here</div>
-        </div>`;
-      return;
-    }
-
-    let html = `<div class="section-title"><h2>🏆 Certified Experts</h2></div>
-      <div style="margin-bottom:10px;color:var(--dim);font-size:13px">${certified.length} reliable specialist${certified.length > 1 ? 's' : ''}</div>`;
-
-    certified.sort((a, b) => (b.ema_score || 0) - (a.ema_score || 0));
-
-    html += `<table class="cert-table">
-      <thead><tr>
-        <th>Tier</th>
-        <th>Specialist</th>
-        <th>Puntuación</th>
-        <th>Paquetes</th>
-        <th>Tasa Fallo</th>
-        <th>Racha 25</th>
-        <th>Modelo</th>
-      </tr></thead><tbody>`;
-
-    const tierOrder = {4: 'Legend', 3: 'Gold', 2: 'Silver', 1: 'Bronze'};
-    certified.forEach(s => {
-      const ticon = this.tierIcon(s.tier);
-      const tier_name = tierOrder[s.tier] || 'Unknown';
-      const pts = s.tier === 4 ? '100.000' : `${Math.floor(s.ema_score * 100000).toLocaleString()}/100.000`;
-      const racha = s.racha_25 != null ? (s.racha_25 * 100).toFixed(1) + '%' : '-';
-      const fail_rate = s.fail_rate != null ? (s.fail_rate * 100).toFixed(2) + '%' : '-';
-      html += `<tr class="cert-row-${tier_name.toLowerCase()}">
-        <td class="cert-tier">${ticon} <span class="tier-label-${tier_name.toLowerCase()}">${tier_name}</span></td>
-        <td class="cert-name">${this.escapeHtml(s.domain || '')}</td>
-        <td class="cert-pts">${pts}</td>
-        <td>${s.packages_absorbed?.toLocaleString() || '-'}</td>
-        <td class="${parseFloat(fail_rate) < 5 ? 'cert-good' : 'cert-bad'}">${fail_rate}</td>
-        <td class="${parseFloat(racha) >= 90 ? 'cert-good' : 'cert-bad'}">${racha}</td>
-        <td class="cert-model">${this.escapeHtml(s.model || '-')}</td>
-      </tr>`;
-    });
-
-    html += `</tbody></table>`;
-
-    // Summary stats
-    const legendCount = certified.filter(s => s.tier === 4).length;
-    const goldCount = certified.filter(s => s.tier === 3).length;
-    const silverCount = certified.filter(s => s.tier === 2).length;
-    const bronzeCount = certified.filter(s => s.tier === 1).length;
-    html += `<div class="cert-summary">
-      <div class="cert-summary-item"><span class="tier-label-legend">👑 Legend</span> ${legendCount}</div>
-      <div class="cert-summary-item"><span class="tier-label-gold">⭐⭐ Gold</span> ${goldCount}</div>
-      <div class="cert-summary-item"><span class="tier-label-silver">⭐ Silver</span> ${silverCount}</div>
-      <div class="cert-summary-item"><span class="tier-label-bronze">◆ Bronze</span> ${bronzeCount}</div>
-    </div>`;
-
-    el.innerHTML = html;
-
-    this._highlightRowIfNeeded(el);
-  }
-
-  _highlightRowIfNeeded(el) {
-    const domain = this._highlightDomain;
-    if (!domain) return;
-    this._highlightDomain = null;
-    const rows = el.querySelectorAll('.cert-table tbody tr');
-    for (const row of rows) {
-      const nameCell = row.querySelector('.cert-name');
-      if (nameCell && nameCell.textContent.trim() === domain) {
-        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        row.style.transition = 'background 0.8s ease, box-shadow 0.8s ease';
-        row.style.background = 'rgba(218,165,32,0.25)';
-        row.style.boxShadow = '0 0 16px rgba(218,165,32,0.5)';
-        setTimeout(() => {
-          row.style.background = '';
-          row.style.boxShadow = '';
-        }, 3000);
-        break;
-      }
-    }
-  }
-
-  // ── FLEET ───────────────────────────────────────────────────────────────
-  async renderFleet() {
-    const el = document.getElementById('tab-fleet');
-    const [specData, health, ollamaData] = await Promise.all([
-      this.fetchJSON(`${this.apiBase}/specialists`),
-      this.fetchJSON(`${this.apiBase}/health`),
-      this.fetchJSON(`${this.apiBase}/ollama/models`),
-    ]);
-    const specialists = specData?.specialists || [];
-    const assignedModels = [...new Set(specialists.map(s => s.model))];
-    const availableModels = ollamaData?.models || [];
-    const missingModels = assignedModels.filter(m => !availableModels.some(a => a.startsWith(m)));
-
-    let html = `
-      <div class="section-title"><h2>⚙️ Configuration</h2></div>
-      <div class="grid-2">
-        <div class="card">
-          <h3>Available Models (Ollama)</h3>
-          <pre style="max-height:200px;overflow-y:auto">${availableModels.join('\n') || 'Ollama offline'}</pre>
-        </div>
-        <div class="card">
-          <h3>Missing Models</h3>
-          ${missingModels.length ? missingModels.map(m =>
-            `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)">
-              <code>${this.escapeHtml(m)}</code>
-              <button data-model="${this.escapeHtml(m)}" onclick="app.pullModel(this.dataset.model)" class="primary" style="font-size:11px;padding:3px 10px">📥 Pull</button>
-            </div>`
-          ).join('') : '<div style="color:var(--inactive);font-size:13px">All models present</div>'}
-          <div id="fleet-pull-msg" style="margin-top:6px;font-size:12px"></div>
-        </div>
-      </div>
-      <div class="grid-2" style="margin-top:10px">
-        <div class="card">
-          <h3>Assigned Models</h3>
-          <pre>${assignedModels.join('\n') || 'None'}</pre>
-        </div>
-        <div class="card">
-          <h3>Update Specialist Model</h3>
-          <div style="margin-bottom:8px">
-            <label style="font-size:12px;color:var(--dim)">Specialist</label>
-            <select id="fleet-spec" onchange="app.onFleetSpecChange()">
-              ${specialists.filter(s => !s.parent_id).map(s => `<option value="${this.escapeHtml(s.domain)}">${this.escapeHtml(s.domain)}</option>`).join('')}
-            </select>
-          </div>
-          <div style="margin-bottom:8px">
-            <label style="font-size:12px;color:var(--dim)">Current Model: <code id="fleet-current-model">${specialists[0]?.model || ''}</code></label>
-          </div>
-          <div style="margin-bottom:8px">
-            <label style="font-size:12px;color:var(--dim)">New Model</label>
-            <input type="text" id="fleet-new-model" value="${specialists[0]?.model || ''}" style="width:100%">
-          </div>
-          <button onclick="app.updateSpecialistModel()" class="primary">Update</button>
-          <div id="fleet-msg" style="margin-top:6px;font-size:12px"></div>
-        </div>
-        <div class="card">
-          <h3>API Key (for auth-protected endpoints)</h3>
-          <input type="password" id="fleet-apikey" value="${this.apiKey}" style="width:100%" placeholder="Leave empty if auth disabled">
-          <button onclick="app.saveApiKey()" style="margin-top:4px" class="primary">Save</button>
-          <div id="fleet-apikey-msg" style="margin-top:4px;font-size:12px"></div>
-        </div>
-      </div>
-    `;
-    el.innerHTML = html;
-    this.onFleetSpecChange();
-  }
-
-  saveApiKey() {
-    const val = document.getElementById('fleet-apikey')?.value || '';
-    this.apiKey = val;
-    sessionStorage.setItem('expertia-api-key', val);
-    const msg = document.getElementById('fleet-apikey-msg');
-    if (msg) { msg.textContent = '✓ Saved'; msg.style.color = 'var(--active)'; setTimeout(() => msg.textContent = '', 2000); }
-  }
-
-  async pullModel(model) {
-    const msgEl = document.getElementById('fleet-pull-msg');
-    if (!msgEl) return;
-    msgEl.textContent = `⏳ Pulling ${model}...`;
-    msgEl.style.color = 'var(--dim)';
-    const result = await this.postJSON(`${this.apiBase}/ollama/pull`, { model });
-    if (result.error) {
-      msgEl.textContent = `❌ ${result.error}`;
-      msgEl.style.color = 'var(--error)';
-    } else {
-      msgEl.textContent = `✅ Pulled ${model}`;
-      msgEl.style.color = 'var(--inactive)';
-      setTimeout(() => this.renderFleet(), 3000);
-    }
-  }
-
-  onFleetSpecChange() {
-    const sel = document.getElementById('fleet-spec');
-    const domain = sel?.value;
-    if (!domain) return;
-    const spec = (this.allSpecialistsData || []).find(s => s.domain === domain);
-    if (spec) {
-      document.getElementById('fleet-current-model').textContent = spec.model;
-      document.getElementById('fleet-new-model').value = spec.model;
-    }
-  }
-
-  async updateSpecialistModel() {
-    const domain = document.getElementById('fleet-spec')?.value;
-    const newModel = document.getElementById('fleet-new-model')?.value;
-    const msgEl = document.getElementById('fleet-msg');
-    if (!domain || !newModel) { msgEl.textContent = 'Fill all fields'; return; }
-    try {
-      const headers = { 'Content-Type': 'application/json' };
-      if (this.apiKey) headers['X-API-Key'] = this.apiKey;
-      const res = await fetch(`${this.apiBase}/specialists`, {
-        method: 'PATCH',
-        headers,
-        body: JSON.stringify({ domain, model: newModel }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      msgEl.textContent = `✅ Updated ${domain} → ${newModel}`;
-      msgEl.style.color = 'var(--inactive)';
-    } catch (e) {
-      msgEl.textContent = `❌ ${e.message}`;
-      msgEl.style.color = 'var(--error)';
-    }
-  }
-
-  async loadFleetLogs() {
-    const level = document.getElementById('fleet-log-level')?.value || 'INFO,WARNING,ERROR,CRITICAL';
-    const limit = document.getElementById('fleet-log-limit')?.value || 100;
-    const data = await this.fetchJSON(`${this.apiBase}/activity-log?limit=${limit}&levels=${level}`);
-    const logs = data?.logs || [];
-    let html = '';
-    if (logs.length) {
-      logs.forEach((r, i) => { html += this.renderLogEntry(r, i === 0); });
-    } else {
-      html = '<div style="color:var(--dim);padding:8px">-- silence --</div>';
-    }
-    document.getElementById('fleet-log-container').innerHTML = html;
-  }
-
-  // ── SYNAPTIC MAP ────────────────────────────────────────────────────────
-  async renderMap() {
-    const el = document.getElementById('tab-map');
-    const [status, specData, logs, health, emaHistory, memData, cpuData] = await Promise.all([
-      this.fetchJSON(`${this.apiBase}/status`),
-      this.fetchJSON(`${this.apiBase}/specialists`),
-      this.fetchJSON(`${this.apiBase}/activity-log?limit=20`),
-      this.fetchJSON(`${this.apiBase}/health`),
-      this.fetchJSON(`${this.apiBase}/activity-log?levels=ERROR,CRITICAL`),
-      this.fetchJSON(`${this.apiBase}/system/memory`),
+  async refresh() {
+    const t0 = Date.now();
+    const [overview, cpu, mem, specs, logs, health, status] = await Promise.all([
+      this.fetchJSON(`${this.apiBase}/analytics/overview`),
       this.fetchJSON(`${this.apiBase}/system/cpu`),
-    ]);
-    const specialists = specData?.specialists || [];
-    const activeCount = specialists.filter(sp => sp.status === 'ACTIVE').length;
-    const incidentCount = health?.incident_count || 0;
-
-    // Fetch EMA history
-    const emaData = await this.fetchJSON(`${this.apiBase}/activity-log?limit=500`);
-
-    // Track memory history
-    if (memData && !memData.error) {
-      if (this.memoryHistory.length === 0 || this.memoryHistory[this.memoryHistory.length - 1].percent !== memData.percent) {
-        this.memoryHistory.push({ percent: memData.percent, timestamp: Date.now() });
-        if (this.memoryHistory.length > 60) this.memoryHistory.shift();
-      }
-    }
-
-    let html = `
-      <div class="card-row" style="justify-content:center;gap:16px">
-        <div id="chart-memory-gauge" style="flex:0 0 auto"></div>
-        <div id="chart-cpu-gauge" style="flex:0 0 auto"></div>
-      </div>
-      <div class="chart-container-full" id="chart-waves"></div>
-      <div class="grid-2">
-        <div class="chart-container" id="chart-ema"></div>
-        <div class="chart-container" id="chart-packages"></div>
-      </div>
-      <div class="grid-2">
-        <div class="chart-container" id="chart-knowledge"></div>
-        <div class="chart-container-sm" id="chart-ema-history"></div>
-      </div>
-    `;
-
-    // Branch events
-    const branchLogs = (logs?.logs || []).filter(r =>
-      String(r.message).includes('Germinado') || String(r.message).includes('SPAWNED')
-    );
-    if (branchLogs.length) {
-      html += `<div class="card"><div class="section-title"><h3>🌿 Branch Genesis (${branchLogs.length} events)</h3></div>`;
-      branchLogs.forEach(r => {
-        html += `<div class="log-entry"><span class="log-ts">${this.escapeHtml(this.utcToLocal(r.timestamp))}</span><span class="log-icon">🌱</span><span class="log-msg">${this.escapeHtml(r.message)}</span></div>`;
-      });
-      html += `</div>`;
-    }
-
-    el.innerHTML = html;
-
-    // Render charts
-    setTimeout(() => {
-      if (memData && !memData.error) {
-        makeMemoryGauge(memData, 'chart-memory-gauge');
-        makeMemoryHistoryChart(this.memoryHistory, 'chart-memory-history');
-      }
-      if (cpuData && !cpuData.error) {
-        makeCpuGauge(cpuData, 'chart-cpu-gauge');
-      }
-      makeWavesChart(emaData?.logs || [], 'chart-waves');
-      makeSpecialistChart(specialists, 'chart-ema');
-      makePackagesChart(specialists, 'chart-packages');
-      this.renderKnowledgeChart();
-      const emaRecords = emaData?.logs?.filter(r => String(r.message).includes('EMA')) || [];
-      if (emaRecords.length) {
-        const emaHistory = emaRecords.map(r => ({
-          domain: 'system',
-          ema_score: parseFloat(String(r.message).match(/[\d.]+/)?.[0] || 0),
-          created_at: r.timestamp,
-        }));
-        makeEMALine(emaHistory, 'chart-ema-history');
-      }
-    }, 50);
-  }
-
-  async renderKnowledgeChart() {
-    const stats = await this.fetchJSON(`${this.apiBase}/knowledge-stats`);
-    makeKnowledgeChart(stats, 'chart-knowledge');
-  }
-
-  renderErrorsChart(logs) {
-    const modelCount = {};
-    logs.forEach(r => {
-      const msg = String(r.message);
-      const m = (this.allSpecialistsData || []).find(s => msg.includes(s.model));
-      const key = m ? m.model : 'other';
-      modelCount[key] = (modelCount[key] || 0) + 1;
-    });
-    const data = Object.entries(modelCount).map(([model, count]) => ({ model, count }));
-    makeErrorsChart(data, 'chart-incidents-errors');
-  }
-
-  // ── SUPER-EXPERTS ────────────────────────────────────────────────────────
-  async renderSuperExperts() {
-    const el = document.getElementById('tab-super-experts');
-    const data = await this.fetchJSON(`${this.apiBase}/super-experts`);
-    const list = data?.super_experts || [];
-    let html = `
-      <div class="section-title"><h2>🏛️ Super-Expert Councils</h2></div>
-      <div style="font-size:13px;color:var(--dim);margin-bottom:12px">
-        Cross-domain councils that combine multiple specialists with weighted expertise.
-      </div>
-    `;
-    if (list.length) {
-      html += `<div class="se-grid-2">`;
-      list.forEach(se => {
-        html += `<div class="se-expander">
-          <div class="se-header" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
-            <span>🏛️ ${this.escapeHtml(se.domain || '')}</span>
-            <span style="font-size:11px;color:var(--dim);font-weight:400">${se.member_count} members · 📈 ${se.weighted_ema != null ? se.weighted_ema.toFixed(3) : '—'} · 📦 ${se.total_packages?.toLocaleString()}</span>
-          </div>
-          <div class="se-body" style="display:none">
-            <div style="font-size:12px;color:var(--dim);margin-bottom:6px">${this.escapeHtml(se.description || '')}</div>`;
-        if (se.members && se.members.length) {
-          html += `<table><tr><th>Specialist</th><th>Weight</th><th>EMA</th><th>Packages</th><th>Bar</th></tr>`;
-          se.members.forEach(m => {
-            const pct = (m.weight * 100).toFixed(0);
-            html += `<tr><td style="font-weight:600">${this.escapeHtml(m.domain || '')}</td><td>${pct}%</td><td>${m.ema_score != null ? m.ema_score.toFixed(3) : '—'}</td><td>${m.packages_absorbed}</td><td><div style="height:8px;width:${Math.max(2, pct)}px;background:var(--active);border-radius:2px;display:inline-block"></div></td></tr>`;
-          });
-          html += `</table>`;
-        } else {
-          html += `<div style="color:var(--dim)">No members</div>`;
-        }
-        html += `</div></div>`;
-      });
-      html += `</div>`;
-    } else {
-      html += '<div class="card" style="color:var(--dim)">🏛️ No super-experts defined yet. Run the pipeline to initialize them.</div>';
-    }
-    el.innerHTML = html;
-  }
-
-  // ── INCIDENTS ────────────────────────────────────────────────────────────
-  async renderIncidents() {
-    const el = document.getElementById('tab-incidents');
-    const [data, specData] = await Promise.all([
-      this.fetchJSON(`${this.apiBase}/activity-log?limit=10&levels=ERROR,CRITICAL`),
+      this.fetchJSON(`${this.apiBase}/system/memory`),
       this.fetchJSON(`${this.apiBase}/specialists`),
+      this.fetchJSON(`${this.apiBase}/activity-log?limit=60&levels=INFO,WARNING,ERROR,CRITICAL`),
+      this.fetchJSON(`${this.apiBase}/health`),
+      this.fetchJSON(`${this.apiBase}/status`),
     ]);
-    const logs = data?.logs || [];
-    this.allSpecialistsData = specData?.specialists || [];
-    const totalIncidents = logs.length;
 
-    let html = `
-      <div class="section-title"><h2>🔥 Incidents (${totalIncidents})</h2></div>
-      <div class="chart-container-sm" id="chart-incidents-errors"></div>
-    `;
-
-    if (logs.length) {
-      // Latest incident
-      html += `<div class="incident-latest">${this.renderLogEntry(logs[0], true)}</div>`;
-
-      // Remaining incidents (hidden by default)
-      if (logs.length > 1) {
-        html += `<div class="incident-more" id="incident-more" style="display:none">`;
-        for (let i = 1; i < logs.length; i++) {
-          html += this.renderLogEntry(logs[i], false);
+    // Detect Legend promotions (tier jumped to 4 since last poll)
+    if (this.rawSpecs.length && specs?.specialists) {
+      const prev = new Map(this.rawSpecs.map(s => [s.id, s.tier]));
+      for (const s of specs.specialists) {
+        if (s.tier >= 4 && (prev.get(s.id) || 0) < 4) {
+          this.toast('★ Promoción a Legend', `${s.domain} alcanzó EMA ${Number(s.ema_score).toFixed(4)}`, 'legend-promo', 8000);
         }
-        html += `</div>`;
-        html += `<button class="incident-toggle" id="incident-toggle" onclick="app.toggleIncidents()">Show ${logs.length - 1} more incidents</button>`;
       }
-    } else {
-      html += '<div class="card" style="color:var(--dim)">No incidents — the library is at peace</div>';
     }
 
-    el.innerHTML = html;
+    // Load insights (predictions, alerts, models) — non-blocking
+    this.fetchJSON(`${this.apiBase}/analytics/insights`).then(d => {
+      this.rawInsights = d;
+      if (d?.alerts?.length) this.renderAlerts(d.alerts);
+      if (this.tab === 'metrics') this.renderInsights();
+    });
 
-    // Render errors chart
-    setTimeout(() => {
-      const errLogs = logs;
-      const modelCount = {};
-      errLogs.forEach(r => {
-        const msg = String(r.message);
-        const m = this.allSpecialistsData.find(s => msg.includes(s.model));
-        const key = m ? m.model : 'other';
-        modelCount[key] = (modelCount[key] || 0) + 1;
-      });
-      const chartData = Object.entries(modelCount).map(([model, count]) => ({ model, count }));
-      makeErrorsChart(chartData, 'chart-incidents-errors');
-    }, 50);
+    this.rawOverview = overview;
+    this.rawSpecs = specs?.specialists || [];
+    this.rawHealth = health;
+    this._logs = logs?.logs || [];
+    this.updatePill(overview, status);
+    this.render();
+
+    // EMA chart data (lazy load)
+    this._lastEmaLoad = this._lastEmaLoad || 0;
+    if (this.tab === 'metrics' && (this.emaSeriesEmpty || (Date.now() - this._lastEmaLoad) > 60000)) {
+      this.emaSeriesEmpty = false;
+      this._lastEmaLoad = Date.now();
+      await this.loadEmaChart();
+    }
+
+    // System sparklines (legacy + nueva barra superior)
+    if (cpu) { this.pushSpark('cpu', cpu.percent, 'spark-cpu'); this.pushSpark('cpu', cpu.percent, 'sys-cpu-spark'); }
+    if (mem) { this.pushSpark('ram', mem.percent, 'spark-ram'); this.pushSpark('ram', mem.percent, 'sys-ram-spark'); }
+    const sc = document.getElementById('kpi-cpu'); if (sc) sc.textContent = cpu ? `${Math.round(cpu.percent)}%` : '—%';
+    const sr = document.getElementById('kpi-ram'); if (sr) sr.textContent = mem ? `${Math.round(mem.percent)}%` : '—%';
+    const ssc = document.getElementById('sys-cpu'); if (ssc) ssc.textContent = cpu ? `${Math.round(cpu.percent)}%` : '—%';
+    const ssr = document.getElementById('sys-ram'); if (ssr) ssr.textContent = mem ? `${Math.round(mem.percent)}%` : '—%';
+    const ssd = document.getElementById('sys-disk'); if (ssd && health) {
+      const freeGB = health.disk_free_gb ?? health.free_gb ?? null;
+      if (freeGB != null) ssd.textContent = `${Math.round(freeGB)} GB libres`;
+      else if (health.disk) ssd.textContent = health.disk;
+    }
+    if (health && health.disk_free_gb != null) {
+      const pct = health.disk_free_gb && health.disk_total_gb ? Math.round((health.disk_free_gb/health.disk_total_gb)*100) : null;
+      const sdSpark = document.getElementById('sys-disk-spark');
+      if (sdSpark && pct != null) this.pushSpark('disk', 100-pct, 'sys-disk-spark');
+    }
+
+    // statusbar + refresh indicator
+    const ok = overview && health;
+    this.updateRefreshDot(ok);
+    const pkg = health?.package_count;
+    const dbEl = document.getElementById('sb-db');
+    if (dbEl) dbEl.textContent = pkg != null ? `${health.database || 'ok'} · ${pkg.toLocaleString()} pkg` : (health?.database || '—');
+    const pipEl = document.getElementById('sb-pip');
+    if (pipEl && overview) pipEl.textContent = `${overview.status || '—'} · ${this.shortPhase(overview.phase)}`;
+    const upEl = document.getElementById('sb-last-update');
+    if (upEl) upEl.textContent = `actualización: ${new Date().toLocaleTimeString()} · ${((Date.now()-t0)/1000).toFixed(1)}s`;
   }
 
-  toggleIncidents() {
-    const more = document.getElementById('incident-more');
-    const btn = document.getElementById('incident-toggle');
-    if (!more || !btn) return;
-    const hidden = more.style.display === 'none';
-    more.style.display = hidden ? 'block' : 'none';
-    btn.textContent = hidden ? 'Hide' : `Show ${more.children.length} more incidents`;
+  updateRefreshDot(ok) {
+    const el = document.getElementById('sb-refresh');
+    if (el) el.className = `refresh-dot ${ok ? 'ok' : 'err'}`;
   }
 
-  // ── WIKIDATA ───────────────────────────────────────────────────────────
-  async renderWikidata() {
-    const el = document.getElementById('tab-wikidata');
-    const status = await this.fetchJSON(`${this.apiBase}/wikidata/status`);
+  render() {
+    this.renderLegendStrip();
+    this.renderFleetSummary();
+    this.renderFleet();
+    this.renderMetrics();
+    this.renderActivity();
+  }
 
-    if (!status) {
-      el.innerHTML = '<div class="card">Error connecting to API</div>';
-      return;
+  shortPhase(phase) {
+    if (!phase) return '';
+    const m = phase.match(/\((\d+) de (\d+)\)/);
+    return m ? `${m[1]}/${m[2]}` : phase;
+  }
+
+  updatePill(o, st) {
+    const pill = document.getElementById('pipeline-pill');
+    const statusEl = document.getElementById('pp-status');
+    if (!pill || !o) return;
+    const s = (o.status || 'IDLE').toUpperCase();
+    const mode = (st?.mode || '').toUpperCase();
+    const modeTxt = mode ? ` · ${mode}` : '';
+    let elapsed = '';
+    if (st?.start_epoch) {
+      const el = Math.max(0, (Date.now() / 1000) - st.start_epoch);
+      const h = Math.floor(el / 3600), m = Math.floor((el % 3600) / 60);
+      elapsed = h > 0 ? `${h}h ${m}m` : `${m} min`;
     }
+    pill.className = 'pipeline-pill';
+    if (s === 'ACTIVE') { pill.classList.add('work'); statusEl.textContent = `procesando${modeTxt} · ${this.shortPhase(o.phase)} · ${elapsed}`; }
+    else if (s === 'IDLE') { pill.classList.add('live'); statusEl.textContent = `en espera${modeTxt} · ${elapsed}`; }
+    else if (s === 'ERROR' || s === 'DOWN') { pill.classList.add('down'); statusEl.textContent = 'detenido'; }
+    else { pill.classList.add('live'); statusEl.textContent = `${s}${modeTxt} · ${elapsed}`; }
+  }
 
-    const pending = status.total_pendientes || 0;
-    const dlDays = status.dias_sin_descargar;
-    const feedDays = status.dias_pendientes_alimentar;
-    const dlRunning = status.download_running || false;
-    const running = status.download_running ? '🟢 Downloading...' : '⏹ Idle';
+  // ── LEGEND STRIP ─────────────────────────
+  renderLegendStrip() {
+    const strip = document.getElementById('legend-strip');
+    const cards = document.getElementById('legend-cards');
+    if (!strip || !cards) return;
+    const legends = this.rawSpecs.filter(s => s.tier >= 4);
+    if (!legends.length) { strip.classList.remove('visible'); return; }
+    strip.classList.add('visible');
 
-    const dlDisplay = dlDays !== null && dlDays !== undefined
-      ? `${dlDays.toFixed(1)} days` : '— never downloaded';
-    const feedDisplay = feedDays !== null && feedDays !== undefined
-      ? `${feedDays.toFixed(1)} days` : '—';
+    const deltaMap = {};
+    (this.rawOverview?.ema_deltas || []).forEach(d => { deltaMap[d.specialist_id] = d; });
 
-    const pendingByDomain = status.pendientes_por_dominio || {};
-    const domainEntries = Object.entries(pendingByDomain).sort((a, b) => b[1] - a[1]);
-    const maxP = Math.max(...domainEntries.map(e => e[1]), 1);
+    cards.innerHTML = legends.map(s => {
+      const ema = Number(s.ema_score || 0);
+      const d = deltaMap[s.specialist_id];
+      const deltaVal = d ? ema - Number(d.ema_24h_ago || ema) : 0;
+      const dCls = deltaVal > 0.0005 ? 'up' : (deltaVal < -0.0005 ? 'down' : '');
+      const dTxt = !d ? '—' : `${deltaVal >= 0 ? '+' : ''}${deltaVal.toFixed(4)}`;
+      const q = s.avg_quality ? s.avg_quality.toFixed(2) : '—';
+      return `<div class="legend-card">
+        <span class="lc-tier">◆</span>
+        <span class="lc-domain">${escapeHtml(s.domain)}</span>
+        <span class="lc-ema">${ema.toFixed(4)}</span>
+        <span class="lc-sub">q:${q}</span>
+        <span class="lc-delta ${dCls}">${dTxt}</span>
+      </div>`;
+    }).join('');
+  }
 
-    let domainBars = '';
-    for (const [domain, count] of domainEntries) {
-      const pct = (count / maxP * 100).toFixed(0);
-      domainBars += `
-        <div class="wd-domain-row">
-          <span class="wd-domain-name">${this.escapeHtml(domain)}</span>
-          <div class="wd-bar-wrap">
-            <div class="wd-bar" style="width:${pct}%"></div>
-          </div>
-          <span class="wd-domain-count">${count}</span>
-        </div>`;
-    }
-    if (!domainBars) {
-      domainBars = '<div style="color:var(--dim);padding:8px">All packages absorbed — nothing pending</div>';
-    }
+  // ── Count-up animation ──
+  countUp(el, target, suffix = '', duration = 600) {
+    const isFloat = String(target).includes('.');
+    const start = performance.now();
+    const from = 0;
+    const tick = (now) => {
+      const p = Math.min((now - start) / duration, 1);
+      const ease = 1 - Math.pow(1 - p, 3); // easeOutCubic
+      const val = from + (target - from) * ease;
+      el.textContent = (isFloat ? val.toFixed(4) : Math.round(val).toLocaleString()) + suffix;
+      if (p < 1) requestAnimationFrame(tick);
+      else el.textContent = (isFloat ? Number(target).toFixed(4) : Number(target).toLocaleString()) + suffix;
+    };
+    requestAnimationFrame(tick);
+  }
 
-    const lastDl = status.ultima_descarga ? this.utcToLocal(status.ultima_descarga) : '—';
-    const lastFeed = status.ultima_alimentacion ? this.utcToLocal(status.ultima_alimentacion) : '—';
-
-    let progressHtml = '';
-    if (dlRunning && status.current_domain) {
-      progressHtml = `
-        <div class="card" style="text-align:center;padding:12px;background:#1a3a2a;border-color:#2ecc71">
-          <div style="font-size:13px;color:#2ecc71">⬇ Descargando: <strong>${this.escapeHtml(status.current_domain)}</strong></div>
-          <div style="font-size:24px;font-weight:700;color:#fff;margin:4px 0">${status.packages_downloaded || 0}</div>
-          <div style="font-size:12px;color:var(--dim)">paquetes descargados hasta ahora</div>
-        </div>`;
-    } else if (dlRunning) {
-      progressHtml = `
-        <div class="card" style="text-align:center;padding:12px;background:#1a3a2a;border-color:#2ecc71">
-          <div style="font-size:13px;color:#2ecc71">⬇ Descargando...</div>
-          <div style="font-size:24px;font-weight:700;color:#fff;margin:4px 0">${status.packages_downloaded || 0}</div>
-          <div style="font-size:12px;color:var(--dim)">paquetes descargados hasta ahora</div>
-        </div>`;
-    }
+  // ── FLEET SUMMARY ────────────────────────
+  renderFleetSummary() {
+    const el = document.getElementById('fleet-summary');
+    if (!el || !this.rawSpecs.length) return;
+    const total = this.rawSpecs.length;
+    const legends = this.rawSpecs.filter(s => s.tier >= 4).length;
+    const golds = this.rawSpecs.filter(s => s.tier === 3).length;
+    const avgEma = this.rawSpecs.reduce((a, s) => a + Number(s.ema_score || 0), 0) / total;
+    const totalPkg = this.rawSpecs.reduce((a, s) => a + (s.packages_absorbed || 0), 0);
+    const totalCyc = this.rawSpecs.reduce((a, s) => a + (s.total_cycles || 0), 0);
 
     el.innerHTML = `
-      <div class="header-bar">
-        <div class="header-cell">
-          <div class="header-label">Last Download</div>
-          <div class="header-value sm">${this.escapeHtml(lastDl)}</div>
-        </div>
-        <div class="header-cell">
-          <div class="header-label">Last Feed</div>
-          <div class="header-value sm">${this.escapeHtml(lastFeed)}</div>
-        </div>
-        <div class="header-cell">
-          <div class="header-label">Process</div>
-          <div class="header-value sm">${running}</div>
-        </div>
-      </div>
-
-      ${progressHtml}
-
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0">
-        <div class="card" style="text-align:center;padding:24px">
-          <div style="font-size:36px;font-weight:700;color:${dlDays !== null && dlDays > 2 ? '#FF6B6B' : '#4ECDC4'}">${dlDisplay}</div>
-          <div style="color:var(--dim);margin-top:8px">Días sin descargar</div>
-          <div style="font-size:12px;color:var(--dim)">Última: ${this.escapeHtml(lastDl)}</div>
-        </div>
-        <div class="card" style="text-align:center;padding:24px">
-          <div style="font-size:36px;font-weight:700;color:${pending > 0 ? '#FFA500' : '#4ECDC4'}">${pending > 0 ? feedDisplay : '0'}</div>
-          <div style="color:var(--dim);margin-top:8px">Días pendientes de alimentar</div>
-          <div style="font-size:12px;color:var(--dim)">${pending} packages sin absorber</div>
-        </div>
-      </div>
-
-      <div style="display:flex;gap:12px;margin:12px 0">
-        <button class="wd-btn" onclick="app.wikidataDownload()" ${dlRunning ? 'disabled' : ''}>
-          📥 Descargar ahora
-        </button>
-        <button class="wd-btn" onclick="app.wikidataFeed()" ${dlRunning ? 'disabled' : ''}>
-          🧠 Alimentar ahora
-        </button>
-        <button class="wd-btn wd-btn-stop" onclick="app.wikidataStop()" ${!dlRunning ? 'disabled' : ''}>
-          ⏹ Detener
-        </button>
-      </div>
-
-      <div class="section-title" style="margin-top:20px"><h2>Paquetes pendientes por especialista</h2></div>
-      <div class="card">${domainBars}</div>
+      <div class="stat-chip highlight"><span class="sl">Legend</span><span class="sv">0</span></div>
+      <div class="stat-chip"><span class="sl">Gold</span><span class="sv">0</span></div>
+      <div class="stat-chip"><span class="sl">Total</span><span class="sv">0</span></div>
+      <div class="stat-chip"><span class="sl">EMA medio</span><span class="sv">0</span></div>
+      <div class="stat-chip"><span class="sl">Paquetes</span><span class="sv">0</span></div>
+      <div class="stat-chip"><span class="sl">Ciclos</span><span class="sv">0</span></div>
     `;
+    // Animate each value
+    const chips = el.querySelectorAll('.stat-chip .sv');
+    this.countUp(chips[0], legends);
+    this.countUp(chips[1], golds);
+    this.countUp(chips[2], total);
+    this.countUp(chips[3], avgEma);
+    this.countUp(chips[4], totalPkg);
+    this.countUp(chips[5], totalCyc);
+  }
 
-    if (this._wdPollTimer) {
-      clearTimeout(this._wdPollTimer);
-      this._wdPollTimer = null;
+  // ── ALERTS BAR ───────────────────────────
+  renderAlerts(alerts) {
+    const bar = document.getElementById('alerts-bar');
+    if (!bar || !alerts.length) { bar.classList.remove('visible'); return; }
+    bar.classList.add('visible');
+    const iconFor = (l) => l === 'error' ? '✕' : (l === 'info' ? '●' : '⚠');
+    bar.innerHTML = alerts.map(a =>
+      `<span class="alert-chip ${a.level}">${iconFor(a.level)} ${escapeHtml(a.msg)}</span>`
+    ).join('');
+  }
+
+  // ── INSIGHTS (models + ETA) ───────────────
+  renderInsights() {
+    const ins = this.rawInsights;
+    if (!ins) return;
+
+    // Model comparison
+    const modelEl = document.getElementById('model-bars');
+    if (modelEl && ins.models?.length) {
+      const maxEma = Math.max(...ins.models.map(m => m.avg_ema || 0), 0.01);
+      const colors = ['var(--amber)','var(--gold)','var(--green)','var(--blue)'];
+      modelEl.innerHTML = ins.models.map((m, i) => {
+        const pct = ((m.avg_ema || 0) / maxEma) * 100;
+        return `<div class="model-row">
+          <span class="model-name" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span>
+          <span class="model-track"><span class="model-fill" style="width:${pct}%;background:${colors[i%colors.length]}"></span></span>
+          <span class="model-ema">${(m.avg_ema||0).toFixed(4)}</span>
+        </div>`;
+      }).join('');
     }
-    if (dlRunning) {
-      this._wdPollTimer = setTimeout(() => this.renderWikidata(), 3000);
+
+    // ETA predictions
+    const etaEl = document.getElementById('eta-bars');
+    if (etaEl && ins.predictions?.length) {
+      const preds = [...ins.predictions].sort((a, b) => (a.eta_days ?? 999) - (b.eta_days ?? 999));
+      etaEl.innerHTML = preds.map(p => {
+        let cls = '', label;
+        if (p.eligible_now || p.eta_days === 0) { cls = 'eligible'; label = '◆ ahora'; }
+        else if (p.eta_days == null) { cls = 'stalled'; label = '—'; }
+        else if (p.eta_days <= 7) { cls = ''; label = `${p.eta_days}d`; }
+        else if (p.eta_days <= 30) { cls = 'slow'; label = `${p.eta_days}d`; }
+        else { cls = 'stalled'; label = '>30d'; }
+        const pct = p.eligible_now ? 100 : Math.max(5, Math.min(100, 100 - Math.min(p.eta_days || 99, 200) / 2));
+        return `<div class="eta-row">
+          <span class="eta-domain">${escapeHtml(p.domain)}</span>
+          <span class="eta-track"><span class="eta-fill ${cls}" style="width:${pct}%"></span></span>
+          <span class="eta-val ${cls}">${label}</span>
+        </div>`;
+      }).join('');
     }
   }
 
-  async wikidataDownload() {
-    const btn = document.querySelector('.wd-btn:first-child');
-    if (btn) { btn.textContent = '📥 Descargando...'; btn.disabled = true; }
-    const r = await this.postJSON(`${this.apiBase}/wikidata/download`, {});
-    if (r && r.status === 'started') {
-      setTimeout(() => this.renderWikidata(), 500);
-    } else if (r && r.error) {
-      alert('Error: ' + r.error);
-      if (btn) { btn.textContent = '📥 Descargar ahora'; btn.disabled = false; }
-    }
-  }
+  // ── FLEET TABLE ──────────────────────────
+  renderFleet() {
+    const tbody = document.getElementById('fleet-tbody');
+    if (!tbody) return;
+    const specs = this.sortSpecs();
+    const deltaMap = {};
+    (this.rawOverview?.ema_deltas || []).forEach(d => { deltaMap[d.specialist_id] = d; });
 
-  async wikidataFeed() {
-    const btns = document.querySelectorAll('.wd-btn');
-    if (btns[1]) { btns[1].textContent = '🧠 Alimentando...'; btns[1].disabled = true; }
-    const r = await this.postJSON(`${this.apiBase}/wikidata/feed`, {});
-    if (r && r.status === 'started') {
-      setTimeout(() => this.renderWikidata(), 500);
-    } else if (r && r.error) {
-      alert('Error: ' + r.error);
-      if (btns[1]) { btns[1].textContent = '🧠 Alimentar ahora'; btns[1].disabled = false; }
-    }
-  }
-
-  async wikidataStop() {
-    if (this._wdPollTimer) {
-      clearTimeout(this._wdPollTimer);
-      this._wdPollTimer = null;
-    }
-    const r = await this.postJSON(`${this.apiBase}/wikidata/stop`, {});
-    if (r && r.status === 'stopped') {
-      this.renderWikidata();
-    }
-  }
-
-  async renderMonitor() {
-    const el = document.getElementById('tab-monitor');
-    if (!el) return;
-
-    const isRefresh = document.getElementById('mc-rate-chart') !== null;
-
-    // On refresh, only fetch checkpoints since last ID
-    const cpUrl = isRefresh && this._lastCheckpointId
-      ? `${this.apiBase}/cascade/checkpoints?since_id=${this._lastCheckpointId}`
-      : `${this.apiBase}/cascade/checkpoints`;
-
-    const [cascadeData, status, memData, cpuData] = await Promise.all([
-      this.fetchJSON(cpUrl),
-      this.fetchJSON(`${this.apiBase}/status`),
-      this.fetchJSON(`${this.apiBase}/system/memory`),
-      this.fetchJSON(`${this.apiBase}/system/cpu`),
-    ]);
-
-    if (!cascadeData) {
-      if (!isRefresh) el.innerHTML = '<div class="card">Error connecting to API</div>';
-      return;
-    }
-
-    const checkpoints = cascadeData.checkpoints || [];
-    const latestEntities = cascadeData.latest_entities || 0;
-    const s = status || {};
-
-    // Track latest checkpoint id for subsequent refreshes
-    if (!isRefresh && cascadeData.latest_id) {
-      this._lastCheckpointId = cascadeData.latest_id;
-    } else if (isRefresh && cascadeData.checkpoints && cascadeData.checkpoints.length > 0) {
-      // On refresh, _lastCheckpointId always moves forward so we get all checkpoints
-      this._lastCheckpointId = cascadeData.latest_id;
-    }
-
-    let rate = 0;
-    if (checkpoints.length >= 2) {
-      const last = checkpoints[checkpoints.length - 1];
-      const prev = checkpoints[checkpoints.length - 2];
-      const dt = (last.elapsed_seconds || 0) - (prev.elapsed_seconds || 0);
-      const de = (last.entities_processed || 0) - (prev.entities_processed || 0);
-      rate = dt > 0 ? Math.round(de / dt) : 0;
-    } else {
-      rate = s.cascade_entities && s.elapsed_seconds > 0 ? Math.round(s.cascade_entities / s.elapsed_seconds) : 0;
-    }
-
-    const totalMatches = checkpoints.length > 0 ? checkpoints[checkpoints.length - 1].total_matches || 0 : 0;
-    const elapsed = s.elapsed_seconds || 0;
-    const elapsedStr = elapsed > 0
-      ? `${Math.floor(elapsed / 3600)}h ${Math.floor((elapsed % 3600) / 60)}m ${Math.floor(elapsed % 60)}s`
-      : '-';
-    const statusClass = s.status === 'ACTIVE' || s.status === 'RUNNING' ? 'status-ok' : 'status-idle';
-
-    // -- FIRST LOAD: build full DOM --
-    if (!isRefresh) {
-      el.innerHTML = `
-    <div class="grid-4 monitor-cards">
-      <div class="card monitor-card ${statusClass}" id="mc-card-status">
-        <div class="mc-label">Status</div>
-        <div class="mc-value" id="mc-val-status">${s.status || 'IDLE'}</div>
-        <div class="mc-sub" id="mc-sub-status">${s.phase || ''}</div>
-      </div>
-      <div class="card monitor-card" id="mc-card-entities">
-        <div class="mc-label">Entities Processed</div>
-        <div class="mc-value" id="mc-val-entities">${latestEntities.toLocaleString()}</div>
-        <div class="mc-sub" id="mc-sub-entities">rate: ${rate.toLocaleString()} ents/s</div>
-      </div>
-      <div class="card monitor-card" id="mc-card-matches">
-        <div class="mc-label">Total Matches</div>
-        <div class="mc-value" id="mc-val-matches">${totalMatches.toLocaleString()}</div>
-        <div class="mc-sub" id="mc-sub-matches">via cascade</div>
-      </div>
-      <div class="card monitor-card" id="mc-card-elapsed">
-        <div class="mc-label">Elapsed</div>
-        <div class="mc-value" id="mc-val-elapsed">${elapsedStr}</div>
-        <div class="mc-sub" id="mc-sub-elapsed">${s.current_specialist || ''}</div>
-      </div>
-    </div>
-    <div class="grid-2">
-      <div class="card"><div id="mc-rate-chart" style="height:280px"></div></div>
-      <div class="card"><div id="mc-matches-chart" style="height:280px"></div></div>
-    </div>
-    <div class="grid-2">
-      <div class="card">
-        <h3 class="card-title">Matches per Specialist</h3>
-        <div style="max-height:300px;overflow-y:auto">
-          <table class="table-monitor" id="mc-spec-table">
-            <thead><tr><th>Specialist</th><th class="num">Matches</th></tr></thead>
-            <tbody id="mc-spec-tbody"><tr><td colspan="2" class="empty">Fetching data...</td></tr></tbody>
-          </table>
-        </div>
-      </div>
-      <div class="card"><div id="mc-system-chart" style="height:300px"></div></div>
-    </div>
-    <div class="card" style="margin-top:12px"><div id="mc-timeline-chart" style="height:200px"></div></div>
-      `;
-
-      // Fetch per-specialist data separately (slow query, only on first load)
-      this.fetchJSON(`${this.apiBase}/cascade/per-specialist`).then(ps => {
-        const tbody = document.getElementById('mc-spec-tbody');
-        if (tbody && ps && ps.matches && ps.matches.length) {
-          tbody.innerHTML = ps.matches
-            .sort((a, b) => b.match_count - a.match_count)
-            .map(m => `<tr><td>${m.domain}</td><td class="num">${m.match_count.toLocaleString()}</td></tr>`)
-            .join('');
+    tbody.innerHTML = specs.map(s => {
+      const ema = Number(s.ema_score || 0);
+      const d = deltaMap[s.specialist_id];
+      const deltaVal = d ? ema - Number(d.ema_24h_ago || ema) : 0;
+      const dCls = deltaVal > 0.0005 ? 'delta-up' : (deltaVal < -0.0005 ? 'delta-down' : 'delta-flat');
+      const dTxt = !d ? '—' : `${deltaVal >= 0 ? '+' : ''}${deltaVal.toFixed(4)}`;
+      const tier = s.tier || 0;
+      const tierCls = tier >= 4 ? 'legend' : tier === 3 ? 'gold' : tier === 2 ? 'silver' : 'none';
+      const tierLbl = tier >= 4 ? 'LEGEND' : tier === 3 ? 'GOLD' : tier === 2 ? 'SILVER' : '—';
+      const q = s.avg_quality || 0;
+      const qMax = s.max_quality || 0;
+      const qMin = s.min_quality || 0;
+      const qTxt = q ? `${q.toFixed(2)} <span style="color:var(--text-mute)">[${qMin.toFixed(1)}–${qMax.toFixed(1)}]</span>` : '—';
+      const racha = s.racha_25 || 0;
+      const rachaPct = Math.round(racha * 100);
+      const status = (s.status || 'idle').toLowerCase();
+      const isActive = status === 'active' || status === 'mining' || status === 'absorbing';
+      const failRate = s.fail_rate != null ? (s.fail_rate * 100).toFixed(1) + '%' : '—';
+      // ETA from insights
+      let etaTxt = '—';
+      if (this.rawInsights?.predictions) {
+        const pred = this.rawInsights.predictions.find(p => p.specialist_id === s.id);
+        if (pred) {
+          if (pred.eligible_now || pred.eta_days === 0) etaTxt = '<span style="color:var(--gold)">◆ ahora</span>';
+          else if (pred.eta_days != null) etaTxt = `${pred.eta_days}d`;
         }
-      });
-
-      // Create charts
-      makeCascadeRateChart(checkpoints, 'mc-rate-chart', rate);
-      makeCascadeMatchesChart(checkpoints, 'mc-matches-chart');
-      makeCascadeTimelineChart(checkpoints, 'mc-timeline-chart');
-      if (memData && cpuData) {
-        makeSystemResourcesChart(memData, cpuData, 'mc-system-chart');
-      }
-    }
-
-    // -- REFRESH: update data in place, no DOM rebuild --
-    else {
-      // Update metric cards
-      const vStatus = document.getElementById('mc-val-status');
-      if (vStatus) { vStatus.textContent = s.status || 'IDLE'; }
-
-      const subStatus = document.getElementById('mc-sub-status');
-      if (subStatus) { subStatus.textContent = s.phase || ''; }
-
-      const vEntities = document.getElementById('mc-val-entities');
-      if (vEntities) { vEntities.textContent = latestEntities.toLocaleString(); }
-
-      const subEntities = document.getElementById('mc-sub-entities');
-      if (subEntities) { subEntities.textContent = `rate: ${rate.toLocaleString()} ents/s`; }
-
-      const vMatches = document.getElementById('mc-val-matches');
-      if (vMatches) { vMatches.textContent = totalMatches.toLocaleString(); }
-
-      const vElapsed = document.getElementById('mc-val-elapsed');
-      if (vElapsed) { vElapsed.textContent = elapsedStr; }
-
-      // Update card border colors
-      const cards = document.querySelectorAll('.monitor-card');
-      if (cards.length > 0) {
-        cards[0].className = `card monitor-card ${statusClass}`;
       }
 
-      // Update charts with Plotly.react (no DOM destroy/recreate)
-      makeCascadeRateChart(checkpoints, 'mc-rate-chart', rate);
-      makeCascadeMatchesChart(checkpoints, 'mc-matches-chart');
-      makeCascadeTimelineChart(checkpoints, 'mc-timeline-chart');
-      if (memData && cpuData) {
-        makeSystemResourcesChart(memData, cpuData, 'mc-system-chart');
-      }
-    }
-
-    // Schedule next refresh in 2 minutes
-    if (this._monitorTimer) clearTimeout(this._monitorTimer);
-    this._monitorTimer = setTimeout(() => this.renderMonitor(), 120000);
+      const iconMap={SoftwareEngineering:'01-software-engineering',Mathematics:'02-mathematics',Medicine:'03-medicine',LegalSystem:'04-legal-system',PhilosophyHistory:'05-philosophy-history',FinanceEconomics:'06-finance-economics',Physics:'07-physics',Cybersecurity:'08-cybersecurity',Geopolitics:'09-geopolitics',DataScience:'10-data-science',Chemistry:'11-chemistry',ArtHistory:'12-art-history',Electronics:'13-electronics',Astronomy:'14-astronomy',Linguistics:'15-linguistics',Psychology:'16-psychology',EnvironmentalScience:'17-environmental-science',Sociology:'18-sociology'};
+      const icon=iconMap[s.domain]||'01-software-engineering';
+      return `<tr class="row-${tierCls}">
+        <td><span class="tier-badge ${tierCls}">${tierLbl}</span></td>
+        <td class="domain-cell"><span style="display:flex;align-items:center;gap:8px;"><img src="assets/grafia/icons/${icon}.svg" alt="" width="22" height="22" style="flex-shrink:0;background:var(--paper-2);border:1px solid var(--border);border-radius:50%;padding:3px;"><span>${escapeHtml(s.domain)}</span></span></td>
+        <td class="model-cell">${escapeHtml(s.model || '')}</td>
+        <td class="num ema-val">${ema.toFixed(4)}</td>
+        <td class="num ${dCls}">${dTxt}</td>
+        <td class="num eta-cell">${etaTxt}</td>
+        <td class="num">${qTxt}</td>
+        <td class="num">${s.failures ?? '—'} <span style="color:var(--text-mute)">(${failRate})</span></td>
+        <td class="num"><span class="racha-bar"><span class="racha-bar-fill" style="width:${rachaPct}%"></span></span><span class="racha-pct">${rachaPct}%</span></td>
+        <td class="num">${(s.packages_absorbed || 0).toLocaleString()}</td>
+        <td class="num">${(s.total_cycles || 0).toLocaleString()}</td>
+        <td><span class="status-dot ${isActive ? 'active' : status === 'error' ? 'error' : 'idle'}"></span><span class="status-label">${status}</span></td>
+      </tr>`;
+    }).join('');
   }
+
+  sortSpecs() {
+    const arr = [...this.rawSpecs];
+    const k = this.sortKey, dir = this.sortDir;
+    const etaMap = {};
+    if (this.rawInsights?.predictions) {
+      this.rawInsights.predictions.forEach(p => { etaMap[p.specialist_id] = p.eta_days ?? 999; });
+    }
+    const getv = s => {
+      if (k === 'domain') return s.domain || '';
+      if (k === 'ema') return Number(s.ema_score || 0);
+      if (k === 'quality') return s.avg_quality || 0;
+      if (k === 'packages') return s.packages_absorbed || 0;
+      if (k === 'eta') return etaMap[s.id] ?? 999;
+      return 0;
+    };
+    arr.sort((a, b) => {
+      const va = getv(a), vb = getv(b);
+      if (typeof va === 'string') return va.localeCompare(vb) * dir;
+      return (va - vb) * dir;
+    });
+    return arr;
+  }
+
+  // ── METRICS ──────────────────────────────
+  renderMetrics() {
+    // throughput
+    const data = this.rawOverview?.throughput || [];
+    if (data.length) {
+      const last = data.slice(-48);
+      drawThroughputBars('chart-throughput', last);
+      const total = last.reduce((a, r) => a + (r.cycles || 0), 0);
+      const el = document.getElementById('tp-total'); if (el) el.textContent = total.toLocaleString();
+    }
+    // tier bars
+    this.renderTierBars();
+  }
+
+  renderTierBars() {
+    const el = document.getElementById('tier-bars');
+    if (!el) return;
+    const tiers = { 4: { label: 'Legend', color: 'var(--gold)' }, 3: { label: 'Gold', color: 'var(--amber)' }, 2: { label: 'Silver', color: 'var(--blue)' }, 1: { label: 'Bronze', color: 'var(--text-mute)' } };
+    const total = this.rawSpecs.length || 1;
+    el.innerHTML = Object.entries(tiers).map(([t, info]) => {
+      const cnt = this.rawSpecs.filter(s => s.tier === Number(t)).length;
+      const pct = (cnt / total) * 100;
+      return `<div class="tier-bar-row">
+        <span class="tier-bar-label">${info.label}</span>
+        <span class="tier-bar-track"><span class="tier-bar-fill" style="width:${pct}%;background:${info.color}"></span></span>
+        <span class="tier-bar-count">${cnt}</span>
+      </div>`;
+    }).join('');
+  }
+
+  // ── ACTIVITY ─────────────────────────────
+  renderActivity() {
+    const feed = document.getElementById('activity-feed');
+    if (!feed) return;
+    let logs = this.rawOverview?._logs || [];
+    // use logs from a dedicated fetch stored in this._logs
+    logs = this._logs || [];
+    if (this.actFilter !== 'ALL') logs = logs.filter(l => l.level === this.actFilter);
+    if (!logs.length) { if (!feed.children.length) feed.innerHTML = '<div style="padding:20px;color:var(--text-mute)">Sin actividad registrada</div>'; return; }
+
+    // incremental render
+    const existing = new Set();
+    feed.querySelectorAll('[data-id]').forEach(el => existing.add(Number(el.dataset.id)));
+    const fresh = logs.filter(l => !existing.has(l.id));
+    if (!fresh.length) return;
+    const frag = document.createDocumentFragment();
+    fresh.slice(0, 15).forEach(l => {
+      const t = document.createElement('div');
+      t.className = 'activity-item fade-in';
+      t.dataset.id = l.id;
+      const time = l.timestamp ? new Date(l.timestamp.replace(' ', 'T') + 'Z').toLocaleTimeString('es-ES', {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '--:--:--';
+      t.innerHTML = `<span class="t">${time}</span><span class="lvl lvl-${l.level}">${l.level}</span><span class="m">${escapeHtml(l.message || '')}</span>`;
+      frag.appendChild(t);
+    });
+    feed.prepend(frag);
+    while (feed.children.length > 80) feed.removeChild(feed.lastChild);
+  }
+
+  pushSpark(key, value, canvasId) {
+    const arr = this.spark[key];
+    arr.push(value);
+    if (arr.length > 40) arr.shift();
+    const canvas = document.getElementById(canvasId);
+    if (canvas) drawSparkline(canvas, arr);
+  }
+
+  // ── EMA CHART ────────────────────────────
+  async loadEmaChart() {
+    const data = await this.fetchJSON(`${this.apiBase}/analytics/ema-history?hours=${this.rangeHours}`);
+    if (!data || !data.series) return;
+    this.emaSeries = {};
+    data.series.forEach(s => { this.emaSeries[s.specialist_id] = s; });
+    drawEmaMultiLine('chart-ema', data.series, document.getElementById('legend-ema'), this.rangeHours);
+    this.emaSeriesEmpty = false;
+  }
+
+  async killAll() {
+    if (!confirm('¿Detener todos los procesos de Expertia?')) return;
+    await this.fetchJSON(`${this.apiBase}/kill`, {
+      method: 'POST',
+      headers: { 'X-API-Key': this._apiKey || 'local', 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const pill = document.getElementById('pp-status');
+    if (pill) pill.textContent = 'procesos detenidos';
+  }
+
+  exportCSV() {
+    const specs = this.sortSpecs();
+    const etaMap = {};
+    if (this.rawInsights?.predictions) {
+      this.rawInsights.predictions.forEach(p => { etaMap[p.specialist_id] = p.eta_days; });
+    }
+    const headers = ['Tier','Specialist','Model','EMA','Delta24h','ETA_Legend_d','Quality','Failures','Racha25','Packages','Cycles','Status'];
+    const rows = specs.map(s => {
+      const ema = Number(s.ema_score || 0).toFixed(4);
+      const d = (this.rawOverview?.ema_deltas || []).find(x => x.specialist_id === s.id);
+      const delta = d ? (ema - Number(d.ema_24h_ago || ema)).toFixed(4) : '0';
+      const eta = etaMap[s.id];
+      const etaVal = eta == null ? '' : (s.tier >= 4 ? 'LEGIBLE' : `${eta}`);
+      return [s.tier >= 4 ? 'Legend' : s.tier === 3 ? 'Gold' : 'Silver',
+        s.domain, s.model || '', ema, delta, etaVal,
+        (s.avg_quality || 0).toFixed(2), s.failures ?? 0,
+        ((s.racha_25 || 0) * 100).toFixed(0) + '%',
+        s.packages_absorbed || 0, s.total_cycles || 0, s.status || ''].join(',');
+    });
+    const csv = headers.join(',') + '\n' + rows.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `expertia_fleet_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    this.toast('Exportado', `${specs.length} filas descargadas`, 'success', 3000);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+function drawSparkline(canvas, values) {
+  const ctx = canvas.getContext('2d');
+  const W = canvas.clientWidth || 100, H = canvas.clientHeight || 30;
+  canvas.width = W; canvas.height = H;
+  const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
+  const accent = isDark ? '#E8913A' : '#C4641A';
+  const max = Math.max(...values, 1), min = Math.min(...values, 0);
+  const range = (max - min) || 1;
+  ctx.clearRect(0, 0, W, H);
+  ctx.beginPath();
+  for (let i = 0; i < values.length; i++) {
+    const x = (i / (values.length - 1)) * W;
+    const y = H - ((values[i] - min) / range) * (H - 4) - 2;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = accent; ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.stroke();
 }
 
 const app = new App();

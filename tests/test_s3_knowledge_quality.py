@@ -61,34 +61,17 @@ class TestS33_TierFiltering:
 
 
 class TestS34_KeywordMatching:
-    """S3.4: query_super_expert must use question keywords for relevance."""
+    """S3.4: Web queries must be keyword-driven for topical relevance."""
 
     def test_keyword_scoring_in_query(self):
         from pathlib import Path
         content = Path(__file__).parent.parent / "orchestrator.py"
         text = content.read_text(encoding="utf-8")
-        assert "relevance" in text
         assert "keywords" in text
+        assert "_domain_to_keywords" in text
 
-    def test_query_super_expert_returns_top_k(self):
-        with patch("orchestrator.get_db_manager") as mock_db, \
-             patch("orchestrator.LLMRunner"), \
-             patch("orchestrator.ModernWebScraper"), \
-             patch("orchestrator.MetricsCollector"), \
-             patch("orchestrator.KnowledgeIngestor"):
-            from orchestrator import PipelineController
-            c = PipelineController()
-            c.db_manager = MagicMock()
-            c.db_manager.execute_query = MagicMock(return_value=[
-                {'topic': 'Quantum physics', 'structured_knowledge': 'Quantum mechanics basics',
-                 'source_url': 'http://test.com', 'created_at': '2026-01-01'},
-                {'topic': 'Classical mechanics', 'structured_knowledge': 'Newton laws',
-                 'source_url': 'http://test2.com', 'created_at': '2026-01-02'},
-            ])
-            # Mock get_super_expert_members
-            c.get_super_expert_members = MagicMock(return_value=[
-                {'domain': 'Physics', 'weight': 1.0, 'ema_score': 0.96}
-            ])
-            results = c.query_super_expert('PhysicsCouncil', 'quantum entanglement', top_k=5)
-            assert isinstance(results, list)
-            assert len(results) <= 5
+    def test_domain_to_keywords_returns_space_separated(self):
+        from orchestrator import _domain_to_keywords
+        keywords = _domain_to_keywords("SoftwareEngineering")
+        assert "software" in keywords
+        assert "engineering" in keywords

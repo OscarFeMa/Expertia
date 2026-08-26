@@ -44,15 +44,14 @@ class TestS22_ComputeTierException:
 
 
 class TestS23_DuplicateRoute:
-    """S2.3: /wikidata/feed must not appear twice in api_router."""
+    """S2.3: wikidata feed endpoint must have been removed (Fase 4: incremental semanal replaces API feeding)."""
 
-    def test_no_duplicate_feed_route(self):
-        import ast
+    def test_no_feed_route(self):
         from pathlib import Path
         router_path = Path(__file__).parent.parent / "api_router.py"
         content = router_path.read_text(encoding="utf-8")
         feed_decorators = content.count('@router.post("/wikidata/feed"')
-        assert feed_decorators == 1, f"Expected 1 /wikidata/feed route, found {feed_decorators}"
+        assert feed_decorators == 0, f"Expected 0 /wikidata/feed routes, found {feed_decorators}"
 
 
 class TestS24_StaleActiveReset:
