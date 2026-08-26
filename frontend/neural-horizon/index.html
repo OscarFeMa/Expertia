@@ -1,81 +1,154 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="es" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Neural Horizon — Expertia</title>
+  <title>EXPERTIA · Neural Horizon</title>
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <meta http-equiv="Pragma" content="no-cache">
-  <meta http-equiv="Expires" content="0">
-  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" crossorigin="anonymous"></script>
-  <link rel="stylesheet" href="style.css?v=2">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>🔮</text></svg>">
+  <link rel="stylesheet" href="style.css?v=14">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>◈</text></svg>">
 </head>
 <body>
-  <aside class="sidebar" id="sidebar">
-    <div class="logo" onclick="app.switchTab('dashboard')">
-      <div class="logo-icon">🔮</div>
-      <div class="logo-text">Neural<br>Horizon</div>
-      <div class="logo-badge">v2</div>
+  <!-- ═══════════════ TOP BAR ═══════════════ -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">◈</div>
+      <div class="brand-text">
+        <span class="brand-title">EXPERTIA</span>
+        <span class="brand-sub">Neural Horizon · control en tiempo real</span>
+      </div>
     </div>
-    <nav class="nav" id="nav">
-      <div class="nav-item active" data-tab="dashboard" onclick="app.switchTab('dashboard')">
-        <span class="nav-icon">📟</span> Dashboard
-      </div>
-      <div class="nav-item" data-tab="specialists" onclick="app.switchTab('specialists')">
-        <span class="nav-icon">📚</span> Specialists
-      </div>
-      <div class="nav-item" data-tab="fleet" onclick="app.switchTab('fleet')">
-        <span class="nav-icon">⚙️</span> Fleet
-      </div>
-      <div class="nav-item" data-tab="map" onclick="app.switchTab('map')">
-        <span class="nav-icon">🌐</span> Neural Map
-      </div>
-      <div class="nav-item" data-tab="super-experts" onclick="app.switchTab('super-experts')">
-        <span class="nav-icon">🏛️</span> Super-Experts
-      </div>
-      <div class="nav-item" data-tab="certified" onclick="app.switchTab('certified')">
-        <span class="nav-icon">🏆</span> Certified
-      </div>
-      <div class="nav-item" data-tab="incidents" onclick="app.switchTab('incidents')">
-        <span class="nav-icon">🔥</span> Incidents
-      </div>
-      <div class="nav-item" data-tab="wikidata" onclick="app.switchTab('wikidata')">
-        <span class="nav-icon">📡</span> Wikidata
-      </div>
-      <div class="nav-item" data-tab="monitor" onclick="app.switchTab('monitor')">
-        <span class="nav-icon">📊</span> Monitor
-      </div>
-    </nav>
-    <div class="sidebar-stats" id="sidebar-stats">
-      <div class="ss-item"><span class="ss-val" id="ss-specs">-</span><span class="ss-lbl">Specialists</span></div>
-      <div class="ss-item"><span class="ss-val" id="ss-pkgs">-</span><span class="ss-lbl">Packages</span></div>
-      <div class="ss-item"><span class="ss-val" id="ss-incidents">-</span><span class="ss-lbl">Incidents</span></div>
-      <div class="ss-item"><span class="ss-val" id="ss-reliable">-</span><span class="ss-lbl">Fiables</span></div>
+    <div class="pipeline-pill" id="pipeline-pill">
+      <span class="dot" id="pp-dot"></span>
+      <span id="pp-status">conectando…</span>
     </div>
-    <div class="sidebar-kill">
-      <button class="kill-btn" onclick="app.killAll()" title="Kill all Expertia processes">⏹ Kill All</button>
+    <div class="top-actions">
+      <span class="clock" id="sb-time">--:--:--</span>
+      <button class="kill-btn" onclick="app.killAll()" title="Detener todos los procesos">■ DETENER</button>
+      <button class="theme-toggle" onclick="app.toggleTheme()" title="Cambiar tema">◐</button>
     </div>
-    <div class="sidebar-footer">
-      <button class="theme-toggle" onclick="app.toggleTheme()" title="Toggle theme">🌓</button>
-    </div>
-  </aside>
-  <main class="main" id="main">
-    <div class="tab-content active" id="tab-dashboard"></div>
-    <div class="tab-content" id="tab-specialists"></div>
-    <div class="tab-content" id="tab-fleet"></div>
-    <div class="tab-content" id="tab-map"></div>
-    <div class="tab-content" id="tab-super-experts"></div>
-    <div class="tab-content" id="tab-certified"></div>
-    <div class="tab-content" id="tab-incidents"></div>
-    <div class="tab-content" id="tab-wikidata"></div>
-    <div class="tab-content" id="tab-monitor"></div>
+  </header>
+
+  <!-- ═══════════════ ALERTS BAR ═══════════════ -->
+  <div class="alerts-bar" id="alerts-bar"></div>
+
+  <!-- ═══════════════ TAB BAR ═══════════════ -->
+  <nav class="tabbar">
+    <button class="tab active" data-tab="fleet" onclick="app.switchTab('fleet')">
+      <span class="tab-key">F1</span>FLOTA
+    </button>
+    <button class="tab" data-tab="metrics" onclick="app.switchTab('metrics')">
+      <span class="tab-key">F2</span>MÉTRICAS
+    </button>
+    <button class="tab" data-tab="activity" onclick="app.switchTab('activity')">
+      <span class="tab-key">F3</span>ACTIVIDAD
+    </button>
+  </nav>
+
+  <!-- ═══════════════ CONTENIDO ═══════════════ -->
+  <main class="main">
+
+    <!-- ── TAB: FLOTA ── -->
+    <section class="tab-panel active" id="tab-fleet">
+      <div class="fleet-summary" id="fleet-summary">
+        <button class="export-btn" onclick="app.exportCSV()" title="Exportar tabla a CSV" style="margin-left:auto;padding:4px 12px;font:600 10px var(--mono);border:1px solid var(--border-hi);border-radius:2px;background:var(--surface);color:var(--text);cursor:pointer;">⬇ CSV</button>
+      </div>
+      <div class="table-shell">
+        <table class="data-table" id="fleet-table">
+          <thead>
+            <tr>
+              <th></th>
+              <th onclick="app.sortBy('domain')">ESPECIALISTA</th>
+              <th>MODELO</th>
+              <th onclick="app.sortBy('ema')" class="num">EMA<span class="sort-arrow"></span></th>
+              <th class="num">Δ24h</th>
+              <th onclick="app.sortBy('eta')" class="num">ETA⎋</th>
+              <th onclick="app.sortBy('quality')" class="num">CALIDAD</th>
+              <th class="num">FALLOS</th>
+              <th class="num">RACHA</th>
+              <th onclick="app.sortBy('packages')" class="num">PAQUETES</th>
+              <th class="num">CICLOS</th>
+              <th>ESTADO</th>
+            </tr>
+          </thead>
+          <tbody id="fleet-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ── TAB: MÉTRICAS ── -->
+    <section class="tab-panel" id="tab-metrics">
+      <div class="system-bar" id="system-bar">
+        <div class="sys-item"><span class="sys-label">CPU</span><span class="sys-val" id="sys-cpu">—%</span><canvas id="sys-cpu-spark" width="80" height="28"></canvas></div>
+        <div class="sys-item"><span class="sys-label">Memoria</span><span class="sys-val" id="sys-ram">—%</span><canvas id="sys-ram-spark" width="80" height="28"></canvas></div>
+        <div class="sys-item"><span class="sys-label">Disco E:</span><span class="sys-val" id="sys-disk">— GB libres</span><canvas id="sys-disk-spark" width="80" height="28"></canvas></div>
+      </div>
+      <div class="metrics-grid metrics-grid--duo" id="metrics-grid">
+        <div class="panel panel--large" id="chart-ema-panel">
+          <div class="panel-head"><h3>Evolución EMA por especialista</h3>
+            <div class="panel-tools">
+              <span class="range-btn active" data-hours="24" onclick="app.setRange(24)">24h</span>
+              <span class="range-btn" data-hours="72" onclick="app.setRange(72)">72h</span>
+              <span class="range-btn" data-hours="168" onclick="app.setRange(168)">7d</span>
+            </div>
+          </div>
+          <div class="canvas-wrap canvas-wrap--tall"><canvas id="chart-ema"></canvas></div>
+          <div class="chart-legend" id="legend-ema"></div>
+        </div>
+
+        <div class="panel panel--large" id="chart-thru-panel">
+          <div class="panel-head"><h3>Throughput / hora</h3><span class="live-dot" title="En vivo"></span></div>
+          <div class="canvas-wrap canvas-wrap--tall small"><canvas id="chart-throughput"></canvas></div>
+          <div class="kpi-mini"><span id="tp-total">—</span> ciclos (24h) · <span id="tp-peak">—</span> pico/h</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── TAB: ACTIVIDAD ── -->
+    <section class="tab-panel" id="tab-activity">
+      <div class="panel" style="padding:0;overflow:hidden;">
+        <div class="panel-head" style="padding:12px 16px;border-bottom:1px solid var(--border);">
+          <h3>Actividad en vivo</h3>
+          <div class="panel-tools" id="act-filters">
+            <span class="filter-btn active" data-lvl="ALL" onclick="app.setActFilter('ALL')">TODO</span>
+            <span class="filter-btn" data-lvl="INFO" onclick="app.setActFilter('INFO')">INFO</span>
+            <span class="filter-btn" data-lvl="WARNING" onclick="app.setActFilter('WARNING')">WARN</span>
+            <span class="filter-btn" data-lvl="ERROR" onclick="app.setActFilter('ERROR')">ERROR</span>
+          </div>
+        </div>
+        <div class="activity-feed" id="activity-feed" style="border:none;border-radius:0;box-shadow:none;max-height:calc(100vh - 260px);"></div>
+      </div>
+    </section>
+
   </main>
-  <div class="status-bar" id="status-bar">
-    <span id="sb-status">Loading...</span>
-    <span id="sb-time"></span>
+
+  <!-- ═══════════════ STATUS BAR ═══════════════ -->
+  <footer class="statusbar">
+    <span><span class="refresh-dot ok" id="sb-refresh"></span>DB <b id="sb-db">—</b></span>
+    <span id="sb-pip">pipeline —</span>
+    <span id="sb-last-update">actualización: —</span>
+  </footer>
+
+  <!-- Toast notifications -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- Keyboard shortcuts overlay -->
+  <div class="help-overlay" id="help-overlay" onclick="app.toggleHelp()">
+    <div class="help-box" onclick="event.stopPropagation()">
+      <h3>Atajos de teclado</h3>
+      <div class="help-grid">
+        <span class="hk"><kbd>F1</kbd></span><span>Flota</span>
+        <span class="hk"><kbd>F2</kbd></span><span>Métricas</span>
+        <span class="hk"><kbd>F3</kbd></span><span>Actividad</span>
+        <span class="hk"><kbd>R</kbd></span><span>Refrescar datos</span>
+        <span class="hk"><kbd>T</kbd></span><span>Cambiar tema</span>
+        <span class="hk"><kbd>?</kbd></span><span>Esta ayuda</span>
+      </div>
+      <p class="help-hint">Pulsa <kbd>Esc</kbd> o <kbd>?</kbd> para cerrar</p>
+    </div>
   </div>
-  <script src="charts.js"></script>
-  <script src="app.js"></script>
+
+  <script src="charts.js?v=14"></script>
+  <script src="app.js?v=14"></script>
 </body>
 </html>

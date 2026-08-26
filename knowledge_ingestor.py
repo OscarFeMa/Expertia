@@ -38,11 +38,10 @@ class KnowledgeIngestor:
         try:
             if domain:
                 rows = self.db_manager.execute_query(
-                    """SELECT kp.topic, kp.structured_knowledge, kp.domain, kp.source_url
-                       FROM knowledge_packages_fts
-                       JOIN knowledge_packages kp ON kp.rowid = knowledge_packages_fts.rowid
-                       WHERE knowledge_packages_fts MATCH ?
-                       ORDER BY rank
+                    """SELECT topic, structured_knowledge, domain, source_url
+                       FROM knowledge_packages
+                       WHERE domain = ? AND structured_knowledge IS NOT NULL
+                       ORDER BY created_at DESC
                        LIMIT 8""",
                     (domain,),
                     fetch=True,

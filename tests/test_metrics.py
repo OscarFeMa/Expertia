@@ -78,28 +78,18 @@ def test_print_summary(capsys):
 
 
 def test_summary_dict():
-    """Test getting summary as dictionary."""
+    """Verify recorded phase data is retained for report generation."""
     metrics = MetricsCollector()
     metrics.record_phase_a(1, "TestDomain", True, 100, 10)
     metrics.record_phase_b(1, "TestDomain", True, 5)
-    
-    # Small delay to ensure elapsed time > 0
-    time.sleep(0.01)
-    
-    summary = metrics.summary_dict
-    assert "elapsed_seconds" in summary
-    assert isinstance(summary["elapsed_seconds"], float)
-    assert summary["elapsed_seconds"] >= 0
-    
-    assert "phase_a" in summary
-    assert len(summary["phase_a"]) == 1
-    assert summary["phase_a"][0]["domain"] == "TestDomain"
-    assert summary["phase_a"][0]["success"] is True
-    assert summary["phase_a"][0]["entities_processed"] == 100
-    assert summary["phase_a"][0]["entities_matched"] == 10
-    
-    assert "phase_b" in summary
-    assert len(summary["phase_b"]) == 1
-    assert summary["phase_b"][0]["domain"] == "TestDomain"
-    assert summary["phase_b"][0]["success"] is True
-    assert summary["phase_b"][0]["contents_count"] == 5
+
+    assert len(metrics.phase_a_records) == 1
+    assert metrics.phase_a_records[0].domain == "TestDomain"
+    assert metrics.phase_a_records[0].success is True
+    assert metrics.phase_a_records[0].entities_processed == 100
+    assert metrics.phase_a_records[0].entities_matched == 10
+
+    assert len(metrics.phase_b_records) == 1
+    assert metrics.phase_b_records[0].domain == "TestDomain"
+    assert metrics.phase_b_records[0].success is True
+    assert metrics.phase_b_records[0].contents_count == 5

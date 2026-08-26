@@ -18,6 +18,9 @@ import json
 import asyncio
 import os
 import threading
+
+# Ollama memory optimizations: flash attention reduces KV cache, keep_alive=0 unloads promptly
+os.environ.setdefault("OLLAMA_FLASH_ATTENTION", "1")
 import warnings
 from typing import Optional, List, Dict, Callable
 from dataclasses import dataclass
@@ -301,6 +304,10 @@ class OfflineVerificationEngine:
 # VRAM-AWARE MODEL HANDLER
 # ============================================================================
 
+# TTL del cache "modelo cargado": evitamos `ollama ps` por query (~50-150ms)
+# manteniendo el chequeo VRAM real cuando el modelo cambia o caduca.
+MODEL_LOADED_CACHE_TTL = 30  # segundos
+
 class LLMRunner:
     """VRAM-aware LLM runner with Single-Active-Model pattern."""
     
@@ -315,6 +322,8 @@ class LLMRunner:
         self.ollama_port = ollama_port or OLLAMA_PORT
         self.verification_engine = OfflineVerificationEngine()
         self.current_model: Optional[str] = None
+        self._loaded_model: Optional[str] = None
+        self._loaded_ts: float = 0.0
         self._lock: Optional[asyncio.Lock] = None
         self._lock_init_lock = threading.Lock()
         self._session: Optional[aiohttp.ClientSession] = None
@@ -375,6 +384,9 @@ class LLMRunner:
             
             if result.returncode == 0:
                 logger.info(f"Successfully unloaded model: {model_name}")
+                if self._loaded_model == model_name:
+                    self._loaded_model = None
+                    self._loaded_ts = 0.0
                 return True
             else:
                 logger.warning(f"Failed to unload model: {result.stderr}")
@@ -520,7 +532,14 @@ class LLMRunner:
             if not self.verify_model_exists(model_name):
                 self.require_model(model_name)
                 return False
-            
+
+            # Cache TTL: si el mismo modelo sigue cargado en el pasado inmediato,
+            # saltamos el `ollama ps` (hot path). El chequeo VRAM real solo se
+            # re-ejecuta cuando el modelo cambia o caduca el TTL (30s).
+            if self._loaded_model == model_name and (time.time() - self._loaded_ts) < MODEL_LOADED_CACHE_TTL:
+                self.current_model = model_name
+                return True
+
             # Check current running models FIRST to avoid unnecessary VRAM wait
             running_models = await asyncio.to_thread(self._get_running_models)
             
@@ -529,6 +548,8 @@ class LLMRunner:
                 if running.name == model_name:
                     logger.info(f"Model '{model_name}' already loaded in VRAM")
                     self.current_model = model_name
+                    self._loaded_model = model_name
+                    self._loaded_ts = time.time()
                     return True
             
             # VRAM watchdog — wait until enough VRAM is free (only if needed)
@@ -570,6 +591,8 @@ class LLMRunner:
                     if running.name == model_name:
                         logger.info(f"READY for inference: {model_name} (loaded in ~{attempt*2}s)")
                         self.current_model = model_name
+                        self._loaded_model = model_name
+                        self._loaded_ts = time.time()
                         return True
                 await asyncio.sleep(2)
             
@@ -617,8 +640,10 @@ class LLMRunner:
             "stream": False,
             "options": {
                 "temperature": temperature,
-                "num_predict": max_tokens
-            }
+                "num_predict": max_tokens,
+                "num_ctx": 4096
+            },
+            "keep_alive": "30m"
         }
         
         logger.info(f"Sending query to model '{model_name}'")
@@ -649,48 +674,6 @@ class LLMRunner:
         except Exception as e:
             logger.error(f"Unexpected error during query: {e}")
             raise LLMQueryError(f"Unexpected error: {e}")
-    
-    def query_llm_sync(
-        self,
-        model_name: str,
-        prompt: str,
-        timeout: int = 30,
-        temperature: float = 0.7,
-        max_tokens: int = 1000
-    ) -> Optional[str]:
-        """Synchronous wrapper for query_llm (for non-async contexts).
-        
-        Args:
-            model_name: Name of the model to use
-            prompt: Prompt to send to the model
-            timeout: Request timeout in seconds
-            temperature: Sampling temperature
-            max_tokens: Maximum tokens to generate
-            
-        Returns:
-            str: Generated response
-        """
-        try:
-            loop = asyncio.get_running_loop()
-            if threading.current_thread() is threading.main_thread():
-                return asyncio.run(self.query_llm(
-                    model_name=model_name, prompt=prompt,
-                    timeout=timeout, temperature=temperature,
-                    max_tokens=max_tokens
-                ))
-            future = asyncio.run_coroutine_threadsafe(
-                self.query_llm(model_name=model_name, prompt=prompt,
-                               timeout=timeout, temperature=temperature,
-                               max_tokens=max_tokens),
-                loop
-            )
-            return future.result(timeout=timeout)
-        except RuntimeError:
-            return asyncio.run(self.query_llm(
-                model_name=model_name, prompt=prompt,
-                timeout=timeout, temperature=temperature,
-                max_tokens=max_tokens
-            ))
     
     async def cleanup(self) -> None:
         """Cleanup - stop current model if running and close HTTP session."""

@@ -16,9 +16,12 @@ import asyncio
 import logging
 import json
 import math
+import functools
+import concurrent.futures
 import httpx
 from typing import List, Dict, Optional
 from pathlib import Path
+from urllib.parse import urlparse
 
 try:
     from ddgs import DDGS
@@ -45,7 +48,6 @@ from config.settings import (
     SEED_DIR,
     LANGUAGES,
     QUALITY_THRESHOLD_MIN,
-    QUALITY_THRESHOLD_ACCEPTABLE,
 )
 from source_reputation import SourceReputationTracker, is_blocked
 from content_quality import ContentQualityScorer
@@ -270,7 +272,7 @@ def search_wikipedia(
 #  ENGINE 3: Seed URLs
 # ──────────────────────────────────────────────
 
-def load_seeds_for_domain(domain: str) -> List[Dict[str, str]]:
+def _load_seeds_uncached(domain: str) -> List[Dict[str, str]]:
     safe_domain = Path(domain).name
     seed_file = SEED_DIR / f"{safe_domain}.json"
     if not seed_file.exists():
@@ -291,6 +293,24 @@ def load_seeds_for_domain(domain: str) -> List[Dict[str, str]]:
     except Exception as e:
         logger.error(f"[SEED] Failed to load seeds for '{domain}': {e}")
         return []
+
+
+@functools.lru_cache(maxsize=64)
+def _load_seeds_cached(domain: str, mtime: float) -> List[Dict[str, str]]:
+    """Cacheados por (domain, mtime): se re-lee solo si el archivo cambia."""
+    return _load_seeds_uncached(domain)
+
+
+def load_seeds_for_domain(domain: str) -> List[Dict[str, str]]:
+    safe_domain = Path(domain).name
+    seed_file = SEED_DIR / f"{safe_domain}.json"
+    if not seed_file.exists():
+        return []
+    try:
+        mtime = seed_file.stat().st_mtime
+    except Exception:
+        mtime = 0.0
+    return _load_seeds_cached(domain, mtime)
 
 
 def search_seeds(query: str, domain: Optional[str] = None) -> List[Dict[str, str]]:
@@ -319,56 +339,73 @@ def search_seeds(query: str, domain: Optional[str] = None) -> List[Dict[str, str
 #  MASTER: Try engines in chain
 # ──────────────────────────────────────────────
 
+def _search_one_engine(
+    engine_name: str,
+    func,
+    query: str,
+    max_results: Optional[int],
+    domain: Optional[str],
+) -> List[Dict[str, str]]:
+    try:
+        name_lower = engine_name.lower()
+        if name_lower == 'seeds':
+            results = func(query, domain)
+        elif name_lower == 'academic':
+            results = func(query, max_results, domain=domain)
+        else:
+            results = func(query, max_results)
+        if results:
+            logger.info(f"[FALLBACK] {engine_name} returned {len(results)} results")
+        return results or []
+    except Exception as e:
+        logger.warning(f"[FALLBACK] {engine_name} failed: {e}")
+        return []
+
+
 def multi_engine_search(
     query: str,
     max_results: Optional[int] = None,
     domain: Optional[str] = None,
 ) -> List[Dict[str, str]]:
-    errors = []
-
-    # Engine 0: Academic sources (high-quality, domain-aware)
-    try:
-        results = search_all_academic(query, max_results, domain=domain)
-        if results:
-            logger.info(f"[FALLBACK] Academic returned {len(results)} results — using them")
-            return results
-    except Exception as e:
-        errors.append(f"Academic: {e}")
-        logger.warning(f"[FALLBACK] Academic failed: {e}")
-
-    # Engine 1: DuckDuckGo
-    try:
-        results = search_duckduckgo(query, max_results)
-        if results:
-            logger.info(f"[FALLBACK] DDGS returned {len(results)} results — using them")
-            return results
-    except Exception as e:
-        errors.append(f"DDGS: {e}")
-        logger.warning(f"[FALLBACK] DDGS failed: {e}")
-
-    # Engine 2: Wikipedia (try configured languages)
+    # Run all engines concurrently
+    engines = [
+        ("Academic", search_all_academic, query, max_results, domain),
+        ("DDGS", search_duckduckgo, query, max_results, None),
+    ]
+    # Wikipedia per language
     for lang in LANGUAGES.split('|'):
+        engines.append((f"Wikipedia({lang})", search_wikipedia, query, max_results, None))
+    engines.append(("Seeds", search_seeds, query, max_results, domain))
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(engines)) as pool:
+        futures = {
+            pool.submit(_search_one_engine, name, fn, q, mr, dm): name
+            for name, fn, q, mr, dm in engines
+        }
+        all_results = []
+        seen_urls = set()
         try:
-            results = search_wikipedia(query, max_results, lang=lang)
-            if results:
-                logger.info(f"[FALLBACK] Wikipedia ({lang}) returned {len(results)} results — using them")
-                return results
-        except Exception as e:
-            err_msg = f"Wikipedia({lang}): {e}"
-            errors.append(err_msg)
-            logger.warning(f"[FALLBACK] {err_msg}")
+            for future in concurrent.futures.as_completed(futures, timeout=30):
+                name = futures[future]
+                try:
+                    results = future.result()
+                    for r in results:
+                        url = r.get('href', r.get('url', ''))
+                        if url and url not in seen_urls:
+                            seen_urls.add(url)
+                            all_results.append(r)
+                except Exception as e:
+                    logger.debug(f"[FALLBACK] {name} timed out or errored: {e}")
+        except concurrent.futures.TimeoutError:
+            # BUG-3 fix: no propagar el TimeoutError — devolver los resultados parciales
+            # en lugar de abortar todo search_and_extract (y con ello el ciclo de fase B).
+            logger.warning(f"[FALLBACK] Algunos engines excedieron 30s — usando {len(all_results)} resultados parciales")
 
-    # Engine 3: Seed URLs (domain-specific)
-    try:
-        results = search_seeds(query, domain)
-        if results:
-            logger.info(f"[FALLBACK] Seeds returned {len(results)} results — using them")
-            return results
-    except Exception as e:
-        errors.append(f"Seeds: {e}")
-        logger.warning(f"[FALLBACK] Seeds failed: {e}")
+    if all_results:
+        logger.info(f"[FALLBACK] Merged {len(all_results)} unique results from {len(engines)} engines")
+        return all_results[:max_results] if max_results else all_results
 
-    logger.error(f"[FALLBACK] All engines failed for '{query}': {'; '.join(errors)}")
+    logger.error(f"[FALLBACK] All engines failed for '{query}'")
     return []
 
 
@@ -382,8 +419,23 @@ class ContentExtractor:
         self.headers = {"User-Agent": WIKIPEDIA_USER_AGENT}
         self.client = httpx.Client(timeout=timeout, headers=self.headers)
         self.reputation_tracker = SourceReputationTracker()
+        # P2b: dominios rate-limited -> cooldown (netloc -> unix ts hasta cuando se omite)
+        self._rate_limited_until: Dict[str, float] = {}
+        self._rate_limit_cooldown_sec = 600  # 10 min de pausa tras un 429
+
+    def _is_rate_limited(self, url: str) -> bool:
+        try:
+            netloc = urlparse(url).netloc.lower()
+        except Exception:
+            return False
+        until = self._rate_limited_until.get(netloc, 0)
+        return time.time() < until
 
     def extract_content(self, url: str) -> Optional[Dict[str, str]]:
+        # P2b: si el dominio está en cooldown por 429 previo, omitir sin fetch.
+        if self._is_rate_limited(url):
+            logger.info(f"Rate-limited domain in cooldown — skipping {url}")
+            return None
         try:
             response = self.client.get(url, follow_redirects=True)
             response.raise_for_status()
@@ -413,6 +465,12 @@ class ContentExtractor:
             raise ScraperTimeoutError(f"Timeout while fetching {url}")
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
+                try:
+                    self._rate_limited_until[urlparse(url).netloc.lower()] = \
+                        time.time() + self._rate_limit_cooldown_sec
+                except Exception:
+                    pass
+                logger.warning(f"Rate limit while fetching {url} — cooldown {self._rate_limit_cooldown_sec}s")
                 raise RateLimitError(f"Rate limit while fetching {url}")
             raise WebScraperError(f"HTTP error {e.response.status_code}")
         except Exception as e:
@@ -529,6 +587,13 @@ class ModernWebScraper:
         async def process_url(result):
             url = result.get('href', '')
             if not url:
+                return None
+            # BUG-P2: filtrar dominios bloqueados ANTES del fetch.
+            # Antes is_blocked() solo se evaluaba en _store_content (post-fetch),
+            # por lo que dominios bloqueados (jstor, iop, ssrn, etc.) seguían
+            # haciendo el GET y fallando 403/404 inútilmente.
+            if is_blocked(url):
+                logger.debug(f"Blocked domain (pre-fetch) — skipping {url}")
                 return None
             async with sem:
                 try:

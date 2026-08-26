@@ -15,10 +15,9 @@ class ExpertiaSettings(BaseSettings):
     llm_temperature: float = 0.7
     llm_max_tokens: int = 1000
     llm_retry_max_attempts: int = 3
-    llm_retry_initial_delay: float = 1.0
 
-    search_delay_min: float = 2.5
-    search_delay_max: float = 4.5
+    search_delay_min: float = 0.2
+    search_delay_max: float = 0.5
     max_results_per_search: int = 8
     search_timeout: int = 30
     parser_timeout: int = 30
@@ -35,8 +34,7 @@ class ExpertiaSettings(BaseSettings):
 
     subspecialist_threshold: int = 100
     max_subspecialists: int = 20
-    max_cascade_entities: int = 0  # 0 = sin limite (procesa todo el dump hasta timeout)
-    parallel_workers: int = 4
+    max_cascade_entities: int = 110_000_000  # ~110M entidades en el dump
     subspecialist_cycle_interval: int = 10
     max_children_per_parent: int = 3
 
@@ -59,6 +57,8 @@ class ExpertiaSettings(BaseSettings):
     wikipedia_user_agent: str = "Expertia/1.0 (https://github.com/OscarFeMa/Expertia) Python/3.12"
 
     database_path: str = "E:/expertia-data/incubator.db"
+    openalex_email: str = ""
+    openalex_api_key: str = ""
 
 
 _SETTINGS = ExpertiaSettings()
@@ -87,7 +87,6 @@ LLM_TIMEOUT = _SETTINGS.llm_timeout
 LLM_TEMPERATURE = _SETTINGS.llm_temperature
 LLM_MAX_TOKENS = _SETTINGS.llm_max_tokens
 LLM_RETRY_MAX_ATTEMPTS = _SETTINGS.llm_retry_max_attempts
-LLM_RETRY_INITIAL_DELAY = _SETTINGS.llm_retry_initial_delay
 
 SEARCH_DELAY_MIN = _SETTINGS.search_delay_min
 SEARCH_DELAY_MAX = _SETTINGS.search_delay_max
@@ -102,7 +101,6 @@ MAX_SUBSPECIALISTS = _SETTINGS.max_subspecialists
 SUBSPECIALIST_CYCLE_INTERVAL = _SETTINGS.subspecialist_cycle_interval
 MAX_CHILDREN_PER_PARENT = _SETTINGS.max_children_per_parent
 MAX_CASCADE_ENTITIES = _SETTINGS.max_cascade_entities
-PARALLEL_WORKERS = _SETTINGS.parallel_workers
 LANGUAGES = _SETTINGS.languages
 BLOCKLIST_LABELS = _SETTINGS.blocklist_labels
 BLOCKLIST_LABEL_PREFIXES = _SETTINGS.blocklist_label_prefixes
@@ -117,11 +115,11 @@ WIKIPEDIA_USER_AGENT = _SETTINGS.wikipedia_user_agent
 
 # Quality thresholds (0.0 - 1.0)
 QUALITY_THRESHOLD_MIN = getattr(_SETTINGS, 'quality_threshold_min', 0.30)
-QUALITY_THRESHOLD_ACCEPTABLE = getattr(_SETTINGS, 'quality_threshold_acceptable', 0.50)
 
 # Academic API keys (empty = anonymous/rate-limited)
 PUBMED_API_KEY = getattr(_SETTINGS, 'pubmed_api_key', '')
-SEMANTIC_API_KEY = getattr(_SETTINGS, 'semantic_api_key', '')
+OPENALEX_EMAIL = getattr(_SETTINGS, 'openalex_email', 'expertia@localhost')
+OPENALEX_API_KEY = getattr(_SETTINGS, 'openalex_api_key', '')
 
 REPORTING_INTERVAL_SECONDS = _SETTINGS.reporting_interval_seconds
 COOLDOWN_SECONDS = _SETTINGS.cooldown_seconds
@@ -135,6 +133,3 @@ USER_AGENTS: List[str] = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
 ]
-
-LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"

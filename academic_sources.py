@@ -1,7 +1,7 @@
 """
 Academic API connectors for Expertia.
 
-Engines: ArXiv, PubMed, CrossRef, Semantic Scholar, Wikipedia batch.
+Engines: ArXiv, PubMed, CrossRef, OpenAlex, Wikipedia batch.
 All use HTTP GET with static responses — no JavaScript required.
 """
 
@@ -23,7 +23,8 @@ from config.settings import (
     WIKIPEDIA_API_URL,
     WIKIPEDIA_USER_AGENT,
     PUBMED_API_KEY as SETTINGS_PUBMED_API_KEY,
-    SEMANTIC_API_KEY as SETTINGS_SEMANTIC_API_KEY,
+    OPENALEX_EMAIL,
+    OPENALEX_API_KEY,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,6 @@ def search_arxiv(query: str, max_results: Optional[int] = None,
                  domain: Optional[str] = None) -> List[Dict[str, str]]:
     if max_results is None:
         max_results = MAX_RESULTS_PER_SEARCH
-    apply_random_delay()
     category = ARXIV_CATEGORIES.get(domain, "")
     cat_filter = f"cat:{category}+AND+" if category else ""
     search_query = f"{cat_filter}all:{quote_plus(query)}"
@@ -196,7 +196,6 @@ CROSSREF_BASE = "https://api.crossref.org/works"
 def search_crossref(query: str, max_results: Optional[int] = None) -> List[Dict[str, str]]:
     if max_results is None:
         max_results = MAX_RESULTS_PER_SEARCH
-    apply_random_delay()
     params = {"query": query, "rows": max_results}
     headers = {"User-Agent": "Expertia/1.0 (mailto:expertia@localhost)"}
     logger.info(f"[CROSSREF] Searching: '{query}'")
@@ -229,64 +228,69 @@ def search_crossref(query: str, max_results: Optional[int] = None) -> List[Dict[
 
 
 # ──────────────────────────────────────────────
-#  Semantic Scholar API
+#  OpenAlex API
 # ──────────────────────────────────────────────
 
-SEMANTIC_BASE = "https://api.semanticscholar.org/graph/v1/paper/search"
-SEMANTIC_API_KEY = SETTINGS_SEMANTIC_API_KEY
+OPENALEX_BASE = "https://api.openalex.org/works"
 
-# Semantic Scholar API works without key: 100 req/5 min shared.
-# With key: 1 RPS dedicated. Request at https://www.semanticscholar.org/product/api
+# OpenAlex: 250M+ papers, 100K req/day free, no key required.
+# Polite pool (10 req/s) with email — add OPENALEX_EMAIL in .env
 
 
-def search_semantic(query: str, max_results: Optional[int] = None) -> List[Dict[str, str]]:
+def search_openalex(query: str, max_results: Optional[int] = None) -> List[Dict[str, str]]:
     if max_results is None:
         max_results = MAX_RESULTS_PER_SEARCH
     params = {
-        "query": query,
-        "limit": max_results,
-        "fields": "title,abstract,year,doi,url,citationCount",
+        "search": query,
+        "per_page": max_results,
+        "sort": "cited_by_count:desc",
+        "select": "id,doi,title,primary_location,open_access,cited_by_count,publication_year",
     }
-    headers = {"User-Agent": "Expertia/1.0"}
-    if SEMANTIC_API_KEY:
-        headers["x-api-key"] = SEMANTIC_API_KEY
+    if OPENALEX_API_KEY:
+        params["api_key"] = OPENALEX_API_KEY
+    if OPENALEX_EMAIL:
+        params["mailto"] = OPENALEX_EMAIL
+    headers = {"User-Agent": "Expertia/1.0 (mailto:expertia@localhost)"}
+    logger.info(f"[OPENALEX] Searching: '{query}'")
     max_retries = 3
     for attempt in range(max_retries):
-        if attempt == 0:
-            time.sleep(random.uniform(1, 5))
-        else:
-            apply_random_delay()
-        logger.info(f"[SEMANTIC] Searching: '{query}' (attempt {attempt+1}/{max_retries})")
         try:
-            resp = requests.get(SEMANTIC_BASE, params=params, headers=headers, timeout=SEARCH_TIMEOUT)
+            resp = requests.get(OPENALEX_BASE, params=params, headers=headers, timeout=SEARCH_TIMEOUT)
             if resp.status_code == 429 and attempt < max_retries - 1:
-                    wait = 15 * (attempt + 1) + random.uniform(0, 10)
-                    logger.warning(f"[SEMANTIC] Rate limited (429), retrying in {wait:.0f}s (attempt {attempt+1}/{max_retries})")
-                    time.sleep(wait)
-                    continue
+                wait = 5 * (2 ** attempt)
+                logger.warning(f"[OPENALEX] 429 rate limited, retrying in {wait}s (attempt {attempt + 1}/{max_retries})")
+                time.sleep(wait)
+                continue
             resp.raise_for_status()
             data = resp.json()
-            papers = data.get("data", [])
+            papers = data.get("results", [])
             results = []
             for paper in papers:
+                title = paper.get("title", "")
+                primary_location = paper.get("primary_location") or {}
+                landing_page = (primary_location.get("landing_page_url") or "") if primary_location else ""
+                oa = paper.get("open_access") or {}
+                oa_url = (oa.get("oa_url") or "") if oa else ""
+                doi = paper.get("doi", "")
+                href = landing_page or oa_url or (f"https://doi.org/{doi}" if doi else "")
                 results.append({
-                    "title": paper.get("title", ""),
-                    "href": paper.get("url", "") or f"https://api.semanticscholar.org/{paper.get('paperId', '')}",
-                    "body": (paper.get("abstract") or "")[:500],
-                    "year": paper.get("year", ""),
-                    "citations": paper.get("citationCount", 0),
-                    "source": "semantic_scholar",
+                    "title": title,
+                    "href": href,
+                    "body": "",
+                    "year": paper.get("publication_year", ""),
+                    "citations": paper.get("cited_by_count", 0),
+                    "source": "openalex",
                 })
-            logger.info(f"[SEMANTIC] Found {len(results)} results for '{query}'")
+            logger.info(f"[OPENALEX] Found {len(results)} results for '{query}'")
             return results[:max_results]
         except Exception as e:
             if attempt < max_retries - 1:
-                wait = 10 * (attempt + 1)
-                logger.warning(f"[SEMANTIC] Attempt {attempt+1} failed: {e}, retrying in {wait}s")
+                wait = 5 * (2 ** attempt)
+                logger.warning(f"[OPENALEX] Search failed (attempt {attempt + 1}/{max_retries}): {e}, retrying in {wait}s")
                 time.sleep(wait)
-                continue
-            logger.warning(f"[SEMANTIC] Search failed after {max_retries} attempts: {e}")
-    return []
+            else:
+                logger.warning(f"[OPENALEX] Search failed after {max_retries} attempts: {e}")
+                return []
 
 
 # ──────────────────────────────────────────────
@@ -341,7 +345,7 @@ ACADEMIC_ENGINES = [
     ("arxiv", search_arxiv),
     ("pubmed", search_pubmed),
     ("crossref", search_crossref),
-    ("semantic", search_semantic),
+    ("openalex", search_openalex),
     ("wikipedia", search_wikipedia_batch),
 ]
 

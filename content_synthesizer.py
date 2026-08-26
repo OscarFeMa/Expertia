@@ -7,7 +7,6 @@ writing N individual rows to the database.
 """
 
 import logging
-import re
 from typing import List, Dict, Optional
 from collections import defaultdict
 from content_quality import cosine_similarity
@@ -15,11 +14,6 @@ from content_quality import cosine_similarity
 logger = logging.getLogger(__name__)
 
 SIMILARITY_THRESHOLD = 0.35
-
-
-def _extract_key_terms(text: str) -> str:
-    words = re.findall(r'[a-zA-Z]{4,}', text.lower())
-    return ' '.join(sorted(set(words)))
 
 
 def _group_similar(contents: List[Dict]) -> List[List[Dict]]:

@@ -297,6 +297,10 @@ class ParallelWikidataExtractor:
                         logger.critical("TIMEOUT alcanzado")
                         return False
 
+                    if sample_size and entities_processed >= sample_size:
+                        logger.info(f"Sample size reached: {sample_size:,} entities")
+                        break
+
                     batch.append(entity)
 
                     if len(batch) >= BATCH_SIZE:

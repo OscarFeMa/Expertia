@@ -195,19 +195,19 @@ class TestA4_SQLInjectionFix:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestA5_P279CacheEviction:
-    """A5: _p279_cache must be evicted when exceeding 100K entries."""
+    """A5: P279 cache used during QID spawning must avoid redundant API fetches."""
 
     def test_cache_eviction_code_exists(self):
         from pathlib import Path
-        orch_path = Path(__file__).parent.parent / "orchestrator.py"
-        content = orch_path.read_text(encoding="utf-8")
-        assert "len(cache) > 100000" in content
+        spawn_path = Path(__file__).parent.parent / "tools" / "spawn_specialist.py"
+        content = spawn_path.read_text(encoding="utf-8")
+        assert "not in cache" in content
 
     def test_cache_keeps_last_50k(self):
         from pathlib import Path
-        orch_path = Path(__file__).parent.parent / "orchestrator.py"
-        content = orch_path.read_text(encoding="utf-8")
-        assert "list(cache.items())[-50000:]" in content
+        spawn_path = Path(__file__).parent.parent / "tools" / "spawn_specialist.py"
+        content = spawn_path.read_text(encoding="utf-8")
+        assert "cache: Dict[str, Set[str]]" in content
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

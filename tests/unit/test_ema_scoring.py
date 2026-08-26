@@ -5,8 +5,23 @@ from unittest.mock import MagicMock, patch
 
 
 TIER_NONE = 0
+TIER_BRONZE = 1
+TIER_SILVER = 2
+TIER_GOLD = 3
+TIER_LEGEND = 4
 FAILURE_PENALTIES = {0: 0.965, 1: 0.96, 2: 0.98, 3: 0.99, 4: 0.99}
 TIER_NAMES = {0: "None", 1: "Bronze", 2: "Silver", 3: "Gold", 4: "Legend"}
+
+TIER_CRITERIA = {
+    TIER_BRONZE: {"ema": 0.92, "quality": 0.60, "fail_rate": 0.15, "packages": 200},
+    TIER_SILVER: {"ema": 0.95, "quality": 0.70, "fail_rate": 0.08, "packages": 500},
+    TIER_GOLD: {"ema": 0.97, "quality": 0.75, "fail_rate": 0.05, "packages": 1500},
+}
+LEGEND_EMA_MIN = 0.995
+LEGEND_CYCLES_CLEAN = 25
+MIN_CYCLES_FOR_BRONZE = 3
+MIN_CYCLES_FOR_SILVER = 10
+MIN_CYCLES_FOR_GOLD = 25
 
 
 @pytest.fixture
@@ -16,8 +31,8 @@ def mock_db():
     return db
 
 
-def _update_ema_score(db, specialist_id, success, content_length=0, trust_score=50, contents_count=0, packages_saved=0, current_tier=0):
-    """Inline copy of orchestrator.PipelineController.update_ema_score logic (quadratic convergence)."""
+def _update_ema_score(db, specialist_id, success, content_length=0, trust_score=50, contents_count=0, packages_saved=0, current_tier=0, failure_type='knowledge'):
+    """Inline copy of orchestrator.PipelineController.update_ema_score logic."""
     result = db.execute_query(
         "SELECT ema_score FROM specialist_registry WHERE id = ?", (specialist_id,), fetch=True
     )
@@ -41,7 +56,8 @@ def _update_ema_score(db, specialist_id, success, content_length=0, trust_score=
         new_ema = current_ema + alpha * quality * (1.0 - current_ema)
     else:
         quality = 0.0
-        wf += 1.0
+        if failure_type == 'knowledge':
+            wf += 1.0
         penalty = FAILURE_PENALTIES.get(current_tier, 0.94)
         new_ema = current_ema * penalty
 
@@ -54,8 +70,8 @@ def _update_ema_score(db, specialist_id, success, content_length=0, trust_score=
         (specialist_id, new_ema),
     )
     db.execute_query(
-        "INSERT INTO cycle_history (specialist_id, success, quality, ema_before, ema_after) VALUES (?, ?, ?, ?, ?)",
-        (specialist_id, 1 if success else 0, quality, current_ema, new_ema),
+        "INSERT INTO cycle_history (specialist_id, success, quality, ema_before, ema_after, failure_type) VALUES (?, ?, ?, ?, ?, ?)",
+        (specialist_id, 1 if success else 0, quality, current_ema, new_ema, failure_type),
     )
     return new_ema
 
@@ -128,3 +144,109 @@ class TestEMAScoring:
         assert any("UPDATE specialist_registry" in c for c in calls)
         assert any("INSERT INTO ema_history" in c for c in calls)
         assert any("INSERT INTO cycle_history" in c for c in calls)
+
+
+# ── Tier computation tests (relaxed Gold: quality 0.75, fail_rate 0.05) ──
+
+def _compute_tier(ema, avg_quality, fail_rate, packages, total_cycles,
+                  current_tier=TIER_NONE, clean_cycles=0, window_fails=0):
+    """Inline copy of orchestrator.PipelineController._compute_tier logic."""
+    if current_tier == TIER_LEGEND:
+        if window_fails < 2:
+            return TIER_LEGEND
+        return TIER_GOLD
+    if (ema >= TIER_CRITERIA[TIER_GOLD]["ema"]
+            and avg_quality >= TIER_CRITERIA[TIER_GOLD]["quality"]
+            and fail_rate < TIER_CRITERIA[TIER_GOLD]["fail_rate"]
+            and packages >= TIER_CRITERIA[TIER_GOLD]["packages"]
+            and total_cycles >= MIN_CYCLES_FOR_GOLD):
+        if ema >= LEGEND_EMA_MIN and clean_cycles >= LEGEND_CYCLES_CLEAN:
+            return TIER_LEGEND
+        return TIER_GOLD
+    if (ema >= TIER_CRITERIA[TIER_SILVER]["ema"]
+            and avg_quality >= TIER_CRITERIA[TIER_SILVER]["quality"]
+            and fail_rate < TIER_CRITERIA[TIER_SILVER]["fail_rate"]
+            and packages >= TIER_CRITERIA[TIER_SILVER]["packages"]
+            and total_cycles >= MIN_CYCLES_FOR_SILVER):
+        return TIER_SILVER
+    if (ema >= TIER_CRITERIA[TIER_BRONZE]["ema"]
+            and avg_quality >= TIER_CRITERIA[TIER_BRONZE]["quality"]
+            and fail_rate < TIER_CRITERIA[TIER_BRONZE]["fail_rate"]
+            and packages >= TIER_CRITERIA[TIER_BRONZE]["packages"]
+            and total_cycles >= MIN_CYCLES_FOR_BRONZE):
+        return TIER_BRONZE
+    return TIER_NONE
+
+
+class TestTierComputation:
+    def test_gold_relaxed_quality_threshold(self):
+        """Gold now requires quality >= 0.75 (was 0.78). Specialist with 0.76 should pass."""
+        tier = _compute_tier(ema=0.975, avg_quality=0.76, fail_rate=0.03,
+                             packages=2000, total_cycles=30)
+        assert tier == TIER_GOLD
+
+    def test_gold_relaxed_fail_rate_threshold(self):
+        """Gold now requires fail_rate < 0.05 (was 0.03). Specialist with 0.04 should pass."""
+        tier = _compute_tier(ema=0.98, avg_quality=0.80, fail_rate=0.04,
+                             packages=2000, total_cycles=30)
+        assert tier == TIER_GOLD
+
+    def test_gold_old_strict_quality_fails(self):
+        """Quality 0.77 is below old 0.78 but above new 0.75 — should now pass."""
+        tier = _compute_tier(ema=0.975, avg_quality=0.77, fail_rate=0.02,
+                             packages=2000, total_cycles=30)
+        assert tier == TIER_GOLD
+
+    def test_gold_fail_rate_at_boundary_rejected(self):
+        """fail_rate == 0.05 is NOT < 0.05, so Gold should be rejected."""
+        tier = _compute_tier(ema=0.98, avg_quality=0.80, fail_rate=0.05,
+                             packages=2000, total_cycles=30)
+        assert tier == TIER_SILVER
+
+    def test_gold_quality_below_threshold_rejected(self):
+        """Quality 0.74 is below 0.75 — should fall to Silver."""
+        tier = _compute_tier(ema=0.975, avg_quality=0.74, fail_rate=0.02,
+                             packages=2000, total_cycles=30)
+        assert tier == TIER_SILVER
+
+    def test_gold_min_cycles_required(self):
+        """Below MIN_CYCLES_FOR_GOLD (25) cycles, Gold is not granted."""
+        tier = _compute_tier(ema=0.98, avg_quality=0.80, fail_rate=0.01,
+                             packages=2000, total_cycles=20)
+        assert tier == TIER_SILVER
+
+    def test_legend_promotion(self):
+        """EMA >= 0.995 + 25 clean cycles + Gold criteria = Legend."""
+        tier = _compute_tier(ema=0.997, avg_quality=0.80, fail_rate=0.0,
+                             packages=5000, total_cycles=30, clean_cycles=25)
+        assert tier == TIER_LEGEND
+
+    def test_legend_demoted_on_window_failures(self):
+        """Legend with 2+ knowledge failures in last 25 cycles demoted to Gold."""
+        tier = _compute_tier(ema=0.997, avg_quality=0.80, fail_rate=0.0,
+                             packages=5000, total_cycles=30,
+                             current_tier=TIER_LEGEND, window_fails=2)
+        assert tier == TIER_GOLD
+
+    def test_legend_maintained_under_2_failures(self):
+        """Legend with only 1 failure in window stays Legend."""
+        tier = _compute_tier(ema=0.997, avg_quality=0.80, fail_rate=0.0,
+                             packages=5000, total_cycles=30,
+                             current_tier=TIER_LEGEND, window_fails=1)
+        assert tier == TIER_LEGEND
+
+    def test_philosophy_history_unblocked(self):
+        """Real case: PhilosophyHistory avgQ=0.775, fail_rate=0.06.
+        Old strict (quality>=0.78, fail<0.03) would reject. New (quality>=0.75, fail<0.05) —
+        still fails fail_rate (0.06 >= 0.05) so it's Silver, not Gold."""
+        tier = _compute_tier(ema=0.9845, avg_quality=0.775, fail_rate=0.06,
+                             packages=9205891, total_cycles=50)
+        assert tier == TIER_SILVER
+
+    def test_full_tier_ordering(self):
+        """Verify tier priority: a Legend-eligible specialist beats Gold."""
+        legend_tier = _compute_tier(ema=0.998, avg_quality=0.85, fail_rate=0.0,
+                                    packages=9000000, total_cycles=50, clean_cycles=25)
+        gold_tier = _compute_tier(ema=0.98, avg_quality=0.80, fail_rate=0.02,
+                                  packages=9000000, total_cycles=50)
+        assert legend_tier > gold_tier

@@ -87,13 +87,22 @@ class TestNurturePriorityScoring:
              patch("orchestrator.MetricsCollector"), \
              patch("orchestrator.KnowledgeIngestor"):
             c = PipelineController()
+            def mock_query(sql, params, fetch=False):
+                sid = params[0] if params else 0
+                if 'failure_type' in sql and sid == 1:
+                    return [{'total': 10, 'fails': 5}]  # 50% fail rate
+                elif 'failure_type' in sql and sid == 2:
+                    return [{'total': 10, 'fails': 0}]  # 0% fail rate
+                return []
+            c.db_manager.execute_query = mock_query
             base = {
+                'id': 1,
                 'ema_score': 0.95,
                 'packages_absorbed': 500,
                 'updated_at': '2026-06-02 20:00:00',
             }
-            high_fail = c._compute_nurture_priority({**base, 'weighted_success': 500.0, 'weighted_fail': 500.0})
-            low_fail = c._compute_nurture_priority({**base, 'weighted_success': 500.0, 'weighted_fail': 0.0})
+            high_fail = c._compute_nurture_priority({**base, 'id': 1})
+            low_fail = c._compute_nurture_priority({**base, 'id': 2})
             assert high_fail > low_fail
 
     def test_few_packages_beats_many(self):
