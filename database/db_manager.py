@@ -675,6 +675,34 @@ class DatabaseManager:
                     except sqlite3.OperationalError as e:
                         logger.warning(f"Migration 'kp_specialist_match_cache' skipped: {e}")
 
+                cursor.execute("SELECT id FROM _migration_log WHERE name = 'kp_language_and_cache'")
+                if not cursor.fetchone():
+                    try:
+                        cursor.execute("ALTER TABLE knowledge_packages ADD COLUMN language TEXT DEFAULT 'en'")
+                        cursor.execute("ALTER TABLE knowledge_packages ADD COLUMN source_language TEXT DEFAULT NULL")
+                        cursor.execute("CREATE INDEX IF NOT EXISTS idx_kp_language ON knowledge_packages(language)")
+                    except sqlite3.OperationalError:
+                        pass
+                    try:
+                        cursor.execute("""
+                            CREATE TABLE IF NOT EXISTS translations_cache (
+                                hash TEXT PRIMARY KEY,
+                                source_lang TEXT NOT NULL,
+                                target_lang TEXT NOT NULL,
+                                source_text TEXT NOT NULL,
+                                translated_text TEXT NOT NULL,
+                                hits INTEGER DEFAULT 1,
+                                size_bytes INTEGER NOT NULL,
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                last_hit TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                            )
+                        """)
+                        cursor.execute("CREATE INDEX IF NOT EXISTS idx_translations_hits ON translations_cache(hits DESC, last_hit DESC)")
+                        cursor.execute("INSERT INTO _migration_log (name) VALUES ('kp_language_and_cache')")
+                        logger.info("Migration 'kp_language_and_cache' applied — language + 50GB LRU cache")
+                    except sqlite3.OperationalError as e:
+                        logger.warning(f"Migration 'kp_language_and_cache' skipped: {e}")
+
                 # Index: knowledge_packages(absorbed_at) for NULL-filtered lookups
                 cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_knowledge_packages_absorbed'")
                 if cursor.fetchone():

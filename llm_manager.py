@@ -674,6 +674,30 @@ class LLMRunner:
         except Exception as e:
             logger.error(f"Unexpected error during query: {e}")
             raise LLMQueryError(f"Unexpected error: {e}")
+
+    async def query_llm_stream(self, model_name: str, prompt: str, temperature: float = None, max_tokens: int = None):
+        if not await self.ensure_model_loaded(model_name):
+            raise ModelLoadError(f"Failed to load model '{model_name}'")
+        temperature = temperature or LLM_TEMPERATURE
+        max_tokens = max_tokens or LLM_MAX_TOKENS
+        url = f"{self.api_base_url}/api/generate"
+        payload = {"model": model_name, "prompt": prompt, "stream": True, "options": {"temperature": temperature, "num_predict": max_tokens, "num_ctx": 4096}, "keep_alive": "30m"}
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=LLM_TIMEOUT*2))
+        async with self._session.post(url, json=payload) as resp:
+            if resp.status != 200:
+                raise LLMQueryError(f"API status {resp.status}")
+            async for line in resp.content:
+                if not line:
+                    continue
+                try:
+                    j = __import__('json').loads(line.decode())
+                    if "response" in j and j["response"]:
+                        yield j["response"]
+                    if j.get("done"):
+                        break
+                except Exception:
+                    continue
     
     async def cleanup(self) -> None:
         """Cleanup - stop current model if running and close HTTP session."""
