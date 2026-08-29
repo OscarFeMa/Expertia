@@ -356,5 +356,62 @@ async def query(req: QueryRequest):
     )
 
 
+class QueryStreamRequest(BaseModel):
+    question: str
+    domain: Optional[str] = None
+    lang: str = "es"
+
+
+@app.post("/query/stream")
+async def query_stream(req: QueryStreamRequest, request: Request):
+    if not req.question.strip():
+        raise HTTPException(status_code=400, detail="question is required")
+    q = req.question
+    if req.lang == "es":
+        try:
+            from tools.translate import translate
+            q_en = translate(q, "es", "en")
+        except Exception:
+            q_en = q
+    else:
+        q_en = q
+    loop = asyncio.get_event_loop()
+    if req.domain:
+        db = _get_db()
+        domain_row = await loop.run_in_executor(None, db.execute_query, "SELECT domain, model FROM specialist_registry WHERE domain = ?", (req.domain,), True)
+        if domain_row:
+            domain, model = domain_row[0]['domain'], domain_row[0]['model']
+        else:
+            domain, model = await loop.run_in_executor(None, _find_best_domain, q_en)
+    else:
+        domain, model = await loop.run_in_executor(None, _find_best_domain, q_en)
+    contexts = await loop.run_in_executor(None, _fetch_context, domain, q_en)
+    ctx_block = "\n\n".join(contexts) if contexts else "No prior knowledge available."
+    prompt = f"You are an expert in {domain}. Answer concisely in {req.lang} using context.\n\nContext:\n{ctx_block}\n\nQuestion: {q_en}\n\nAnswer in {req.lang}:"
+    if llm is None:
+        raise HTTPException(status_code=503, detail="LLM not initialized")
+    async def gen():
+        try:
+            async for chunk in llm.query_llm_stream(model_name=model, prompt=prompt, max_tokens=1024):
+                if await request.is_disconnected():
+                    break
+                txt = chunk
+                if req.lang == "es":
+                    try:
+                        from tools.translate import translate_stream
+                        for part in translate_stream(txt, "en", "es"):
+                            yield f"data: {__import__('json').dumps({'token': part})}\n\n"
+                            await asyncio.sleep(0.02)
+                        continue
+                    except Exception:
+                        pass
+                yield f"data: {__import__('json').dumps({'token': txt})}\n\n"
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            yield f"data: {__import__('json').dumps({'error': str(e)})}\n\n"
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8011)

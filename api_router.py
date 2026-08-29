@@ -645,6 +645,81 @@ def search_knowledge(q: str = "", domain: str = "", limit: int = 10):
     return {"query": q, "domain": domain, "count": len(rows), "results": rows}
 
 
+@router.get("/knowledge/search/stream")
+async def search_knowledge_stream(q: str = "", domain: str = "", limit: int = 10, lang: str = "es"):
+    if not q or len(q.strip()) < 2:
+        raise HTTPException(status_code=400, detail="Query must be at least 2 characters")
+    limit = min(max(limit, 1), 50)
+    q_en = q
+    if lang == "es" and any(c in q.lower() for c in ["á","é","í","ó","ú","ñ","¿","¡"]):
+        try:
+            from tools.translate import translate
+            q_en = translate(q, "es", "en")
+        except Exception:
+            pass
+    try:
+        like_pattern = f"%{q_en}%"
+        if domain:
+            rows = _fetch_all(
+                """SELECT topic, structured_knowledge, source_url, domain, created_at
+                   FROM knowledge_packages
+                   WHERE (topic LIKE ? OR structured_knowledge LIKE ?) AND domain = ?
+                   ORDER BY id DESC LIMIT ?""",
+                (like_pattern, like_pattern, domain, limit)
+            )
+        else:
+            rows = _fetch_all(
+                """SELECT topic, structured_knowledge, source_url, domain, created_at
+                   FROM knowledge_packages
+                   WHERE topic LIKE ? OR structured_knowledge LIKE ?
+                   ORDER BY id DESC LIMIT ?""",
+                (like_pattern, like_pattern, limit)
+            )
+        if not rows:
+            keywords = [w for w in q_en.split() if len(w) >= 2][:3]
+            fts_query = " OR ".join(keywords)
+            if domain:
+                rows = _fetch_all(
+                    """SELECT kp.topic, kp.structured_knowledge, kp.source_url, kp.domain, kp.created_at
+                       FROM knowledge_packages_fts
+                       JOIN knowledge_packages kp ON knowledge_packages_fts.rowid = kp.id
+                       WHERE knowledge_packages_fts MATCH ? AND kp.domain = ?
+                       ORDER BY rank LIMIT ?""",
+                    (fts_query, domain, limit)
+                )
+            else:
+                rows = _fetch_all(
+                    """SELECT kp.topic, kp.structured_knowledge, kp.source_url, kp.domain, kp.created_at
+                       FROM knowledge_packages_fts
+                       JOIN knowledge_packages kp ON knowledge_packages_fts.rowid = kp.id
+                       WHERE knowledge_packages_fts MATCH ?
+                       ORDER BY rank LIMIT ?""",
+                    (fts_query, limit)
+                )
+    except Exception:
+        rows = []
+    async def gen():
+        for r in rows:
+            if lang == "es":
+                try:
+                    from tools.translate import translate_stream
+                    topic = r["topic"]
+                    sk = r["structured_knowledge"] or ""
+                    t_topic = "".join(list(translate_stream(topic, "en", "es"))) if topic else topic
+                    t_sk = "".join(list(translate_stream(sk[:800], "en", "es"))) if sk else sk
+                    r = dict(r)
+                    r["topic"] = t_topic
+                    r["structured_knowledge"] = t_sk
+                    r["translated"] = True
+                except Exception:
+                    pass
+            yield f"data: {__import__('json').dumps(r, ensure_ascii=False)}\n\n"
+            await __import__('asyncio').sleep(0.02)
+        yield "data: [DONE]\n\n"
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
 class StartPipelineRequest(BaseModel):
     phase: str = "full"
     specialist: str = "all"

@@ -13,6 +13,7 @@ class App {
     this.sortDir = -1; // desc
     this.rangeHours = 720;
     this.actFilter = 'ALL';
+    this.lang = localStorage.getItem('expertia-lang') || 'es';
     this.pollMs = 3000;
     this._timer = null;
     this._apiKey = sessionStorage.getItem('expertia-api-key') || '';
@@ -35,6 +36,7 @@ class App {
     if (storedRange === '24' || storedRange === '168' || !storedRange) storedRange = '720';
     this.rangeHours = Number(storedRange);
     localStorage.setItem('expertia-range', '720');
+    const lb=document.getElementById('lang-btn'); if(lb) lb.textContent=this.lang.toUpperCase();
     await this.refresh();
     this.startPolling();
     document.addEventListener('visibilitychange', () => this.startPolling());
@@ -142,6 +144,12 @@ class App {
     this.theme = this.theme === 'dark' ? 'light' : 'dark';
     localStorage.setItem('expertia-theme', this.theme);
     document.documentElement.setAttribute('data-theme', this.theme);
+  }
+
+  toggleLang() {
+    this.lang = this.lang === 'es' ? 'en' : 'es';
+    localStorage.setItem('expertia-lang', this.lang);
+    const b=document.getElementById('lang-btn'); if(b) b.textContent=this.lang.toUpperCase();
   }
 
   setRange(h) {
