@@ -15,6 +15,12 @@ except Exception:
 def precache(limit=2000):
     if translate is None:
         return 0
+    import gc
+    try:
+        import torch
+        has_torch = True
+    except Exception:
+        has_torch = False
     db = sqlite3.connect(str(DATABASE_PATH), timeout=30)
     rows = db.execute("SELECT id, topic, structured_knowledge FROM knowledge_packages WHERE language='en' ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
     done = 0
@@ -26,14 +32,33 @@ def precache(limit=2000):
         exists = db.execute("SELECT 1 FROM translations_cache WHERE hash=?", (h,)).fetchone()
         if exists:
             continue
-        out = translate(txt, "en", "es")
-        time.sleep(0.02)
+        try:
+            out = translate(txt, "en", "es")
+        except Exception as e:
+            if "bad allocation" in str(e).lower():
+                gc.collect()
+                if has_torch:
+                    try:
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
+                time.sleep(0.5)
+                continue
+            raise
+        time.sleep(0.05)
         done += 1
-        if done % 100 == 0:
+        if done % 50 == 0:
             print(f"precache {done}/{limit}")
+            gc.collect()
+            if has_torch:
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
         if datetime.now().hour >= 6:
             break
     db.close()
+    gc.collect()
     return done
 
 if __name__ == "__main__":
@@ -41,7 +66,7 @@ if __name__ == "__main__":
     while True:
         h = datetime.now().hour
         if 0 <= h < 6:
-            n = precache(500)
+            n = precache(100)
             print(f"precached {n}")
             time.sleep(60)
         else:

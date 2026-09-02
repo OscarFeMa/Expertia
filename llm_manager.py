@@ -305,8 +305,8 @@ class OfflineVerificationEngine:
 # ============================================================================
 
 # TTL del cache "modelo cargado": evitamos `ollama ps` por query (~50-150ms)
-# manteniendo el chequeo VRAM real cuando el modelo cambia o caduca.
-MODEL_LOADED_CACHE_TTL = 30  # segundos
+# Equilibrio: 60s reduce picos sin ocultar cambios de VRAM
+MODEL_LOADED_CACHE_TTL = 60  # segundos
 
 class LLMRunner:
     """VRAM-aware LLM runner with Single-Active-Model pattern."""
@@ -522,7 +522,7 @@ class LLMRunner:
         Returns:
             bool: True if successful, False otherwise
         """
-        # Lazy initialize lock to avoid creating it outside event loop
+        # Lazy initialize global lock
         if self._lock is None:
             with self._lock_init_lock:
                 if self._lock is None:
@@ -643,7 +643,7 @@ class LLMRunner:
                 "num_predict": max_tokens,
                 "num_ctx": 4096
             },
-            "keep_alive": "30m"
+            "keep_alive": "5m"
         }
         
         logger.info(f"Sending query to model '{model_name}'")

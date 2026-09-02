@@ -225,22 +225,18 @@ body {
 #tab-metrics { padding:8px 12px; overflow:hidden; }
 .metrics-grid {
   display:grid;
-  grid-template-columns: 1.3fr 1fr;
-  grid-template-rows: 1.2fr 0.8fr auto;
-  grid-template-areas:
-    "ema thru"
-    "ema tiers"
-    "models eta";
-  gap:10px;
-  height:100%; min-height:0;
+  grid-template-columns: 1.6fr 1fr;
+  grid-template-rows: 1fr;
+  grid-template-areas: "ema thru";
+  gap:12px;
+  flex:1; min-height:0; height:100%;
 }
-#chart-ema-panel { grid-area:ema; }
-#chart-thru-panel { grid-area:thru; }
-#chart-tiers-panel { grid-area:tiers; }
-#chart-models-panel { grid-area:models; }
-#chart-eta-panel { grid-area:eta; }
+.metrics-grid.metrics-grid--duo{grid-template-columns:1.6fr 1fr}
+#chart-ema-panel { grid-area:ema; display:flex; flex-direction:column; min-height:0}
+#chart-thru-panel { grid-area:thru; display:flex; flex-direction:column; min-height:0}
+#tab-metrics.active{height:100%; display:flex; flex-direction:column}
 @media (max-width:1100px) {
-  .metrics-grid { grid-template-columns:1fr; grid-template-rows:1fr auto auto auto auto; grid-template-areas:"ema" "thru" "tiers" "models" "eta"; }
+  .metrics-grid, .metrics-grid.metrics-grid--duo { grid-template-columns:1fr; grid-template-rows:1fr 1fr; grid-template-areas:"ema" "thru"; }
 }
 
 /* ── Alerts bar ── */
@@ -296,9 +292,10 @@ body {
 .range-btn.active, .filter-btn.active { background:var(--amber); border-color:var(--amber); color:var(--bg); }
 .range-btn:hover, .filter-btn:hover { border-color:var(--amber); color:var(--amber); }
 
-.canvas-wrap { position:relative; width:100%; flex:1; min-height:0; }
-.canvas-wrap.small { min-height:0; flex:0 0 auto; height:90px; }
-.canvas-wrap canvas { width:100%; height:100%; display:block; }
+.canvas-wrap { position:relative; width:100%; flex:1; min-height:0; display:flex; }
+.canvas-wrap canvas { width:100%; flex:1; min-height:260px; display:block;}
+.canvas-wrap.small { min-height:0; flex:1;}
+.canvas-wrap.small canvas{flex:1; min-height:260px}
 .chart-legend { display:flex; flex-wrap:wrap; gap:5px 10px; margin-top:6px; flex-shrink:0; }
 .chart-legend .lg { display:flex; align-items:center; gap:4px; font-size:9px; color:var(--text-dim); font-family:var(--mono); }
 .chart-legend .sw { width:8px; height:8px; border-radius:1px; }

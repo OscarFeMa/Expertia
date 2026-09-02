@@ -57,13 +57,13 @@ function drawEmaMultiLine(canvasId, series, legendEl, rangeHours) {
   let eMin = Infinity, eMax = -Infinity;
   const usable = [];
   series.forEach((s, i) => {
-    const pts = (s.points || []).filter(p => p && p.e != null);
+    const pts = (s.points || []).filter(p => p && p.e != null && p.t);
     if (pts.length < 2) return;
     const color = EMA_COLORS[i % EMA_COLORS.length];
     usable.push({ ...s, points: pts, color });
     pts.forEach(p => {
       const t = parseDbUtcToLocal(p.t);
-      if (t >= tStart && t <= tEnd) { if (p.e < eMin) eMin = p.e; if (p.e > eMax) eMax = p.e; }
+      if (t >= tStart && t <= tEnd && isFinite(t)) { if (p.e < eMin) eMin = p.e; if (p.e > eMax) eMax = p.e; }
     });
   });
   if (!usable.length || !isFinite(eMin)) {
@@ -88,7 +88,9 @@ function drawEmaMultiLine(canvasId, series, legendEl, rangeHours) {
   for (let i = 0; i <= xTicks; i++) {
     const t = tStart + (tEnd - tStart) * i / xTicks;
     const x = pad.left + plotW * i / xTicks;
-    ctx.fillText(new Date(t).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' }), x, H - 8);
+    ctx.strokeStyle = C.grid; ctx.lineWidth = 0.5; ctx.beginPath(); ctx.moveTo(x, pad.top); ctx.lineTo(x, H - pad.bottom); ctx.stroke();
+    ctx.fillStyle = C.dim; ctx.fillText(new Date(t).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' }), x, H - 8);
+    ctx.fillText(new Date(t).toLocaleDateString([], { month:'short', day:'numeric' }), x, H - 18);
   }
 
   usable.forEach(s => {
@@ -114,11 +116,16 @@ function drawEmaMultiLine(canvasId, series, legendEl, rangeHours) {
     }
   });
 
+  window._emaUsable = usable;
+  window._emaFocus = window._emaFocus || null;
   if (legendEl) {
-    const top = usable.slice(0, 10);
-    legendEl.innerHTML = top.map(s =>
-      `<span class="lg"><span class="sw" style="background:${s.color}"></span>${escapeHtml(s.domain)}</span>`
+    legendEl.innerHTML = usable.map((s,i) =>
+      `<span class="lg ${window._emaFocus===s.domain?'active':''}" data-domain="${s.domain}" onclick="window._emaFocus=window._emaFocus===this.dataset.domain?null:this.dataset.domain; drawEmaMultiLine('chart-ema', window._emaUsable, document.getElementById('legend-ema'), window._emaRangeHours||24); if(window.app && window.app.showExpertMetrics) window.app.showExpertMetrics(window._emaFocus);" style="cursor:pointer;opacity:${!window._emaFocus||window._emaFocus===s.domain?1:.4}"><span class="sw" style="background:${s.color}"></span>${escapeHtml(s.domain)}</span>`
     ).join('');
+  }
+  if (window._emaFocus) {
+    const focused = usable.find(s=>s.domain===window._emaFocus);
+    if (focused) { usable = [focused]; eMin = Math.min(...focused.points.filter(p=>p.e!=null).map(p=>p.e)) -0.001; eMax = Math.max(...focused.points.filter(p=>p.e!=null).map(p=>p.e)) +0.001; }
   }
 }
 
@@ -126,7 +133,12 @@ function drawThroughputBars(canvasId, data) {
   const canvas = document.getElementById(canvasId);
   if (!canvas || !data || !data.length) return;
   const C = _chartTheme();
-  const { ctx, W, H } = _prepareCanvas(canvas, 160);
+  const { ctx, W, H } = _prepareCanvas(canvas, 180);
+  // Handle spike: cap at 99th percentile for scale
+  const vals = data.map(d=>d.cycles||0);
+  const sorted=[...vals].sort((a,b)=>a-b);
+  const p99 = sorted[Math.floor(sorted.length*0.95)] || Math.max(...vals, 5);
+  const yMax = Math.max(p99*1.2, 5);
   const pad = { top:10, bottom:22, left:34, right:8 };
   const plotW = W - pad.left - pad.right;
   const plotH = H - pad.top - pad.bottom;

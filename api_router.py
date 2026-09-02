@@ -908,6 +908,70 @@ def pull_model(req: PullModelRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class WikiFeedNowResponse(BaseModel):
+    status: str
+    mode: str
+    message: str
+
+
+@router.get("/wiki/status")
+def wiki_status():
+    row = _fetch_one("SELECT MAX(last_wikidata_download) as last_dl, MAX(last_wikidata_feed) as last_feed FROM specialist_registry")
+    last_dl = row.get("last_dl") if row else None
+    last_feed = row.get("last_feed") if row else None
+    last = last_feed or last_dl
+    days = None
+    if last:
+        try:
+            from datetime import datetime, timezone
+            dt = datetime.fromisoformat(last.replace(" ", "T").split(".")[0])
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400
+        except Exception:
+            pass
+    return {"last_wikidata_download": last_dl, "last_wikidata_feed": last_feed, "last_update": last, "days_since_update": round(days, 1) if days is not None else None, "needs_update": (days is None or days > 7)}
+
+
+@router.post("/wiki/feed-now", dependencies=[Depends(verify_api_key)])
+def wiki_feed_now():
+    from pathlib import Path as _P
+    import subprocess, sys, time
+    # Parar pipeline actual si existe
+    try:
+        from api_router import _pipeline as _pl
+        pid = _pl.get("pid")
+        if pid and _is_pid_alive(pid):
+            try:
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
+                else:
+                    os.kill(pid, 15)
+            except Exception:
+                pass
+            _pl["pid"] = None
+            time.sleep(1)
+    except Exception:
+        pass
+    # Lanzar feed wiki en modo feed con ventana avisando
+    try:
+        py = sys.executable
+        repo = _P(__file__).parent
+        log_path = repo / "logs" / f"wiki_feed_{int(time.time())}.log"
+        log_path.parent.mkdir(exist_ok=True)
+        lf = open(log_path, "w", encoding="utf-8")
+        proc = subprocess.Popen([py, "orchestrator.py", "--phase", "feed"], cwd=str(repo), stdout=lf, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        try:
+            _fetch_one("SELECT 1")
+            # Marcar inicio feed para que métricas lo reflejen
+            _execute("UPDATE pipeline_status SET status='FEEDING_WIKI', phase='Wiki: Wikidata/Wikipedia (feed)', current_specialist='Wiki', updated_at=CURRENT_TIMESTAMP WHERE id=1")
+        except Exception:
+            pass
+        return {"status": "started", "mode": "feed", "message": "Alimentación Wiki iniciada (Wikidata/Wikipedia). Ventana activa.", "pid": proc.pid, "log": str(log_path)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 class SpecialistUpdateRequest(BaseModel):
     domain: str
     model: str
@@ -1323,3 +1387,28 @@ def get_dashboard():
     snapshot["activity_log"] = _fetch_all("SELECT id, timestamp, level, message FROM activity_log ORDER BY id DESC LIMIT 1") or []
     snapshot["pipeline_pid"] = _get_pipeline_pid_info()
     return snapshot
+
+
+@router.post("/admin/models/check")
+def admin_models_check():
+    import subprocess, sys
+    from pathlib import Path
+    try:
+        out = subprocess.check_output([sys.executable, str(Path(__file__).parent / "tools" / "model_updater_external.py"), "--json"], text=True, timeout=30)
+        import json
+        return json.loads(out)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/admin/models/pending")
+def admin_models_pending():
+    from pathlib import Path
+    import json
+    p = Path(__file__).parent / "storage" / "model_updater" / "pending.json"
+    if not p.exists():
+        return {"pending": []}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
