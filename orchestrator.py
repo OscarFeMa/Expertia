@@ -29,8 +29,7 @@ from tools.update_wikidata import fetch_entities_batch, build_structured_knowled
 LLM_QUERY_TIMEOUT = 180
 PHASE_B_PER_SPECIALIST_TIMEOUT = 7200  # 120 min max per specialist per cycle
 MAX_PHASE_B_CONCURRENCY = 3  # máx. especialistas fase B simultáneos (1 GPU/6GB)
-# Concurrencia reducida para modelos pesados que saturan el GPU (phi4-mini:4k)
-MODEL_PHASE_B_CONCURRENCY = {'phi4-mini:4k': 2}
+MODEL_PHASE_B_CONCURRENCY = {'phi4-mini:4k': 2, 'phi4-mini:latest': 2, 'phi4-mini:3.8b': 2, 'phi4-mini:Q5_K_M': 1}
 MAX_PHASE_B_CYCLES = 100
 VRAM_WARN_THRESHOLD_MB = 2048
 _shutdown_event = threading.Event()

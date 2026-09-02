@@ -641,7 +641,7 @@ class LLMRunner:
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
-                "num_ctx": 4096
+                "num_ctx": 8192
             },
             "keep_alive": "5m"
         }
@@ -681,7 +681,7 @@ class LLMRunner:
         temperature = temperature or LLM_TEMPERATURE
         max_tokens = max_tokens or LLM_MAX_TOKENS
         url = f"{self.api_base_url}/api/generate"
-        payload = {"model": model_name, "prompt": prompt, "stream": True, "options": {"temperature": temperature, "num_predict": max_tokens, "num_ctx": 4096}, "keep_alive": "30m"}
+        payload = {"model": model_name, "prompt": prompt, "stream": True, "options": {"temperature": temperature, "num_predict": max_tokens, "num_ctx": 8192}, "keep_alive": "5m"}
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=LLM_TIMEOUT*2))
         async with self._session.post(url, json=payload) as resp:
