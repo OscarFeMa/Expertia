@@ -166,6 +166,14 @@ class App {
     this.renderActivity();
   }
 
+  showExpertMetrics(domain){
+    if(!domain){ document.getElementById('sys-cpu').textContent='—%'; return; }
+    const s=this.rawSpecs.find(x=>x.domain===domain);
+    if(!s) return;
+    const upd = s.updated_at ? new Date(s.updated_at.replace(' ','T')+'Z').toLocaleString('es-ES') : '—';
+    this.toast(`Foco: ${domain}`, `EMA ${Number(s.ema_score).toFixed(4)} · ${s.packages_absorbed.toLocaleString()} pkg · Actualizado ${upd}`, 'info', 4000);
+  }
+
   sortBy(key) {
     if (this.sortKey === key) this.sortDir *= -1;
     else { this.sortKey = key; this.sortDir = -1; }
@@ -185,6 +193,37 @@ class App {
     }
   }
 
+  async updateWikiBar(){
+    const w=await this.fetchJSON(`${this.apiBase}/wiki/status`);
+    const s=this.rawStatus || this.rawOverview;
+    const isFeeding = s && s.status==='FEEDING_WIKI';
+    const el=document.getElementById('wiki-days'), last=document.getElementById('wiki-last'), st=document.getElementById('wiki-status'), eta=document.getElementById('wiki-eta'), mode=document.getElementById('wiki-mode'), prog=document.getElementById('wiki-progress'), bar=document.getElementById('wiki-progress-bar'), btn=document.getElementById('wiki-feed-btn');
+    if(!w) return;
+    if(el) el.textContent = w.days_since_update==null ? '— días' : `${w.days_since_update} días sin actualizar`;
+    if(last) last.textContent = w.last_update ? `· última ${w.last_update}` : '';
+    if(st) st.textContent = isFeeding ? '· Alimentando Wiki...' : (w.needs_update ? '· ¡Actualizar recomendado!' : '· al día');
+    if(eta) {
+      if(isFeeding && s.elapsed_seconds){
+        const remain = Math.max(0, 900 - s.elapsed_seconds);
+        const m=Math.floor(remain/60), sec=Math.floor(remain%60);
+        eta.textContent = `· ETA ~${m}m ${sec}s`;
+      } else if(w.days_since_update!=null) {
+        const est = Math.round(w.days_since_update * 1.2);
+        eta.textContent = w.needs_update ? `· Est. ${est} min` : '';
+      } else eta.textContent='';
+    }
+    if(mode) { mode.textContent = isFeeding ? 'Modo: feed (Wikidata/Wikipedia → knowledge_packages, calidad preferente)' : ''; mode.style.display = isFeeding ? '' : 'none'; }
+    if(prog) prog.style.display = isFeeding ? '' : 'none';
+    if(bar && isFeeding && s.elapsed_seconds) bar.style.width = `${Math.min(95, (s.elapsed_seconds/900)*100)}%`;
+    if(btn) { btn.textContent = isFeeding ? '⏳ Alimentando...' : '⟳ Alimentar Wiki ahora'; btn.disabled = !!isFeeding; }
+  }
+  async wikiFeedNow(){
+    if(!confirm('¿Parar pipeline actual y alimentar Wiki ahora (Wikidata/Wikipedia, modo feed)?')) return;
+    const r=await this.fetchJSON(`${this.apiBase}/wiki/feed-now`,{method:'POST'});
+    if(r && r.status==='started') this.toast('Wiki feed iniciado', `PID ${r.pid} — ${r.message}`, 'info', 6000);
+    else this.toast('Error', r?.detail || 'No se pudo iniciar Wiki feed', 'error');
+    this.updateWikiBar();
+  }
   async refresh() {
     const t0 = Date.now();
     const [overview, cpu, mem, specs, logs, health, status] = await Promise.all([
@@ -246,6 +285,7 @@ class App {
       const sdSpark = document.getElementById('sys-disk-spark');
       if (sdSpark && pct != null) this.pushSpark('disk', 100-pct, 'sys-disk-spark');
     }
+    this.updateWikiBar();
 
     // statusbar + refresh indicator
     const ok = overview && health;

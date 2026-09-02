@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>EXPERTIA · Neural Horizon</title>
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <link rel="stylesheet" href="style.css?v=14">
+  <link rel="stylesheet" href="style.css?v=16">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>◈</text></svg>">
 </head>
 <body>
@@ -85,6 +85,17 @@
         <div class="sys-item"><span class="sys-label">Disco E:</span><span class="sys-val" id="sys-disk">— GB libres</span><canvas id="sys-disk-spark" width="80" height="28"></canvas></div>
       </div>
       <div class="metrics-grid metrics-grid--duo" id="metrics-grid">
+        <div class="panel" id="wiki-panel" style="grid-column:1/-1; padding:0; overflow:hidden;">
+          <div class="panel-head"><h3>Wiki · Actualización</h3><span class="sys-val" id="wiki-days">— días</span></div>
+          <div style="padding:12px 16px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+            <span id="wiki-last" style="font:500 11px var(--mono); color:var(--text-mute)">—</span>
+            <span id="wiki-status" style="font:600 11px var(--mono); color:var(--accent)"></span>
+            <span id="wiki-eta" style="font:500 11px var(--mono); color:var(--text-mute); margin-left:auto"></span>
+            <span id="wiki-mode" style="font:600 11px var(--mono); color:var(--text); display:none"></span>
+            <div class="progress" id="wiki-progress" style="display:none; flex-basis:100%; height:6px; background:var(--border); border-radius:999px; overflow:hidden;"><div id="wiki-progress-bar" style="height:100%; width:0%; background:var(--accent); transition:width .3s"></div></div>
+            <button class="ghost-btn" id="wiki-feed-btn" onclick="app.wikiFeedNow()" title="Parar pipeline actual y alimentar Wiki ahora">⟳ Alimentar Wiki ahora</button>
+          </div>
+        </div>
         <div class="panel panel--large" id="chart-ema-panel">
           <div class="panel-head"><h3>Evolución EMA por especialista</h3>
             <div class="panel-tools">
@@ -149,7 +160,7 @@
     </div>
   </div>
 
-  <script src="charts.js?v=14"></script>
-  <script src="app.js?v=14"></script>
+  <script src="charts.js?v=16"></script>
+  <script src="app.js?v=16"></script>
 </body>
 </html>

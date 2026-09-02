@@ -11,7 +11,7 @@ class ExpertiaSettings(BaseSettings):
     ollama_port: int = 11434
     distillation_enabled: bool = True
     distillation_model: str = "qwen2.5:3b"
-    llm_timeout: int = 60
+    llm_timeout: int = 90
     llm_temperature: float = 0.7
     llm_max_tokens: int = 1000
     llm_retry_max_attempts: int = 3

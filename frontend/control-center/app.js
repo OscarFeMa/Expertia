@@ -252,6 +252,10 @@ class App {
     return `<div class="log-entry"${hl}><span class="log-ts">${this.escapeHtml(ts)}</span><span class="log-icon">${icon}</span><span class="log-msg">${msg}</span></div>`;
   }
 
+  async checkModelUpdates(){
+    const b=document.getElementById('btn-model-check'); if(b) b.textContent='Buscando...';
+    try{ const r=await this.fetchJSON(`${this.apiBase}/admin/models/check`,{method:'POST'}); const list=(r.candidates||[]).map(c=>`• ${c.model} para ${c.for_domain}: ${c.gain} | Riesgo: ${c.risk}`).join('\n')||'Sin cambios'; alert(`Model Updater externo (${r.vram_mb}MB VRAM):\n${list}\n\nRequiere confirmación para aplicar.`);}catch(e){ alert('Error: '+e.message); } if(b) b.textContent='🔍 Buscar modelos';
+  }
   // ── DASHBOARD ──────────────────────────────────────────────────────────
   async renderDashboard() {
     const el = document.getElementById('tab-dashboard');
@@ -313,6 +317,11 @@ class App {
           <div class="header-label">Clock</div>
           <div class="header-value sm" id="dash-clock">${new Date().toLocaleTimeString()}</div>
         </div>
+      </div>
+
+      <div style="margin:12px 0; display:flex; gap:8px;">
+        <button id="btn-model-check" class="primary" onclick="app.checkModelUpdates()" title="Model Updater externo — busca mejores modelos sin instalar">🔍 Buscar modelos (Updater externo)</button>
+        <span style="font:500 11px var(--mono); color:var(--muted); align-self:center;">App externa — no integra hasta tu aprobación</span>
       </div>
 
       <!-- Synaptic activity pulse -->

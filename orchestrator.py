@@ -277,22 +277,22 @@ logger = logging.getLogger(__name__)
 
 SPECIALIST_REGISTRY = [
     {"domain": "SoftwareEngineering", "model": "qwen2.5-coder:3b", "root": "Q80993", "props": ["P31", "P279", "P306", "P400"]},
-    {"domain": "Mathematics", "model": "qwen2.5-coder:3b", "root": "Q395", "props": ["P31", "P279", "P2534", "P192"]},
-    {"domain": "Medicine", "model": "phi4-mini:4k", "root": "Q11190", "props": ["P31", "P279", "P923", "P780", "P699"]},
-    {"domain": "LegalSystem", "model": "gemma3:4b", "root": "Q7748", "props": ["P31", "P279", "P1684", "P427"]},
-    {"domain": "PhilosophyHistory", "model": "phi4-mini:4k", "root": "Q5891", "props": ["P31", "P279", "P61"]},
-    {"domain": "FinanceEconomics", "model": "phi4-mini:4k", "root": "Q8134", "props": ["P31", "P279", "P2283", "P1441"]},
-    {"domain": "Physics", "model": "phi4-mini:4k", "root": "Q413", "props": ["P31", "P279", "P2067", "P2541"]},
+    {"domain": "Mathematics", "model": "hf.co/liodon-ai/Qwen2.5-Math-1.5B-Instruct-imatrix-GGUF:Q4_K_M", "root": "Q395", "props": ["P31", "P279", "P2534", "P192"]},
+    {"domain": "Medicine", "model": "richardyoung/llama-medx_v32:latest", "root": "Q11190", "props": ["P31", "P279", "P923", "P780", "P699"]},
+    {"domain": "LegalSystem", "model": "initium/law_model:latest", "root": "Q7748", "props": ["P31", "P279", "P1684", "P427"]},
+    {"domain": "PhilosophyHistory", "model": "qwen3:8b", "root": "Q5891", "props": ["P31", "P279", "P61"]},
+    {"domain": "FinanceEconomics", "model": "hf.co/brodatech/finance-phi3-gguf:Q4_K_M", "root": "Q8134", "props": ["P31", "P279", "P2283", "P1441"]},
+    {"domain": "Physics", "model": "phi4-mini:latest", "root": "Q413", "props": ["P31", "P279", "P2067", "P2541"]},
     {"domain": "Cybersecurity", "model": "qwen2.5-coder:3b", "root": "Q3510521", "props": ["P31", "P279", "P2824"]},
     {"domain": "Geopolitics", "model": "gemma3:4b", "root": "Q159385", "props": ["P31", "P279", "P30"]},
     {"domain": "DataScience", "model": "qwen2.5-coder:3b", "root": "Q2374463", "props": ["P31", "P279", "P2078"]},
-    {"domain": "Chemistry", "model": "phi4-mini:4k", "root": "Q2329", "props": ["P31", "P279", "P662", "P2067"]},
-    {"domain": "ArtHistory", "model": "phi4-mini:4k", "root": "Q50637", "props": ["P31", "P279", "P170", "P136"]},
+    {"domain": "Chemistry", "model": "phi4-mini:latest", "root": "Q2329", "props": ["P31", "P279", "P662", "P2067"]},
+    {"domain": "ArtHistory", "model": "phi4-mini:latest", "root": "Q50637", "props": ["P31", "P279", "P170", "P136"]},
     {"domain": "Electronics", "model": "qwen2.5-coder:3b", "root": "Q11650", "props": ["P31", "P279", "P306", "P400"]},
-    {"domain": "Astronomy", "model": "phi4-mini:4k", "root": "Q333", "props": ["P31", "P279", "P2067"]},
-    {"domain": "Linguistics", "model": "phi4-mini:4k", "root": "Q81798", "props": ["P31", "P279", "P2826", "P1990"]},
-    {"domain": "Psychology", "model": "phi4-mini:4k", "root": "Q9418", "props": ["P31", "P279", "P921", "P659"]},
-    {"domain": "EnvironmentalScience", "model": "phi4-mini:4k", "root": "Q188069", "props": ["P31", "P279", "P361", "P527"]},
+    {"domain": "Astronomy", "model": "phi4-mini:latest", "root": "Q333", "props": ["P31", "P279", "P2067"]},
+    {"domain": "Linguistics", "model": "phi4-mini:latest", "root": "Q81798", "props": ["P31", "P279", "P2826", "P1990"]},
+    {"domain": "Psychology", "model": "phi4-mini:latest", "root": "Q9418", "props": ["P31", "P279", "P921", "P659"]},
+    {"domain": "EnvironmentalScience", "model": "phi4-mini:latest", "root": "Q188069", "props": ["P31", "P279", "P361", "P527"]},
     {"domain": "Sociology", "model": "gemma3:4b", "root": "Q21201", "props": ["P31", "P279", "P2826", "P101"]}
 ]
 
@@ -425,8 +425,8 @@ class PipelineController:
     _ollama_consecutive_failures = 0
     _ollama_circuit_open = False
     _ollama_circuit_opened_at = 0.0
-    _OLLAMA_FAILURE_THRESHOLD = 3
-    _OLLAMA_CIRCUIT_AUTO_RESET_SECONDS = 60  # 1 min auto-reset
+    _OLLAMA_FAILURE_THRESHOLD = 4
+    _OLLAMA_CIRCUIT_AUTO_RESET_SECONDS = 90  # 1.5 min auto-reset (equilibrio)
 
     # Cascade detection: prevents failure spirals that destroy EMA
     _cascaded_specialists = {}  # {sid: {'detected_at': float, 'original_ema': float}}
@@ -1819,6 +1819,34 @@ class PipelineController:
 
         self._start_time = time.time()
         self._update_pipeline_status(status='INIT', phase='Initializing...')
+        # Auto-feed Wiki si lleva >7 días sin actualizar (sincronizado con /api/wiki/status: usa el más reciente de feed/download)
+        try:
+            row = self.db_manager.execute_query("SELECT MAX(last_wikidata_feed) as lf, MAX(last_wikidata_download) as ld FROM specialist_registry", fetch=True)
+            lf = row[0].get('lf') if row else None
+            ld = row[0].get('ld') if row else None
+            candidates = [d for d in [lf, ld] if d]
+            if not candidates:
+                need_wiki = True
+                last = None
+            else:
+                from datetime import datetime, timezone
+                def _parse(s):
+                    dt = datetime.fromisoformat(str(s).replace(" ", "T").split(".")[0])
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt
+                last = max(candidates, key=lambda x: _parse(x))
+                dt = _parse(last)
+                need_wiki = (datetime.now(timezone.utc) - dt).total_seconds() / 86400 > 7
+            if need_wiki and phase in ('web','full','nurture'):
+                logger.info("Wiki desactualizada >7 días — iniciando alimentación Wiki prioritaria (Wikidata/Wikipedia) antes de fase principal")
+                self._update_pipeline_status(status='FEEDING_WIKI', phase='Wiki: alimentando Wikidata/Wikipedia (prioridad 7d)', current_specialist='Wiki')
+                try:
+                    await self._run_wikidata_feed(self.get_specialists())
+                except Exception as e:
+                    logger.warning(f"Wiki feed prioritario falló: {e}")
+        except Exception as e:
+            logger.debug(f"Check wiki 7d omitido: {e}")
 
         # Snapshot EMA before pipeline to detect massive drops
         ema_rows = self.db_manager.execute_query(
@@ -1839,9 +1867,11 @@ class PipelineController:
             return
 
         # Apply filters
+        logger.info(f"Filter check: specialist_filter='{specialist_filter}' model_filter='{model_filter}' all={len(all_specialists)}")
         if specialist_filter != 'all':
             filter_domains = [d.strip() for d in specialist_filter.split(',')]
             all_specialists = [s for s in all_specialists if s['domain'] in filter_domains]
+            logger.info(f"After domain filter: {len(all_specialists)} remain")
         if model_filter != 'all':
             all_specialists = [s for s in all_specialists if s['model'] == model_filter]
         if not all_specialists:
