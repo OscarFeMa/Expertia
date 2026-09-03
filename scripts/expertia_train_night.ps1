@@ -9,6 +9,7 @@ try {
   $st = Get-Content $stateFile -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
   $pidPipe = $st.pid
 } catch { $pidPipe = $null }
+& $py (Join-Path $repo "tools\gen_cycle_report.py") --kind web 2>&1 | Out-Null
 Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like "*tools/watchdog.py*" } | ForEach-Object {
   taskkill /F /T /PID $_.ProcessId 2>&1 | Out-Null
 }
