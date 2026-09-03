@@ -29,7 +29,7 @@ from tools.update_wikidata import fetch_entities_batch, build_structured_knowled
 LLM_QUERY_TIMEOUT = 180
 PHASE_B_PER_SPECIALIST_TIMEOUT = 7200  # 120 min max per specialist per cycle
 MAX_PHASE_B_CONCURRENCY = 3  # máx. especialistas fase B simultáneos (1 GPU/6GB)
-MODEL_PHASE_B_CONCURRENCY = {'phi4-mini:4k': 2, 'phi4-mini:latest': 2, 'phi4-mini:3.8b': 2, 'phi4-mini:Q5_K_M': 1}
+MODEL_PHASE_B_CONCURRENCY = {'phi4-mini:4k': 2, 'phi4-mini:latest': 2, 'phi4-mini:3.8b': 2, 'phi4-mini:Q5_K_M': 1, 'qwen3:8b': 1, 'initium/law_model:latest': 1}
 MAX_PHASE_B_CYCLES = 100
 VRAM_WARN_THRESHOLD_MB = 2048
 _shutdown_event = threading.Event()
@@ -431,7 +431,7 @@ class PipelineController:
     _cascaded_specialists = {}  # {sid: {'detected_at': float, 'original_ema': float}}
 
     def __init__(self, sample_size: Optional[int] = None, cycles_per_specialist: int = 3,
-                 parallel_workers: int = 1):
+                 parallel_workers: int = 2):
         self.db_manager = get_db_manager()
         self.llm_runner = LLMRunner()
         self.web_scraper = ModernWebScraper()
@@ -1802,7 +1802,7 @@ class PipelineController:
                            max_duration_hours: float = 0,
                            max_cycles: int = 0,
                             from_zero: bool = False,
-                            parallel_workers: int = 1,
+                            parallel_workers: int = 2,
                             skip_list: str = '') -> None:
         logger.info("=" * 80)
         logger.info("CORAL THOUGHT ORCHESTRATOR - PIPELINE")
@@ -2097,8 +2097,8 @@ def parse_args():
                         help='Hard max Phase B cycles (0 = use MAX_PHASE_B_CYCLES)')
     parser.add_argument('--from-zero', action='store_true',
                         help='Ignore checkpoints and start Phase A from entity 0')
-    parser.add_argument('--parallel', type=int, default=1,
-                        help='Number of parallel worker processes for Phase A (default: 1)')
+    parser.add_argument('--parallel', type=int, default=2,
+                        help='Number of parallel worker processes for Phase A (default: 2)')
     parser.add_argument('--skip', type=str, default='',
                         help='Comma-separated list of specialist domains to skip (default: none)')
     return parser.parse_args()
@@ -2127,7 +2127,7 @@ async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.
                max_duration_hours: float = 0,
                max_cycles: int = 0,
                from_zero: bool = False,
-               parallel_workers: int = 1,
+               parallel_workers: int = 2,
                skip_list: str = ''):
     crash_log = LOGS_DIR / 'crash.log'
     if PHASE_B_PER_SPECIALIST_TIMEOUT < 600:
