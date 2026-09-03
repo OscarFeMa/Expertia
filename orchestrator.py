@@ -279,7 +279,7 @@ SPECIALIST_REGISTRY = [
     {"domain": "Mathematics", "model": "hf.co/liodon-ai/Qwen2.5-Math-1.5B-Instruct-imatrix-GGUF:Q4_K_M", "root": "Q395", "props": ["P31", "P279", "P2534", "P192"]},
     {"domain": "Medicine", "model": "richardyoung/llama-medx_v32:latest", "root": "Q11190", "props": ["P31", "P279", "P923", "P780", "P699"]},
     {"domain": "LegalSystem", "model": "initium/law_model:latest", "root": "Q7748", "props": ["P31", "P279", "P1684", "P427"]},
-    {"domain": "PhilosophyHistory", "model": "qwen3:8b", "root": "Q5891", "props": ["P31", "P279", "P61"]},
+    {"domain": "PhilosophyHistory", "model": "phi4-mini:latest", "root": "Q5891", "props": ["P31", "P279", "P61"]},
     {"domain": "FinanceEconomics", "model": "hf.co/brodatech/finance-phi3-gguf:Q4_K_M", "root": "Q8134", "props": ["P31", "P279", "P2283", "P1441"]},
     {"domain": "Physics", "model": "phi4-mini:latest", "root": "Q413", "props": ["P31", "P279", "P2067", "P2541"]},
     {"domain": "Cybersecurity", "model": "qwen2.5-coder:3b", "root": "Q3510521", "props": ["P31", "P279", "P2824"]},
