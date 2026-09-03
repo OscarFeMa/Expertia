@@ -22,16 +22,25 @@ def is_garbage(text):
     return any(m in low for m in GARBAGE_MARKERS)
 
 
-def fetch_rows(db_path, where, limit, offset):
+def fetch_batch(db_path, max_id, batch):
     uri = f"file:{db_path}?mode=ro"
     con = sqlite3.connect(uri, uri=True, timeout=30)
     con.row_factory = sqlite3.Row
     try:
-        rows = con.execute(
-            "SELECT qid, topic, structured_knowledge, source_url FROM knowledge_packages "
-            f"WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?",
-            (limit, offset),
-        ).fetchall()
+        if max_id is None:
+            rows = con.execute(
+                "SELECT id, qid, topic, structured_knowledge, source_url FROM knowledge_packages "
+                "WHERE domain='Mathematics' AND qid IS NOT NULL "
+                "ORDER BY id DESC LIMIT ?",
+                (batch,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT id, qid, topic, structured_knowledge, source_url FROM knowledge_packages "
+                "WHERE domain='Mathematics' AND qid IS NOT NULL AND id < ? "
+                "ORDER BY id DESC LIMIT ?",
+                (max_id, batch),
+            ).fetchall()
         return [dict(r) for r in rows]
     finally:
         con.close()
@@ -74,14 +83,25 @@ def main():
 
     rnd = random.Random(args.seed)
     collected = []
-    offset = 0
+    scanned = 0
+    max_id = None
     seen = set()
+    strict = not args.relaxed
     while len(collected) < args.limit:
-        rows = fetch_rows(args.db, where, BATCH, offset)
+        rows = fetch_batch(args.db, max_id, BATCH)
         if not rows:
             break
-        offset += len(rows)
+        max_id = min(r["id"] for r in rows)
+        scanned += len(rows)
         for r in rows:
+            sk = r.get("structured_knowledge") or ""
+            if len(sk) < 50 or len(sk) > 2000:
+                continue
+            if strict and "P2534" not in sk:
+                continue
+            src = r.get("source_url") or ""
+            if "wikidata.org/entity/" not in src:
+                continue
             key = (r.get("qid"), r.get("topic"))
             if key in seen:
                 continue
@@ -91,6 +111,8 @@ def main():
                 collected.append(rec)
             if len(collected) >= args.limit:
                 break
+        if scanned > args.limit * 200:
+            break
 
     rnd.shuffle(collected)
     n_val = int(len(collected) * args.val_split)
@@ -104,7 +126,7 @@ def main():
         for rec in val:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
-    print(json.dumps({"train": len(train), "val": len(val), "out": str(out_path), "val_out": str(val_path), "offset_scanned": offset}, ensure_ascii=False))
+    print(json.dumps({"train": len(train), "val": len(val), "out": str(out_path), "val_out": str(val_path), "scanned": scanned}, ensure_ascii=False))
 
 
 if __name__ == "__main__":
