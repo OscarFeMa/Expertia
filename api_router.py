@@ -899,6 +899,24 @@ def training_status():
     return out
 
 
+@router.get("/reports")
+def list_reports(limit: int = 10):
+    rd = Path(__file__).parent / "storage" / "reports"
+    out = []
+    try:
+        files = sorted(rd.glob("cycle_*.json"), reverse=True)[: max(1, min(limit, 30))]
+        for f in files:
+            try:
+                rep = json.loads(f.read_text(encoding="utf-8"))
+                out.append({"file": f.name, "kind": rep.get("kind"), "ts": rep.get("ts"),
+                            "summary": {k: rep.get(k) for k in ("cycles", "avg_quality", "new_packages", "step", "loss_last", "phase") if k in rep}})
+            except Exception:
+                continue
+    except Exception as e:
+        return {"reports": [], "error": str(e)[:200]}
+    return {"reports": out}
+
+
 @router.get("/ollama/models")
 def get_ollama_models():
     try:

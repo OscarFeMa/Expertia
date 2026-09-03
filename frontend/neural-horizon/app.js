@@ -251,6 +251,18 @@ class App {
     if(d.loss_history) this.drawTrainLoss(d.loss_history);
     if(log && d.log_tail) log.textContent = d.log_tail.join('\n');
   }
+  updateReports(d){
+    const el=document.getElementById('reports-list'); if(!el) return;
+    const reps=d.reports||[];
+    if(!reps.length){ el.textContent='sin informes todavía — se generan al cierre de cada ciclo de 12h'; return; }
+    el.innerHTML=reps.map(r=>{
+      const s=r.summary||{};
+      const det=r.kind==='web'
+        ? `ciclos ${s.ciclos??s.cycles??'—'} · q ${s.avg_quality??'—'} · +${s.new_packages??'?'} pkgs`
+        : `paso ${s.step??'—'} · loss ${s.loss_last??'—'} · ${s.phase??''}`;
+      return `<div style="padding:6px 0; border-bottom:1px solid var(--border);"><b style="color:var(--text)">${r.kind}</b> · ${r.ts||''}<br><span>${det}</span> <span style="color:var(--text-faint)">(${r.file})</span></div>`;
+    }).join('');
+  }
   drawTrainLoss(hist){
     const cv=document.getElementById('chart-train-loss'); if(!cv) return;
     const ctx=cv.getContext('2d'), W=cv.width=Math.max(300,cv.parentElement?.clientWidth||600), H=cv.height=220;
@@ -329,6 +341,7 @@ class App {
     }
     this.updateWikiBar();
     this.fetchJSON(`${this.apiBase}/training/status`).then(d => { if (d) this.updateTrainPanel(d); });
+    this.fetchJSON(`${this.apiBase}/reports?limit=6`).then(d => { if (d) this.updateReports(d); });
 
     // statusbar + refresh indicator
     const ok = overview && health;
