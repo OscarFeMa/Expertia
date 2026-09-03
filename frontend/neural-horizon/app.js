@@ -118,11 +118,15 @@ class App {
     if (panel) panel.classList.add('active');
     this.render();
     if (name === 'metrics') {
-      // necesita el panel visible para dimensionar canvas
       requestAnimationFrame(() => {
         this.renderMetrics();
         this.renderInsights();
         this.loadEmaChart();
+      });
+    }
+    if (name === 'training') {
+      requestAnimationFrame(() => {
+        this.fetchJSON(`${this.apiBase}/training/status`).then(d => { if (d) this.updateTrainPanel(d); });
       });
     }
   }
@@ -248,14 +252,19 @@ class App {
     if(log && d.log_tail) log.textContent = d.log_tail.join('\n');
   }
   drawTrainLoss(hist){
-    const cv=document.getElementById('chart-train-loss'); if(!cv || !hist.length) return;
-    const ctx=cv.getContext('2d'), W=cv.width=cv.offsetWidth||600, H=cv.height=120;
-    const ls=hist.map(h=>h.loss), mn=Math.min(...ls), mx=Math.max(...ls), rg=(mx-mn)||1;
+    const cv=document.getElementById('chart-train-loss'); if(!cv) return;
+    const ctx=cv.getContext('2d'), W=cv.width=Math.max(300,cv.parentElement?.clientWidth||600), H=cv.height=220;
     ctx.clearRect(0,0,W,H);
     const st=getComputedStyle(document.documentElement);
+    ctx.fillStyle=st.getPropertyValue('--text-mute')||'#888'; ctx.font='11px monospace';
+    if(!hist.length){ ctx.fillText('curva disponible tras los primeros 25 pasos…', 12, 24); return; }
+    const ls=hist.map(h=>h.loss), mn=Math.min(...ls), mx=Math.max(...ls), rg=(mx-mn)||1;
+    ctx.strokeStyle=st.getPropertyValue('--border')||'#333'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(0,H-20); ctx.lineTo(W,H-20); ctx.stroke();
     ctx.strokeStyle=st.getPropertyValue('--accent')||'#7aa2f7'; ctx.lineWidth=2; ctx.beginPath();
-    hist.forEach((h,i)=>{ const x=(i/(hist.length-1||1))*W, y=H-8-((h.loss-mn)/rg)*(H-16); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+    hist.forEach((h,i)=>{ const x=(i/(hist.length-1||1))*(W-8)+4, y=H-28-((h.loss-mn)/rg)*(H-48); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
     ctx.stroke();
+    ctx.fillText(`min ${mn.toFixed(3)} · max ${mx.toFixed(3)} · n=${hist.length}`, 12, 16);
   }
   async refresh() {
     const t0 = Date.now();
