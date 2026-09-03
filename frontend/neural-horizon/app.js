@@ -224,6 +224,21 @@ class App {
     else this.toast('Error', r?.detail || 'No se pudo iniciar Wiki feed', 'error');
     this.updateWikiBar();
   }
+  updateTrainPanel(d){
+    const ph=document.getElementById('train-phase'), st=document.getElementById('train-step'),
+      loss=document.getElementById('train-loss'), ds=document.getElementById('train-ds'),
+      base=document.getElementById('train-base'), prog=document.getElementById('train-progress'),
+      bar=document.getElementById('train-progress-bar'), log=document.getElementById('train-log');
+    if(!ph) return;
+    ph.textContent = d.phase || 'idle';
+    if(st) st.textContent = d.step ? `paso ${d.step}${d.max_steps?`/${d.max_steps}`:''} · época ${d.epoch??'—'}` : 'en espera 00:00';
+    if(loss) loss.textContent = d.loss!=null ? `loss ${Number(d.loss).toFixed(4)}` : '';
+    if(ds) ds.textContent = `dataset ${(d.dataset_train||0).toLocaleString()} train / ${(d.dataset_val||0).toLocaleString()} val`;
+    if(base) base.textContent = d.base_downloaded ? 'base Phi-reasoning ✓' : 'base descargando…';
+    if(d.max_steps && d.step && prog && bar){ prog.style.display=''; bar.style.width=`${Math.min(100,(d.step/d.max_steps)*100)}%`; }
+    else if(prog) prog.style.display='none';
+    if(log && d.log_tail) log.textContent = d.log_tail.join('\n');
+  }
   async refresh() {
     const t0 = Date.now();
     const [overview, cpu, mem, specs, logs, health, status] = await Promise.all([
@@ -286,6 +301,7 @@ class App {
       if (sdSpark && pct != null) this.pushSpark('disk', 100-pct, 'sys-disk-spark');
     }
     this.updateWikiBar();
+    this.fetchJSON(`${this.apiBase}/training/status`).then(d => { if (d) this.updateTrainPanel(d); });
 
     // statusbar + refresh indicator
     const ok = overview && health;
