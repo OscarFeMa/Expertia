@@ -49,6 +49,7 @@ class App {
     if (e.key === 'F1') { e.preventDefault(); this.switchTab('fleet'); }
     else if (e.key === 'F2') { e.preventDefault(); this.switchTab('metrics'); }
     else if (e.key === 'F3') { e.preventDefault(); this.switchTab('activity'); }
+    else if (e.key === 'F4') { e.preventDefault(); this.switchTab('training'); }
     else if (e.key === 'r' || e.key === 'R') { this.refresh(); }
     else if (e.key === 't' || e.key === 'T') { this.toggleTheme(); }
     else if (e.key === '?' || (e.key === '/' && e.shiftKey)) { e.preventDefault(); this.toggleHelp(); }
@@ -226,18 +227,35 @@ class App {
   }
   updateTrainPanel(d){
     const ph=document.getElementById('train-phase'), st=document.getElementById('train-step'),
-      loss=document.getElementById('train-loss'), ds=document.getElementById('train-ds'),
-      base=document.getElementById('train-base'), prog=document.getElementById('train-progress'),
+      loss=document.getElementById('train-loss'), lr=document.getElementById('train-lr'),
+      spm=document.getElementById('train-spm'), tm=document.getElementById('train-time'),
+      ds=document.getElementById('train-ds'), base=document.getElementById('train-base'),
+      ad=document.getElementById('train-adapter'), prog=document.getElementById('train-progress'),
       bar=document.getElementById('train-progress-bar'), log=document.getElementById('train-log');
     if(!ph) return;
     ph.textContent = d.phase || 'idle';
-    if(st) st.textContent = d.step ? `paso ${d.step}${d.max_steps?`/${d.max_steps}`:''} · época ${d.epoch??'—'}` : 'en espera 00:00';
-    if(loss) loss.textContent = d.loss!=null ? `loss ${Number(d.loss).toFixed(4)}` : '';
-    if(ds) ds.textContent = `dataset ${(d.dataset_train||0).toLocaleString()} train / ${(d.dataset_val||0).toLocaleString()} val`;
-    if(base) base.textContent = d.base_downloaded ? 'base Phi-reasoning ✓' : 'base descargando…';
+    if(st) st.textContent = d.step ? `${d.step}${d.max_steps?` / ${d.max_steps}`:''} · ep ${d.epoch??'—'}` : 'en espera';
+    if(loss) loss.textContent = d.loss!=null ? Number(d.loss).toFixed(4) : '—';
+    if(lr) lr.textContent = d.lr!=null ? Number(d.lr).toExponential(1) : '—';
+    if(spm) spm.textContent = d.steps_per_min!=null ? d.steps_per_min : '—';
+    if(tm) tm.textContent = d.elapsed_s!=null ? `${Math.floor(d.elapsed_s/60)}m ${d.elapsed_s%60}s` : '—';
+    if(ds) ds.textContent = `${(d.dataset_train||0).toLocaleString()} / ${(d.dataset_val||0).toLocaleString()}`;
+    if(base) base.textContent = d.base_downloaded ? 'Phi-reasoning ✓' : 'descargando…';
+    if(ad) ad.textContent = d.adapter || 'r16 · seq1024';
     if(d.max_steps && d.step && prog && bar){ prog.style.display=''; bar.style.width=`${Math.min(100,(d.step/d.max_steps)*100)}%`; }
-    else if(prog) prog.style.display='none';
+    else if(prog) prog.style.display = (d.phase==='training') ? '' : 'none';
+    if(d.loss_history) this.drawTrainLoss(d.loss_history);
     if(log && d.log_tail) log.textContent = d.log_tail.join('\n');
+  }
+  drawTrainLoss(hist){
+    const cv=document.getElementById('chart-train-loss'); if(!cv || !hist.length) return;
+    const ctx=cv.getContext('2d'), W=cv.width=cv.offsetWidth||600, H=cv.height=120;
+    const ls=hist.map(h=>h.loss), mn=Math.min(...ls), mx=Math.max(...ls), rg=(mx-mn)||1;
+    ctx.clearRect(0,0,W,H);
+    const st=getComputedStyle(document.documentElement);
+    ctx.strokeStyle=st.getPropertyValue('--accent')||'#7aa2f7'; ctx.lineWidth=2; ctx.beginPath();
+    hist.forEach((h,i)=>{ const x=(i/(hist.length-1||1))*W, y=H-8-((h.loss-mn)/rg)*(H-16); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+    ctx.stroke();
   }
   async refresh() {
     const t0 = Date.now();

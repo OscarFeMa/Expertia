@@ -870,7 +870,7 @@ def get_pipeline_pid():
 @router.get("/training/status")
 def training_status():
     base = Path("D:/proyectos/expertia/training")
-    out = {"phase": "idle", "step": 0, "loss": None, "dataset_train": 0, "dataset_val": 0, "base_downloaded": False, "log_tail": []}
+    out = {"phase": "idle", "step": 0, "loss": None, "dataset_train": 0, "dataset_val": 0, "base_downloaded": False, "log_tail": [], "adapter": "r16 · seq1024 · Phi-reasoning"}
     try:
         sf = base / "logs" / "train_status.json"
         if sf.exists():
@@ -882,6 +882,13 @@ def training_status():
                 with open(p, "rb") as f:
                     out[key] = sum(1 for _ in f)
         out["base_downloaded"] = (base / "base" / "phi-4-mini-reasoning" / "config.json").exists()
+        if out["dataset_train"]:
+            out["max_steps"] = int(out["dataset_train"] / 16 * 3)
+        ad = base / "adapters" / "expertia-math-r16"
+        if ad.exists():
+            ckpts = sorted([p.name for p in ad.glob("checkpoint-*")])
+            if ckpts:
+                out["adapter"] = f"r16 · {ckpts[-1]}"
         logs = sorted((base / "logs").glob("train_*.log")) if (base / "logs").exists() else []
         if logs:
             lines = logs[-1].read_text(encoding="utf-8", errors="ignore").splitlines()[-15:]

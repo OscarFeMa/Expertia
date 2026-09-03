@@ -5,4 +5,13 @@ Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.Co
   taskkill /F /T /PID $_.ProcessId 2>&1 | Out-Null
 }
 Start-Sleep -Seconds 3
-& $py (Join-Path $repo "tools\launcher.py") --mode web --parallel 2 --with-watchdog --api
+$apiUp = $false
+try {
+  $r = Invoke-RestMethod -Uri "http://localhost:8011/api/health" -TimeoutSec 8
+  if ($r) { $apiUp = $true }
+} catch { $apiUp = $false }
+if ($apiUp) {
+  & $py (Join-Path $repo "tools\launcher.py") --mode web --parallel 2 --with-watchdog
+} else {
+  & $py (Join-Path $repo "tools\launcher.py") --mode web --parallel 2 --with-watchdog --api
+}
