@@ -339,6 +339,8 @@ class App {
     this.rawSpecs = specs?.specialists || [];
     this.rawHealth = health;
     this._logs = logs?.logs || [];
+    this._activeSpec = status?.current_specialist || overview?.current_specialist || '';
+    this._pipeActive = (status?.status || overview?.status || '').toUpperCase() === 'ACTIVE';
     this.updatePill(overview, status);
     this.render();
 
@@ -572,7 +574,9 @@ class App {
       const racha = s.racha_25 || 0;
       const rachaPct = Math.round(racha * 100);
       const status = (s.status || 'idle').toLowerCase();
-      const isActive = status === 'active' || status === 'mining' || status === 'absorbing';
+      const liveActive = !!(this._pipeActive && this._activeSpec && s.domain === this._activeSpec);
+      const isActive = status === 'active' || status === 'mining' || status === 'absorbing' || liveActive;
+      const statusLbl = liveActive ? 'activo' : status;
       const failRate = s.fail_rate != null ? (s.fail_rate * 100).toFixed(1) + '%' : '—';
       // ETA from insights
       let etaTxt = '—';
@@ -598,7 +602,7 @@ class App {
         <td class="num"><span class="racha-bar"><span class="racha-bar-fill" style="width:${rachaPct}%"></span></span><span class="racha-pct">${rachaPct}%</span></td>
         <td class="num">${(s.packages_absorbed || 0).toLocaleString()}</td>
         <td class="num">${(s.total_cycles || 0).toLocaleString()}</td>
-        <td><span class="status-dot ${isActive ? 'active' : status === 'error' ? 'error' : 'idle'}"></span><span class="status-label">${status}</span></td>
+        <td><span class="status-dot ${isActive ? 'active' : status === 'error' ? 'error' : 'idle'}"></span><span class="status-label">${statusLbl}</span></td>
       </tr>`;
     }).join('');
   }
