@@ -12,11 +12,12 @@ if errorlevel 1 echo AVISO sshd parado, intentando arrancar & net start sshd >> 
 echo [2/6] usuario
 net user expertia >nul 2>&1
 if not errorlevel 1 echo Y | net user expertia /delete >> "%OUT%" 2>&1
-set "PW=Ex%RANDOM%%RANDOM%%RANDOM%%TIME:~6,2%"
+set "PW=Ex%RANDOM%%TIME:~6,2%"
 set "PW=!PW: =0!"
 set "PW=!PW::=0!"
 set "PW=!PW:.=0!"
 set "PW=!PW:,=0!"
+set "PW=!PW:~0,12!"
 net user expertia "!PW!" /add /expires:never /passwordchg:no >> "%OUT%" 2>&1
 if errorlevel 1 echo FALLO crear usuario & set "OK=0" & goto fin
 net user expertia | findstr /i "Activo.*S" >nul
