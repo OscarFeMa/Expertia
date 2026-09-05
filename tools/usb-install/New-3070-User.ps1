@@ -4,7 +4,7 @@ $log = @()
 try {
   $chars = (48..57) + (65..90) + (97..122)
   $pw = -join ($chars | Get-Random -Count 24 | ForEach-Object { [char]$_ })
-  net user expertia /delete 2>$null | Out-Null
+  try { net user expertia /delete 2>$null | Out-Null } catch {}
   net user expertia $pw /add /expires:never /passwordchg:no | Out-Null
   Set-LocalUser -Name expertia -PasswordNeverExpires $true -UserMayChangePassword $false
   $log += "usuario expertia creado"
