@@ -889,6 +889,7 @@ def training_status():
                 rep["dataset_train"] = rep.get("dataset_train", 45000)
                 rep["dataset_val"] = rep.get("dataset_val", 5000)
                 rep["adapter"] = "r16 · seq2048 · Phi-reasoning · 3070"
+                rep["base_downloaded"] = True
                 return rep
     except Exception:
         pass
@@ -903,7 +904,13 @@ def training_status():
             if p.exists():
                 with open(p, "rb") as f:
                     out[key] = sum(1 for _ in f)
-        out["base_downloaded"] = (base / "base" / "phi-4-mini-reasoning" / "config.json").exists()
+        _bd = base / "base" / "phi-4-mini-reasoning"
+        if not _bd.exists():
+            for _c in (base / "base").glob("*reasoning*") if (base / "base").exists() else []:
+                if (_c / "config.json").exists():
+                    _bd = _c
+                    break
+        out["base_downloaded"] = (_bd / "config.json").exists()
         if out["dataset_train"]:
             out["max_steps"] = int(out["dataset_train"] / 16 * 3)
         ad = base / "adapters" / "expertia-math-r16"
