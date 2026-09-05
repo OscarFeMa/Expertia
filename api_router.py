@@ -870,6 +870,28 @@ def get_pipeline_pid():
 @router.get("/training/status")
 def training_status():
     base = Path("D:/proyectos/expertia/training")
+    inc = base / "incoming_3070"
+    try:
+        sf_inc = inc / "train_status.json"
+        if sf_inc.exists():
+            import time as _t
+            if _t.time() - sf_inc.stat().st_mtime < 1200:
+                rep = json.loads(sf_inc.read_text(encoding="utf-8"))
+                rep["origen"] = "3070"
+                try:
+                    extra = json.loads((inc / "remote_extra.json").read_text(encoding="utf-8"))
+                    rep["log_tail"] = extra.get("log_tail", [])
+                    rep["log_file"] = extra.get("log_file")
+                    rep["checkpoints"] = extra.get("checkpoints", [])
+                    rep["gpu"] = extra.get("gpu")
+                except Exception:
+                    pass
+                rep["dataset_train"] = rep.get("dataset_train", 45000)
+                rep["dataset_val"] = rep.get("dataset_val", 5000)
+                rep["adapter"] = "r16 · seq2048 · Phi-reasoning · 3070"
+                return rep
+    except Exception:
+        pass
     out = {"phase": "idle", "step": 0, "loss": None, "dataset_train": 0, "dataset_val": 0, "base_downloaded": False, "log_tail": [], "adapter": "r16 · seq1024 · Phi-reasoning"}
     try:
         sf = base / "logs" / "train_status.json"
