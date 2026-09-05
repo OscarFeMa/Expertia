@@ -9,7 +9,7 @@ try {
   $chars = (48..57) + (65..90) + (97..122)
   $pw = -join ($chars | Get-Random -Count 24 | ForEach-Object { [char]$_ })
   Step "borrando previo"
-  try { net user expertia /delete 2>$null | Out-Null } catch {}
+  try { echo Y | net user expertia /delete 2>$null | Out-Null } catch {}
   Step "creando usuario"
   net user expertia $pw /add /expires:never /passwordchg:no | Out-Null
   Step "flags usuario"
