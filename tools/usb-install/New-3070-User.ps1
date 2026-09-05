@@ -1,5 +1,6 @@
-$Out = Join-Path (Split-Path -Parent $PSCommandPath) "new-user-3070.txt"
-$Log = Join-Path (Split-Path -Parent $PSCommandPath) "new-user-3070.log"
+$Base = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+$Out = Join-Path $Base "new-user-3070.txt"
+$Log = Join-Path $Base "new-user-3070.log"
 function Step($m) { Add-Content $Log "$(Get-Date -Format 'HH:mm:ss') $m" }
 Step "inicio"
 $log = @()
