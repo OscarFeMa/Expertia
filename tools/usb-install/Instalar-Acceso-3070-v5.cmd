@@ -1,0 +1,53 @@
+@echo off
+setlocal
+cd /d "%~dp0"
+set "LOG=%TEMP%\expertia-acceso-3070-v5.log"
+echo [%date% %time%] Acceso Expertia 3070 v5 offline > "%LOG%"
+net session >nul 2>&1
+if errorlevel 1 echo EJECUTE COMO ADMINISTRADOR (clic derecho) & pause & exit /b 1
+set "ZIP=%~dp0payload\redist\OpenSSH-Win64.zip"
+if not exist "%ZIP%" set "ZIP=%~dp0OpenSSH-Win64.zip"
+if not exist "%ZIP%" echo FALTA OpenSSH-Win64.zip junto a este .cmd & pause & exit /b 1
+set "SSHD=C:\Program Files\OpenSSH"
+
+echo [0/7] Runtime Visual C++ (sshd lo exige) ...
+set "VC=%~dp0payload\redist\vc_redist.x64.exe"
+if not exist "%VC%" set "VC=%~dp0vc_redist.x64.exe"
+if exist "%VC%" "%VC%" /quiet /norestart >> "%LOG%" 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try{[void](Get-Item 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'); 'vcredist OK'}catch{'vcredist NO detectado'}" >> "%LOG%" 2>&1
+echo      OK
+
+echo [1/7] Limpieza de restos anteriores ...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Stop-Service sshd,ssh-agent -Force -ErrorAction SilentlyContinue; sc.exe delete sshd | Out-Null; sc.exe delete ssh-agent | Out-Null; Start-Sleep 2; 'servicios eliminados'" >> "%LOG%" 2>&1
+
+echo [2/7] Extraccion limpia a ruta final ...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "if(Test-Path 'C:\Program Files\OpenSSH-Win64'){Remove-Item 'C:\Program Files\OpenSSH-Win64' -Recurse -Force}; if(Test-Path 'C:\Program Files\OpenSSH'){Remove-Item 'C:\Program Files\OpenSSH' -Recurse -Force}; Expand-Archive -Path '%ZIP%' -DestinationPath 'C:\Program Files\OpenSSH-TMP' -Force; Move-Item 'C:\Program Files\OpenSSH-TMP\OpenSSH-Win64' 'C:\Program Files\OpenSSH'; Remove-Item 'C:\Program Files\OpenSSH-TMP' -Recurse -Force -ErrorAction SilentlyContinue; Test-Path 'C:\Program Files\OpenSSH\sshd.exe'" >> "%LOG%" 2>&1
+if not exist "C:\Program Files\OpenSSH\sshd.exe" echo FALLO extraccion, revise "%LOG%" & pause & exit /b 1
+echo      OK
+
+echo [3/7] Registro de servicios + host keys ...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\Program Files\OpenSSH\install-sshd.ps1'; & 'C:\Program Files\OpenSSH\ssh-keygen.exe' -A; Write-Output '--- sshd -t ---'; & 'C:\Program Files\OpenSSH\sshd.exe' -t; Write-Output ('sshd-t exit='+$LASTEXITCODE)" >> "%LOG%" 2>&1
+
+echo [4/7] Arranque sshd ...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Service sshd; Set-Service -Name sshd -StartupType 'Automatic'; Start-Service ssh-agent -ErrorAction SilentlyContinue; Set-Service -Name ssh-agent -StartupType 'Automatic' -ErrorAction SilentlyContinue; (Get-Service sshd).Status" >> "%LOG%" 2>&1
+
+echo [5/7] Firewall + shell + clave ...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$r=Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue; if(-not $r){New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -RemoteAddress 192.168.1.0/24 | Out-Null}else{Set-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -RemoteAddress 192.168.1.0/24}" >> "%LOG%" 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "New-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell -Value 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -PropertyType String -Force | Out-Null; New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name LocalAccountTokenFilterPolicy -Value 1 -PropertyType DWord -Force | Out-Null; Restart-Service sshd; Start-Sleep 2" >> "%LOG%" 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$k='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGogcxnaZ3xhz8B3KP9offEsipuuUCzS0KsTMhzaDztY expertia-sobremesa'; $f=\"$env:ProgramData\ssh\administrators_authorized_keys\"; $c=if(Test-Path $f){Get-Content $f -Raw}else{''}; if($c -notmatch 'expertia-sobremesa'){Add-Content -Force -Path $f -Value $k}; icacls.exe $f /inheritance:r /grant '*S-1-5-32-544:F' /grant 'SYSTEM:F' | Out-Null; 'authkeys lineas='+((Get-Content $f|Measure-Object -Line).Lines)" >> "%LOG%" 2>&1
+
+echo [6/7] Verificando puerto 22 ...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ok=$false; for($i=0;$i -lt 6;$i++){if(Get-NetTCPConnection -LocalPort 22 -State Listen -ErrorAction SilentlyContinue){$ok=$true;break}; Start-Sleep 5}; if(-not $ok){exit 1}" >nul 2>&1
+if errorlevel 1 echo FALLO: 22 no escucha, revise "%LOG%" & pause & exit /b 1
+echo      OK puerto 22 escuchando
+
+echo [7/7] Share de estado (opcional, 2 min max) ...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$j=Start-Job -ScriptBlock { New-Item -ItemType Directory -Path C:\training\out-share -Force | Out-Null }; if(Wait-Job $j -Timeout 120){'share-dir OK'}else{'share TIMEOUT, omitido'}; Remove-Job $j -Force -ErrorAction SilentlyContinue" >> "%LOG%" 2>&1
+
+echo.
+echo ACCESO SSH LISTO:
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ips=(Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.AddressState -eq 'Preferred' -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*'} | ForEach-Object {$_.IPAddress}); Write-Host ('  SSH: '+$env:USERNAME+'@'+($ips|Select-Object -First 1))"
+echo Copie %LOG% al USB como prueba.
+echo.
+pause
+endlocal
