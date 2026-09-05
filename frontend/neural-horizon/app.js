@@ -278,6 +278,8 @@ class App {
   }
   drawTrainLoss(hist){
     const cv=document.getElementById('chart-train-loss'); if(!cv) return;
+    cv.style.setProperty('flex','none','important');
+    cv.style.setProperty('min-height','0','important');
     const box=cv.parentElement, cssW=Math.max(300,box?.clientWidth||600), H=220;
     const dpr=Math.min(2,window.devicePixelRatio||1);
     cv.style.width='100%'; cv.style.height=H+'px';
