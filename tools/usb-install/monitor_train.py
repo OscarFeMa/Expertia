@@ -4,7 +4,12 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+_HERE = Path(__file__).resolve().parent
+ROOT = _HERE.parent if (_HERE.parent / "logs").exists() else _HERE
+if not (ROOT / "logs").exists():
+    _ALT = Path(r"C:\training")
+    if (_ALT / "logs").exists():
+        ROOT = _ALT
 LOGS = ROOT / "logs"
 DATASETS = ROOT / "datasets"
 ADAPTERS = ROOT / "adapters" / "expertia-math-r16"
