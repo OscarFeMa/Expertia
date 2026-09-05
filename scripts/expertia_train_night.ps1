@@ -35,4 +35,4 @@ if (-not (Test-Path (Join-Path $baseLocal "config.json"))) { $modelArg = "micros
 $logDir = Join-Path $trainRoot "logs"
 $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $logFile = Join-Path $logDir "train_$stamp.log"
-& $trainPy (Join-Path $trainRoot "train_expertia_math.py") --model $modelArg --train $dataset --out (Join-Path $trainRoot "adapters\expertia-math-r16") --offload (Join-Path $trainRoot "offload") --epochs 3 --seq-len 1024 --batch 1 --accum 16 > $logFile 2>&1
+& $trainPy (Join-Path $trainRoot "train_expertia_math.py") --model $modelArg --train $dataset --out (Join-Path $trainRoot "adapters\expertia-math-r16") --offload (Join-Path $trainRoot "offload") --epochs 3 --seq-len 1024 --batch 1 --accum 16 --save-steps 200 > $logFile 2>&1
