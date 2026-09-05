@@ -129,6 +129,13 @@ class App {
         this.fetchJSON(`${this.apiBase}/training/status`).then(d => { if (d) this.updateTrainPanel(d); });
       });
     }
+    if (name === 'training' && !this._trainResize) {
+      this._trainResize = true;
+      window.addEventListener('resize', () => {
+        if (this.tab !== 'training') return;
+        this.fetchJSON(`${this.apiBase}/training/status`).then(d => { if (d?.loss_history) this.drawTrainLoss(d.loss_history); });
+      });
+    }
   }
 
   startPolling() {
@@ -246,10 +253,13 @@ class App {
     if(ds) ds.textContent = `${(d.dataset_train||0).toLocaleString()} / ${(d.dataset_val||0).toLocaleString()}`;
     if(base) base.textContent = d.base_downloaded ? 'Phi-reasoning ✓' : 'descargando…';
     if(ad) ad.textContent = d.adapter || 'r16 · seq1024';
-    if(d.max_steps && d.step && prog && bar){ prog.style.display=''; bar.style.width=`${Math.min(100,(d.step/d.max_steps)*100)}%`; }
-    else if(prog) prog.style.display = (d.phase==='training') ? '' : 'none';
     if(d.loss_history) this.drawTrainLoss(d.loss_history);
-    if(log && d.log_tail) log.textContent = d.log_tail.join('\n');
+    if(log) log.textContent = (d.log_tail && d.log_tail.length) ? d.log_tail.join('\n') : 'sin salida reciente del worker — el entreno sigue corriendo en el 3070';
+    if(prog && bar){
+      if(d.max_steps && d.step){ prog.style.display=''; bar.style.opacity='1'; bar.style.width=`${Math.min(100,(d.step/d.max_steps)*100)}%`; }
+      else if(d.phase==='training'){ prog.style.display=''; bar.style.width='100%'; bar.style.opacity='.35'; }
+      else prog.style.display='none';
+    }
   }
   updateReports(d){
     const el=document.getElementById('reports-list'); if(!el) return;
@@ -257,26 +267,42 @@ class App {
     if(!reps.length){ el.textContent='sin informes todavía — se generan al cierre de cada ciclo de 12h'; return; }
     el.innerHTML=reps.map(r=>{
       const s=r.summary||{};
+      let when=r.ts||'';
+      try{ const dt=new Date(r.ts); if(!isNaN(dt)) when=dt.toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}); }catch(e){}
+      const badge=r.kind==='web'?'WEB':'ENTRENO';
       const det=r.kind==='web'
-        ? `ciclos ${s.ciclos??s.cycles??'—'} · q ${s.avg_quality??'—'} · +${s.new_packages??'?'} pkgs`
-        : `paso ${s.step??'—'} · loss ${s.loss_last??'—'} · ${s.phase??''}`;
-      return `<div style="padding:6px 0; border-bottom:1px solid var(--border);"><b style="color:var(--text)">${r.kind}</b> · ${r.ts||''}<br><span>${det}</span> <span style="color:var(--text-faint)">(${r.file})</span></div>`;
+        ? `ciclos ${s.ciclos??s.cycles??'—'} · q ${s.avg_quality??'—'} · ${s.new_packages!=null?('+'+s.new_packages+' pkgs'):'pkgs —'}` 
+        : `paso ${s.step??'—'} · loss ${s.loss_last!=null?Number(s.loss_last).toFixed(4):'—'} · ${s.phase??''}`;
+      return `<div style="padding:6px 0; border-bottom:1px solid var(--border);"><b style="color:var(--accent)">${badge}</b> · ${when}<br><span>${det}</span></div>`;
     }).join('');
   }
   drawTrainLoss(hist){
     const cv=document.getElementById('chart-train-loss'); if(!cv) return;
-    const ctx=cv.getContext('2d'), W=cv.width=Math.max(300,cv.parentElement?.clientWidth||600), H=cv.height=220;
-    ctx.clearRect(0,0,W,H);
+    const box=cv.parentElement, cssW=Math.max(300,box?.clientWidth||600), H=220;
+    const dpr=Math.min(2,window.devicePixelRatio||1);
+    cv.style.width='100%'; cv.style.height=H+'px';
+    cv.width=Math.round(cssW*dpr); cv.height=Math.round(H*dpr);
+    const ctx=cv.getContext('2d'); ctx.scale(dpr,dpr);
+    const W=cssW, padL=44, padR=10, padT=22, padB=20, iw=W-padL-padR, ih=H-padT-padB;
     const st=getComputedStyle(document.documentElement);
-    ctx.fillStyle=st.getPropertyValue('--text-mute')||'#888'; ctx.font='11px monospace';
-    if(!hist.length){ ctx.fillText('curva disponible tras los primeros 25 pasos…', 12, 24); return; }
+    const mute=st.getPropertyValue('--text-mute').trim()||'#888';
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle=mute; ctx.font='10px monospace';
+    if(!hist.length){ ctx.fillText('curva disponible tras los primeros pasos…', padL+4, 24); return; }
     const ls=hist.map(h=>h.loss), mn=Math.min(...ls), mx=Math.max(...ls), rg=(mx-mn)||1;
-    ctx.strokeStyle=st.getPropertyValue('--border')||'#333'; ctx.lineWidth=1;
-    ctx.beginPath(); ctx.moveTo(0,H-20); ctx.lineTo(W,H-20); ctx.stroke();
-    ctx.strokeStyle=st.getPropertyValue('--accent')||'#7aa2f7'; ctx.lineWidth=2; ctx.beginPath();
-    hist.forEach((h,i)=>{ const x=(i/(hist.length-1||1))*(W-8)+4, y=H-28-((h.loss-mn)/rg)*(H-48); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+    const X=i=>padL+(i/(hist.length-1||1))*iw, Y=v=>padT+ih-((v-mn)/rg)*ih;
+    ctx.strokeStyle=st.getPropertyValue('--border').trim()||'#333'; ctx.lineWidth=1;
+    for(let g=0; g<=4; g++){ const y=padT+ih*g/4; ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(W-padR,y); ctx.stroke();
+      ctx.fillText((mx-rg*g/4).toFixed(2), 4, y+3); }
+    ctx.fillText('paso '+(hist[0].step??0), padL, H-6);
+    ctx.fillText('paso '+(hist[hist.length-1].step??''), Math.max(padL,W-70), H-6);
+    ctx.strokeStyle=st.getPropertyValue('--accent').trim()||'#7aa2f7'; ctx.lineWidth=2; ctx.beginPath();
+    hist.forEach((h,i)=>{ const x=X(i), y=Y(h.loss); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
     ctx.stroke();
-    ctx.fillText(`min ${mn.toFixed(3)} · max ${mx.toFixed(3)} · n=${hist.length}`, 12, 16);
+    ctx.fillStyle=st.getPropertyValue('--accent').trim()||'#7aa2f7';
+    hist.forEach((h,i)=>{ const x=X(i), y=Y(h.loss); ctx.beginPath(); ctx.arc(x,y,2.5,0,7); ctx.fill(); });
+    ctx.fillStyle=mute;
+    ctx.fillText(`min ${mn.toFixed(3)} · max ${mx.toFixed(3)} · n=${hist.length}`, padL, 14);
   }
   async refresh() {
     const t0 = Date.now();
