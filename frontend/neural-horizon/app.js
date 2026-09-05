@@ -293,6 +293,8 @@ class App {
     if(!hist.length){ ctx.fillText('curva disponible tras los primeros pasos…', padL+4, 24); return; }
     const ls=hist.map(h=>h.loss), mn=Math.min(...ls), mx=Math.max(...ls), rg=(mx-mn)||1;
     const X=i=>padL+(i/(hist.length-1||1))*iw, Y=v=>padT+ih-((v-mn)/rg)*ih;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0,0,W,H); ctx.clip();
     ctx.strokeStyle=st.getPropertyValue('--border').trim()||'#333'; ctx.lineWidth=1;
     for(let g=0; g<=4; g++){ const y=padT+ih*g/4; ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(W-padR,y); ctx.stroke();
       ctx.fillText((mx-rg*g/4).toFixed(2), 4, y+3); }
@@ -305,6 +307,7 @@ class App {
     hist.forEach((h,i)=>{ const x=X(i), y=Y(h.loss); ctx.beginPath(); ctx.arc(x,y,2.5,0,7); ctx.fill(); });
     ctx.fillStyle=mute;
     ctx.fillText(`min ${mn.toFixed(3)} · max ${mx.toFixed(3)} · n=${hist.length}`, padL, 14);
+    ctx.restore();
   }
   async refresh() {
     const t0 = Date.now();
