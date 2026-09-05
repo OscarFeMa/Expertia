@@ -10,7 +10,7 @@ if not exist "%ZIP%" set "ZIP=%~dp0OpenSSH-Win64.zip"
 if not exist "%ZIP%" echo FALTA OpenSSH-Win64.zip junto a este .cmd & pause & exit /b 1
 
 echo [1/6] Extrayendo OpenSSH portable ...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "if(Test-Path 'C:\Program Files\OpenSSH\sshd.exe'){Write-Output 'ya instalado'}else{Expand-Archive -Path '%ZIP%' -DestinationPath 'C:\Program Files' -Force; powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\Program Files\OpenSSH-Win64\install-sshd.ps1'; Move-Item 'C:\Program Files\OpenSSH-Win64\*' 'C:\Program Files\OpenSSH\' -Force -ErrorAction SilentlyContinue}" >> "%LOG%" 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "if(Test-Path 'C:\Program Files\OpenSSH\sshd.exe'){Write-Output 'ya instalado'}else{if(Test-Path 'C:\Program Files\OpenSSH-Win64\sshd.exe'){Rename-Item 'C:\Program Files\OpenSSH-Win64' 'C:\Program Files\OpenSSH'}else{Expand-Archive -Path '%ZIP%' -DestinationPath 'C:\Program Files\OpenSSH-TMP' -Force; Move-Item 'C:\Program Files\OpenSSH-TMP\OpenSSH-Win64' 'C:\Program Files\OpenSSH'}; powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\Program Files\OpenSSH\install-sshd.ps1'; Remove-Item 'C:\Program Files\OpenSSH-TMP' -Recurse -Force -ErrorAction SilentlyContinue}" >> "%LOG%" 2>&1
 if not exist "C:\Program Files\OpenSSH\sshd.exe" echo FALLO extraccion, revise "%LOG%" & pause & exit /b 1
 echo      OK
 
