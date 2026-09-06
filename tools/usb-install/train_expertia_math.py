@@ -17,6 +17,13 @@ class StatusCallback(TrainerCallback):
     def __init__(self):
         self.t0 = time.time()
         self.history = []
+        try:
+            if STATUS_FILE.exists():
+                old = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+                if isinstance(old.get("loss_history"), list):
+                    self.history = old["loss_history"][-120:]
+        except Exception:
+            pass
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         try:
