@@ -236,39 +236,83 @@ class App {
     else this.toast('Error', r?.detail || 'No se pudo iniciar Wiki feed', 'error');
     this.updateWikiBar();
   }
+  _fmtDur(s){
+    if(s==null||!isFinite(s)||s<0) return '—';
+    s=Math.round(s); const h=Math.floor(s/3600), m=Math.floor(s%3600/60);
+    return h?`${h}h ${m}m`:(m?`${m}m ${s%60}s`:`${s}s`);
+  }
+  _trainRate(hist){
+    const pts=(hist||[]).filter(h=>h.ts!=null);
+    if(pts.length<2) return null;
+    const a=pts[Math.max(0,pts.length-6)], b=pts[pts.length-1];
+    const dt=(b.ts-a.ts)/60;
+    if(dt<=0) return null;
+    return (b.step-a.step)/dt;
+  }
   updateTrainPanel(d){
-    const ph=document.getElementById('train-phase'), st=document.getElementById('train-step'),
-      loss=document.getElementById('train-loss'), lr=document.getElementById('train-lr'),
-      spm=document.getElementById('train-spm'), tm=document.getElementById('train-time'),
-      ds=document.getElementById('train-ds'), base=document.getElementById('train-base'),
-      ad=document.getElementById('train-adapter'), prog=document.getElementById('train-progress'),
-      bar=document.getElementById('train-progress-bar'), log=document.getElementById('train-log');
-    if(!ph) return;
+    const $=id=>document.getElementById(id);
+    const ph=$('train-phase'); if(!ph) return;
     ph.textContent = d.phase || 'idle';
+    const worker=$('train-worker');
+    if(worker) worker.textContent = d.origen==='3070' ? '◉ RTX 3070' : (d.phase==='training'?'● local':'—');
+    const st=$('train-step');
     if(st) st.textContent = d.step ? `${d.step}${d.max_steps?` / ${d.max_steps}`:''} · ep ${d.epoch??'—'}` : 'en espera';
-    if(loss) loss.textContent = d.loss!=null ? Number(d.loss).toFixed(4) : '—';
-    if(lr) lr.textContent = d.lr!=null ? Number(d.lr).toExponential(1) : '—';
-    if(spm) spm.textContent = d.steps_per_min!=null ? d.steps_per_min : '—';
-    if(tm) tm.textContent = d.elapsed_s!=null ? `${Math.floor(d.elapsed_s/60)}m ${d.elapsed_s%60}s` : '—';
-    if(ds) ds.textContent = `${(d.dataset_train||0).toLocaleString()} / ${(d.dataset_val||0).toLocaleString()}`;
-    if(base) base.textContent = d.base_downloaded ? 'Phi-reasoning ✓' : 'descargando…';
-    if(ad) ad.textContent = d.adapter || 'r16 · seq1024';
-    if(d.loss_history && d.loss_history.length){
-      const lastNew = d.loss_history[d.loss_history.length-1];
-      const prev = this._trainHist || [];
-      if(!prev.length || lastNew.step !== prev[prev.length-1]?.step || lastNew.loss !== prev[prev.length-1]?.loss){
-        this._trainHist = d.loss_history;
-        this._trainView = null;
+    const hist=d.loss_history||[];
+    if(hist.length){
+      const lastNew=hist[hist.length-1], prev=this._trainHist||[];
+      if(!prev.length || lastNew.step!==prev[prev.length-1]?.step || lastNew.loss!==prev[prev.length-1]?.loss){
+        this._trainHist=hist; this._trainView=null;
       }
       this.drawTrainLoss();
-    } else if(!this._trainHist?.length){
-      this.drawTrainLoss();
-    }
-    if(log) log.textContent = (d.log_tail && d.log_tail.length) ? d.log_tail.join('\n') : 'sin salida reciente del worker — el entreno sigue corriendo en el 3070';
-    if(prog && bar){
-      if(d.max_steps && d.step){ prog.style.display=''; bar.style.opacity='1'; bar.style.width=`${Math.min(100,(d.step/d.max_steps)*100)}%`; }
-      else if(d.phase==='training'){ prog.style.display=''; bar.style.width='100%'; bar.style.opacity='.35'; }
+    } else if(!this._trainHist?.length){ this.drawTrainLoss(); }
+    const rate=this._trainRate(this._trainHist);
+    const pct=(d.max_steps&&d.step)?Math.min(100,d.step/d.max_steps*100):null;
+    const set=(id,txt)=>{ const e=$(id); if(e) e.textContent=txt; };
+    set('kpi-prog', pct!=null?pct.toFixed(1)+'%':'—');
+    const pb=$('kpi-prog-bar'); if(pb) pb.style.width=(pct!=null?pct:0)+'%';
+    const prog=$('train-progress'), bar=$('train-progress-bar');
+    if(prog&&bar){
+      if(pct!=null){ prog.style.display=''; bar.style.opacity='1'; bar.style.width=pct+'%'; }
+      else if(d.phase==='training'){ prog.style.display=''; bar.style.opacity='.35'; bar.style.width='100%'; }
       else prog.style.display='none';
+    }
+    let eta='—', etaSub='—';
+    if(d.max_steps&&d.step&&rate&&rate>0){
+      const rem=(d.max_steps-d.step)/rate*60;
+      eta=this._fmtDur(rem); etaSub=`${rate.toFixed(1)} pasos/min · fin aprox.`;
+    } else if(d.phase==='training'){ etaSub='calculando ritmo…'; }
+    set('kpi-eta',eta); set('kpi-eta-sub',etaSub);
+    const losses=this._trainHist.map(h=>h.loss);
+    const lmin=losses.length?Math.min(...losses):null;
+    set('kpi-loss', d.loss!=null?Number(d.loss).toFixed(4):'—');
+    set('kpi-loss-sub', (losses.length>1&&lmin!=null)?`mín ${lmin.toFixed(3)} · −${(100*(losses[0]-d.loss)/losses[0]).toFixed(0)}% desde inicio`:'—');
+    set('train-loss', d.loss!=null?Number(d.loss).toFixed(4):'—');
+    set('kpi-rate', rate!=null?rate.toFixed(1)+'/min':'—');
+    set('kpi-rate-sub', d.elapsed_s!=null?`sesión ${this._fmtDur(d.elapsed_s)}`:'—');
+    const util=d.gpu_util, temp=d.gpu_temp;
+    set('kpi-gpu', util!=null?Math.round(util)+'%':'—');
+    const gbt=$('kpi-gpu-bar'); if(gbt) gbt.style.width=(util!=null?Math.min(100,util):0)+'%';
+    let tcol='var(--text)';
+    if(temp!=null&&temp>=85) tcol='var(--red,#d96a5c)'; else if(temp!=null&&temp>=75) tcol='var(--gold)';
+    const gt=$('kpi-gpu-t'); if(gt){ gt.textContent=temp!=null?temp+'°C':'(sin sonda)'; gt.style.color=tcol; }
+    const mu=d.gpu_mem_used, mf=d.gpu_mem_free;
+    set('kpi-vram', (mu!=null)?`${(mu/1024).toFixed(1)} / ${((mu+mf)/1024).toFixed(1)} GB`:'—');
+    set('kpi-pow', (d.gpu_power!=null)?`${d.gpu_power}W / ${d.gpu_power_limit??'?'}W${temp!=null&&temp>=85?' · ¡REFRIGERAR!':''}`:'—');
+    set('train-lr', d.lr!=null?Number(d.lr).toExponential(1):'—');
+    set('train-time', d.elapsed_s!=null?this._fmtDur(d.elapsed_s):'—');
+    set('train-ds', `${(d.dataset_train||0).toLocaleString()} / ${(d.dataset_val||0).toLocaleString()}`);
+    set('train-clock', d.gpu_clock!=null?Math.round(d.gpu_clock)+' MHz':'—');
+    set('train-base', d.base_downloaded?'Phi-reasoning ✓':'descargando…');
+    set('train-adapter', d.adapter||'r16 · seq2048');
+    set('train-ckpts', (d.checkpoints&&d.checkpoints.length)?d.checkpoints.slice(-3).join(' · '):'ninguno todavía');
+    const log=$('train-log');
+    if(log){
+      const txt=(d.log_tail&&d.log_tail.length)?d.log_tail.join('\n'):'sin salida reciente del worker — el entreno sigue corriendo en el 3070';
+      const auto=document.getElementById('train-autoscroll');
+      const stick=!auto||auto.checked;
+      const nearBottom=log.scrollHeight-log.scrollTop-log.clientHeight<60;
+      log.textContent=txt;
+      if(stick||nearBottom) log.scrollTop=log.scrollHeight;
     }
   }
   updateReports(d){
@@ -291,7 +335,12 @@ class App {
   }
   async openReportsFolder(){
     const r=await this.fetchJSON(`${this.apiBase}/reports/open-folder`,{method:'POST'});
-    if(!(r && r.status==='opened')) this.toast('Error', r?.detail || 'No se pudo abrir la carpeta', 'error');
+    if(r && r.status==='opened') this.toast('Carpeta abierta', r.path+(r.method?` (${r.method})`:''), 'info', 6000);
+    else {
+      const path=(r&&r.path)||'storage\\reports';
+      this.toast('No se pudo abrir solo', `Ruta: ${r?.detail||path}`, 'error', 9000);
+      try{ await navigator.clipboard.writeText(path); }catch(e){}
+    }
   }
   drawTrainLoss(){
     const svg=document.getElementById('chart-train-loss'); if(!svg) return;

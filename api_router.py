@@ -884,6 +884,20 @@ def training_status():
                     rep["log_file"] = extra.get("log_file")
                     rep["checkpoints"] = extra.get("checkpoints", [])
                     rep["gpu"] = extra.get("gpu")
+                    raw = (extra.get("gpu_raw") or "").strip()
+                    if raw:
+                        parts = [p.strip() for p in raw.split(",")]
+                        if len(parts) >= 7:
+                            try:
+                                rep["gpu_temp"] = float(parts[0])
+                                rep["gpu_util"] = float(parts[1])
+                                rep["gpu_mem_used"] = float(parts[2])
+                                rep["gpu_mem_free"] = float(parts[3])
+                                rep["gpu_power"] = float(parts[4])
+                                rep["gpu_power_limit"] = float(parts[5])
+                                rep["gpu_clock"] = float(parts[6])
+                            except Exception:
+                                pass
                 except Exception:
                     pass
                 rep["dataset_train"] = rep.get("dataset_train", 45000)
@@ -962,13 +976,21 @@ def open_reports_folder():
     rd = Path(__file__).parent / "storage" / "reports"
     try:
         rd.mkdir(parents=True, exist_ok=True)
+        method = None
         if os.name == "nt":
-            os.startfile(str(rd))
+            try:
+                os.startfile(str(rd))
+                method = "startfile"
+            except Exception:
+                subprocess.Popen(["explorer.exe", str(rd)],
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                method = "explorer"
         else:
             subprocess.run(["xdg-open", str(rd)], timeout=5)
-        return {"status": "opened", "path": str(rd)}
+            method = "xdg-open"
+        return {"status": "opened", "path": str(rd), "method": method}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)[:200])
+        raise HTTPException(status_code=500, detail=f"{e} | path={rd}"[:300])
 
 
 @router.get("/ollama/models")
