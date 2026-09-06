@@ -265,7 +265,9 @@ class App {
       }
       this.drawTrainLoss();
     } else if(!this._trainHist?.length){ this.drawTrainLoss(); }
-    const rate=this._trainRate(this._trainHist);
+    let rate=this._trainRate(this._trainHist);
+    let rateSrc='historial';
+    if((rate==null||!(rate>0))&&d.steps_per_min>0){ rate=d.steps_per_min; rateSrc='worker'; }
     const pct=(d.max_steps&&d.step)?Math.min(100,d.step/d.max_steps*100):null;
     const set=(id,txt)=>{ const e=$(id); if(e) e.textContent=txt; };
     set('kpi-prog', pct!=null?pct.toFixed(1)+'%':'—');
@@ -279,7 +281,7 @@ class App {
     let eta='—', etaSub='—';
     if(d.max_steps&&d.step&&rate&&rate>0){
       const rem=(d.max_steps-d.step)/rate*60;
-      eta=this._fmtDur(rem); etaSub=`${rate.toFixed(1)} pasos/min · fin aprox.`;
+      eta=this._fmtDur(rem); etaSub=`${rate.toFixed(1)} pasos/min (${rateSrc}) · fin aprox.`;
     } else if(d.phase==='training'){ etaSub='calculando ritmo…'; }
     set('kpi-eta',eta); set('kpi-eta-sub',etaSub);
     const losses=this._trainHist.map(h=>h.loss);
