@@ -267,7 +267,8 @@ class App {
     } else if(!this._trainHist?.length){ this.drawTrainLoss(); }
     let rate=this._trainRate(this._trainHist);
     let rateSrc='historial';
-    if((rate==null||!(rate>0))&&d.steps_per_min>0){ rate=d.steps_per_min; rateSrc='worker'; }
+    if(!(rate>0)&&d.steps_per_min>0){ rate=d.steps_per_min; rateSrc='worker'; }
+    if(!(rate>0)&&d.elapsed_s>120&&d.step>0){ rate=d.step/(d.elapsed_s/60); rateSrc='media sesión'; }
     const pct=(d.max_steps&&d.step)?Math.min(100,d.step/d.max_steps*100):null;
     const set=(id,txt)=>{ const e=$(id); if(e) e.textContent=txt; };
     set('kpi-prog', pct!=null?pct.toFixed(1)+'%':'—');
@@ -309,7 +310,8 @@ class App {
     set('train-ckpts', (d.checkpoints&&d.checkpoints.length)?d.checkpoints.slice(-3).join(' · '):'ninguno todavía');
     const log=$('train-log');
     if(log){
-      const txt=(d.log_tail&&d.log_tail.length)?d.log_tail.join('\n'):'sin salida reciente del worker — el entreno sigue corriendo en el 3070';
+      const lines=(d.log_tail||[]).map(x=>{ if(typeof x==='string') return x; if(x&&typeof x.value==='string') return x.value; try{ return JSON.stringify(x); }catch(e){ return String(x); } }).filter(x=>x&&x.trim());
+      const txt=lines.length?lines.join('\n'):'sin salida reciente del worker — el entreno sigue corriendo en el 3070';
       const auto=document.getElementById('train-autoscroll');
       const stick=!auto||auto.checked;
       const nearBottom=log.scrollHeight-log.scrollTop-log.clientHeight<60;

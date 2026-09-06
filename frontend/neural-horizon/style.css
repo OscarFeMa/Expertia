@@ -63,6 +63,7 @@ body {
 }
 .tab-panel { flex:1; min-height:0; display:none; flex-direction:column; overflow:hidden; }
 .tab-panel.active { display:flex; }
+#tab-training.active { display:block; overflow-y:auto; }
 
 /* ── TOP BAR ─────────────────────────────── */
 .topbar {
