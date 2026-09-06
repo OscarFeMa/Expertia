@@ -21,7 +21,11 @@ class StatusCallback(TrainerCallback):
             if STATUS_FILE.exists():
                 old = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
                 if isinstance(old.get("loss_history"), list):
-                    self.history = old["loss_history"][-120:]
+                    seen = {}
+                    for h in old["loss_history"]:
+                        if isinstance(h, dict) and h.get("step") is not None:
+                            seen[h["step"]] = h
+                    self.history = [seen[k] for k in sorted(seen)][-240:]
         except Exception:
             pass
 
@@ -29,8 +33,8 @@ class StatusCallback(TrainerCallback):
         try:
             STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
             if logs and logs.get("loss") is not None:
-                self.history.append({"step": state.global_step, "loss": round(float(logs["loss"]), 4)})
-                self.history = self.history[-120:]
+                self.history.append({"step": state.global_step, "loss": round(float(logs["loss"]), 4), "ts": time.time()})
+                self.history = self.history[-240:]
             elapsed = int(time.time() - self.t0)
             payload = {
                 "phase": "training",
