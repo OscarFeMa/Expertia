@@ -879,23 +879,19 @@ def training_status():
                 rep = json.loads(sf_inc.read_text(encoding="utf-8"))
                 rep["origen"] = "3070"
                 try:
-                    extra = json.loads((inc / "remote_extra.json").read_text(encoding="utf-8"))
+                    extra = json.loads((inc / "remote_extra.json").read_text(encoding="utf-8-sig"))
                     rep["log_tail"] = extra.get("log_tail", [])
                     rep["log_file"] = extra.get("log_file")
                     rep["checkpoints"] = extra.get("checkpoints", [])
                     rep["gpu"] = extra.get("gpu")
                     raw = (extra.get("gpu_raw") or "").strip()
                     if raw:
-                        parts = [p.strip() for p in raw.split(",")]
-                        if len(parts) >= 7:
+                        parts = [p.strip().rstrip("%").rstrip("W").rstrip("MHz") for p in raw.split(",")]
+                        keys = ("gpu_temp", "gpu_util", "gpu_mem_used", "gpu_mem_free",
+                                "gpu_power", "gpu_power_limit", "gpu_clock")
+                        for k, v in zip(keys, parts):
                             try:
-                                rep["gpu_temp"] = float(parts[0])
-                                rep["gpu_util"] = float(parts[1])
-                                rep["gpu_mem_used"] = float(parts[2])
-                                rep["gpu_mem_free"] = float(parts[3])
-                                rep["gpu_power"] = float(parts[4])
-                                rep["gpu_power_limit"] = float(parts[5])
-                                rep["gpu_clock"] = float(parts[6])
+                                rep[k] = float(v)
                             except Exception:
                                 pass
                 except Exception:
