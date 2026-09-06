@@ -13,8 +13,8 @@ powercfg /change hibernate-timeout-ac 0 >> "%OUT%" 2>&1
 powercfg /change disk-timeout-ac 0 >> "%OUT%" 2>&1
 powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0 >> "%OUT%" 2>&1
 powercfg /setacvalueindex SCHEME_CURRENT SUB_SLEEP STANDBYIDLE 0 >> "%OUT%" 2>&1
-echo [3/5] GPU a 100W (de 115W max, margen termico) >> "%OUT%"
-nvidia-smi -pl 100 >> "%OUT%" 2>&1
+echo [3/5] GPU a 90W (termica, de 115W max) >> "%OUT%"
+nvidia-smi -pl 90 >> "%OUT%" 2>&1
 echo [4/6] relojes persistentes >> "%OUT%"
 nvidia-smi -pm 1 >> "%OUT%" 2>&1
 echo [5/6] estado >> "%OUT%"
