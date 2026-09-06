@@ -30,6 +30,12 @@ try {
     Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') auto-relaunch (stale $([int]$staleMin)min)"
   }
 } catch { }
+$trend = Invoke-Command -Session $S -ScriptBlock {
+  $pys = Get-Process python* -ErrorAction SilentlyContinue | ForEach-Object { [math]::Round($_.WorkingSet64/1GB,2) }
+  $g = try { nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,memory.used --format=csv,noheader,nounits 2>$null } catch { $null }
+  "$(Get-Date -Format 'HH:mm:ss') pyGB=$($pys -join '+') gpu=$g"
+}
+if ($trend) { Add-Content (Join-Path $inc "trend.log") $trend }
 Invoke-Command -Session $S -ScriptBlock {
   $l = Get-ChildItem C:\training\logs\train_*.log | Sort-Object LastWriteTime | Select-Object -Last 1
   $e = Get-ChildItem C:\training\logs\train_*.err.log -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
