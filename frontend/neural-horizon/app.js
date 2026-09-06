@@ -241,22 +241,53 @@ class App {
     s=Math.round(s); const h=Math.floor(s/3600), m=Math.floor(s%3600/60);
     return h?`${h}h ${m}m`:(m?`${m}m ${s%60}s`:`${s}s`);
   }
-  _trainRate(hist){
+  _trainRate(hist,d){
+    const ok=r=>r>0.1&&r<60?r:null;
     const pts=(hist||[]).filter(h=>h.ts!=null);
     if(pts.length>=2){
       const a=pts[Math.max(0,pts.length-6)], b=pts[pts.length-1];
-      const dt=(b.ts-a.ts)/60;
-      if(dt>0.5) return {rate:(b.step-a.step)/dt, src:'historial'};
+      const dt=(b.ts-a.ts)/60, r=dt>0.5?(b.step-a.step)/dt:null;
+      const sane=ok(r);
+      if(sane) return {rate:sane, src:'historial'};
     }
     const now=Date.now();
     this._rateSamples=(this._rateSamples||[]).filter(s=>now-s.t<15*60*1000);
     const last=this._rateSamples[this._rateSamples.length-1];
-    const cur=(hist&&hist.length)?hist[hist.length-1].step:null;
+    const cur=(hist&&hist.length)?hist[hist.length-1].step:(d&&d.step);
     if(cur!=null&&(!last||cur!==last.step)) this._rateSamples.push({t:now,step:cur});
     const s0=this._rateSamples[0], s1=this._rateSamples[this._rateSamples.length-1];
-    if(s0&&s1&&(s1.t-s0.t)>120000&&(s1.step-s0.step)>0)
-      return {rate:(s1.step-s0.step)/((s1.t-s0.t)/60000), src:'medido'};
+    if(s0&&s1&&(s1.t-s0.t)>=60000&&(s1.step-s0.step)>0){
+      const r=ok((s1.step-s0.step)/((s1.t-s0.t)/60000));
+      if(r) return {rate:r, src:'medido'};
+    }
+    if(d&&d.steps_per_min>0.1&&d.steps_per_min<60&&d.elapsed_s>600)
+      return {rate:d.steps_per_min, src:'worker'};
     return null;
+  }
+  _lossAnchor(hist){
+    try{
+      const raw=localStorage.getItem('expertia-loss-init');
+      if(raw){ const a=JSON.parse(raw); if(a&&a.loss>0) return a; }
+    }catch(e){}
+    if(hist&&hist.length){
+      const a={loss:hist[0].loss, step:hist[0].step};
+      try{ localStorage.setItem('expertia-loss-init', JSON.stringify(a)); }catch(e){}
+      return a;
+    }
+    return null;
+  }
+  _totalElapsed(d){
+    try{
+      const key='expertia-elapsed-acc';
+      const prev=Number(localStorage.getItem(key)||0);
+      const cur=d&&d.elapsed_s||0;
+      const last=Number(localStorage.getItem('expertia-elapsed-last')||0);
+      let acc=prev;
+      if(cur<last) acc=prev+last;
+      localStorage.setItem('expertia-elapsed-acc', String(acc));
+      localStorage.setItem('expertia-elapsed-last', String(cur));
+      return acc+cur;
+    }catch(e){ return d&&d.elapsed_s; }
   }
   updateTrainPanel(d){
     const $=id=>document.getElementById(id);
@@ -274,9 +305,9 @@ class App {
       }
       this.drawTrainLoss();
     } else if(!this._trainHist?.length){ this.drawTrainLoss(); }
-    let rr=this._trainRate(this._trainHist);
+    let rr=this._trainRate(this._trainHist,d);
     let rate=rr?.rate, rateSrc=rr?.src||'';
-    if(!(rate>0)&&d.steps_per_min>0&&d.elapsed_s>600){ rate=d.steps_per_min; rateSrc='worker'; }
+    const anchor=this._lossAnchor(this._trainHist);
     const pct=(d.max_steps&&d.step)?Math.min(100,d.step/d.max_steps*100):null;
     const set=(id,txt)=>{ const e=$(id); if(e) e.textContent=txt; };
     set('kpi-prog', pct!=null?pct.toFixed(1)+'%':'—');
@@ -296,10 +327,10 @@ class App {
     const losses=this._trainHist.map(h=>h.loss);
     const lmin=losses.length?Math.min(...losses):null;
     set('kpi-loss', d.loss!=null?Number(d.loss).toFixed(4):'—');
-    set('kpi-loss-sub', (losses.length>1&&lmin!=null)?`mín ${lmin.toFixed(3)} · −${(100*(losses[0]-d.loss)/losses[0]).toFixed(0)}% desde inicio`:'—');
+    set('kpi-loss-sub', (anchor&&d.loss!=null)?`mín ${lmin!=null?lmin.toFixed(3):'—'} · −${(100*(anchor.loss-d.loss)/anchor.loss).toFixed(0)}% desde inicio (paso ${anchor.step})`:'—');
     set('train-loss', d.loss!=null?Number(d.loss).toFixed(4):'—');
     set('kpi-rate', rate!=null?rate.toFixed(1)+'/min':'—');
-    set('kpi-rate-sub', d.elapsed_s!=null?`sesión ${this._fmtDur(d.elapsed_s)}`:'—');
+    set('kpi-rate-sub', `total ${this._fmtDur(this._totalElapsed(d))} · sesión ${this._fmtDur(d.elapsed_s)}`);
     const util=d.gpu_util, temp=d.gpu_temp;
     set('kpi-gpu', util!=null?Math.round(util)+'%':'—');
     const gbt=$('kpi-gpu-bar'); if(gbt) gbt.style.width=(util!=null?Math.min(100,util):0)+'%';
