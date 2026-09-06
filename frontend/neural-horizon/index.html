@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>EXPERTIA · Neural Horizon</title>
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <link rel="stylesheet" href="style.css?v=20">
+  <link rel="stylesheet" href="style.css?v=21">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>◈</text></svg>">
 </head>
 <body>
@@ -120,18 +120,26 @@
     </section>
 
     <!-- ── TAB: ENTRENO ── -->
-    <section class="tab-panel" id="tab-training">
-      <div class="train-hero" style="display:flex; align-items:baseline; gap:12px; padding:4px 4px 12px;">
+    <section class="tab-panel" id="tab-training" style="overflow-y:auto;">
+      <div class="train-hero" style="display:flex; align-items:baseline; gap:12px; padding:4px 4px 12px; flex-wrap:wrap;">
         <h2 style="margin:0; font:700 15px var(--sans); letter-spacing:.06em;">EXPERTIAMATH · ENTRENAMIENTO EN VIVO</h2>
         <span class="sys-val" id="train-phase" style="font:700 11px var(--mono); color:var(--accent); text-transform:uppercase;">idle</span>
         <span id="train-step" style="font:600 12px var(--mono); color:var(--text)">—</span>
-        <span style="margin-left:auto; font:400 10px var(--mono); color:var(--text-faint)">ui-v20</span>
+        <span id="train-worker" style="font:600 10px var(--mono); color:var(--gold); border:1px solid var(--border-hi); border-radius:4px; padding:2px 8px;">—</span>
+        <span style="margin-left:auto; font:400 10px var(--mono); color:var(--text-faint)">ui-v21</span>
       </div>
-      <div class="progress" id="train-progress" style="display:none; height:8px; background:var(--border); border-radius:999px; overflow:hidden; margin-bottom:12px;"><div id="train-progress-bar" style="height:100%; width:0%; background:var(--accent); transition:width .3s"></div></div>
-      <div class="metrics-grid metrics-grid--duo" style="margin-bottom:12px;">
-        <div class="panel panel--large">
+      <div id="train-kpis" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:12px;">
+        <div class="panel" style="padding:10px 12px;"><div style="font:500 10px var(--mono); color:var(--text-mute)">PROGRESO</div><div id="kpi-prog" style="font:700 20px var(--mono); color:var(--accent)">—</div><div class="progress" style="height:5px; background:var(--border); border-radius:99px; overflow:hidden; margin-top:6px;"><div id="kpi-prog-bar" style="height:100%; width:0%; background:var(--accent);"></div></div></div>
+        <div class="panel" style="padding:10px 12px;"><div style="font:500 10px var(--mono); color:var(--text-mute)">ETA FIN</div><div id="kpi-eta" style="font:700 20px var(--mono); color:var(--text)">—</div><div id="kpi-eta-sub" style="font:400 10px var(--mono); color:var(--text-mute)">—</div></div>
+        <div class="panel" style="padding:10px 12px;"><div style="font:500 10px var(--mono); color:var(--text-mute)">LOSS</div><div id="kpi-loss" style="font:700 20px var(--mono); color:var(--text)">—</div><div id="kpi-loss-sub" style="font:400 10px var(--mono); color:var(--text-mute)">—</div></div>
+        <div class="panel" style="padding:10px 12px;"><div style="font:500 10px var(--mono); color:var(--text-mute)">RITMO REAL</div><div id="kpi-rate" style="font:700 20px var(--mono); color:var(--text)">—</div><div id="kpi-rate-sub" style="font:400 10px var(--mono); color:var(--text-mute)">—</div></div>
+        <div class="panel" style="padding:10px 12px;"><div style="font:500 10px var(--mono); color:var(--text-mute)">GPU <span id="kpi-gpu-t">—</span></div><div id="kpi-gpu" style="font:700 20px var(--mono); color:var(--text)">—</div><div class="progress" style="height:5px; background:var(--border); border-radius:99px; overflow:hidden; margin-top:6px;"><div id="kpi-gpu-bar" style="height:100%; width:0%; background:var(--teal,#4ECDC4);"></div></div></div>
+        <div class="panel" style="padding:10px 12px;"><div style="font:500 10px var(--mono); color:var(--text-mute)">VRAM + POTENCIA</div><div id="kpi-vram" style="font:700 20px var(--mono); color:var(--text)">—</div><div id="kpi-pow" style="font:400 10px var(--mono); color:var(--text-mute)">—</div></div>
+      </div>
+      <div style="display:grid; grid-template-columns:1.6fr 1fr; gap:12px; margin-bottom:12px;" class="train-duo">
+        <div class="panel panel--large" style="min-width:0;">
           <div class="panel-head"><h3>Curva de loss</h3><span class="sys-val" id="train-loss">—</span></div>
-          <div id="train-chart-box" style="height:240px; overflow:hidden;">
+          <div id="train-chart-box" style="height:240px; overflow:hidden; position:relative;">
             <svg id="chart-train-loss" viewBox="0 0 600 240" preserveAspectRatio="none" style="width:100%; height:240px; display:block; cursor:grab;"></svg>
           </div>
           <div style="display:flex; gap:14px; align-items:center; padding-top:8px; font:400 10px var(--mono); color:var(--text-mute); flex-wrap:wrap;">
@@ -140,20 +148,24 @@
             <span style="margin-left:auto">rueda = zoom · arrastrar = desplazar · doble clic = ver todo</span>
           </div>
         </div>
-        <div class="panel">
-          <div class="panel-head"><h3>Estado</h3></div>
+        <div class="panel" style="min-width:0;">
+          <div class="panel-head"><h3>Configuración</h3></div>
           <div id="train-stats" style="display:grid; grid-template-columns:1fr 1fr; gap:10px 16px; padding:4px 0;">
             <div><div style="font:500 10px var(--mono); color:var(--text-mute)">LR</div><div id="train-lr" style="font:600 15px var(--mono); color:var(--text)">—</div></div>
-            <div><div style="font:500 10px var(--mono); color:var(--text-mute)">PASOS/MIN</div><div id="train-spm" style="font:600 15px var(--mono); color:var(--text)">—</div></div>
-            <div><div style="font:500 10px var(--mono); color:var(--text-mute)">TIEMPO</div><div id="train-time" style="font:600 15px var(--mono); color:var(--text)">—</div></div>
+            <div><div style="font:500 10px var(--mono); color:var(--text-mute)">TIEMPO SESIÓN</div><div id="train-time" style="font:600 15px var(--mono); color:var(--text)">—</div></div>
             <div><div style="font:500 10px var(--mono); color:var(--text-mute)">DATASET</div><div id="train-ds" style="font:600 15px var(--mono); color:var(--text)">—</div></div>
+            <div><div style="font:500 10px var(--mono); color:var(--text-mute)">RELOJ GPU</div><div id="train-clock" style="font:600 15px var(--mono); color:var(--text)">—</div></div>
             <div><div style="font:500 10px var(--mono); color:var(--text-mute)">BASE</div><div id="train-base" style="font:600 13px var(--mono); color:var(--text)">—</div></div>
             <div><div style="font:500 10px var(--mono); color:var(--text-mute)">ADAPTER</div><div id="train-adapter" style="font:600 13px var(--mono); color:var(--text)">—</div></div>
           </div>
+          <div style="font:500 10px var(--mono); color:var(--text-mute); margin-top:8px;">CHECKPOINTS</div>
+          <div id="train-ckpts" style="font:400 11px var(--mono); color:var(--text)">—</div>
         </div>
       </div>
       <div class="panel" style="padding:0; overflow:hidden;">
-        <div class="panel-head" style="padding:10px 16px;"><h3>Log en vivo</h3></div>
+        <div class="panel-head" style="padding:10px 16px;"><h3>Log en vivo</h3>
+          <label style="font:400 10px var(--mono); color:var(--text-mute); display:flex; gap:6px; align-items:center;"><input type="checkbox" id="train-autoscroll" checked> auto-scroll</label>
+        </div>
         <div id="train-log" style="font:400 11px var(--mono); color:var(--text-mute); white-space:pre-wrap; max-height:320px; overflow:auto; padding:10px 16px;"></div>
       </div>
       <div class="panel" style="padding:0; overflow:hidden; margin-top:12px;">
@@ -212,7 +224,7 @@
     </div>
   </div>
 
-  <script src="charts.js?v=20"></script>
-  <script src="app.js?v=20"></script>
+  <script src="charts.js?v=21"></script>
+  <script src="app.js?v=21"></script>
 </body>
 </html>
