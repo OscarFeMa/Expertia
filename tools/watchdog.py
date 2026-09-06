@@ -98,26 +98,18 @@ def _get_pipeline_pid() -> int | None:
     if pid and _is_pid_alive(pid):
         return int(pid)
     try:
-        r = subprocess.run(["tasklist", "/FO", "CSV", "/FI", "IMAGENAME eq python.exe"],
-                           capture_output=True, text=True, timeout=10,
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        import csv, io
-        for row in csv.reader(io.StringIO(r.stdout)):
-            if len(row) >= 2 and row[0].strip('"') == "python.exe":
-                pid_candidate = int(row[1].strip('"'))
-                if pid_candidate and _is_pid_alive(pid_candidate):
-                    try:
-                        r2 = subprocess.run(
-                            ["wmic", "process", "where", f"ProcessId={pid_candidate}",
-                             "get", "CommandLine", "/value"],
-                            capture_output=True, text=True, timeout=8,
-                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                        if "orchestrator.py" in r2.stdout and "--phase" in r2.stdout:
-                            return pid_candidate
-                    except Exception:
-                        continue
-    except Exception:
-        pass
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+             "Where-Object { $_.CommandLine -like '*orchestrator.py*' -and $_.CommandLine -like '*--phase*' } | "
+             "Select-Object -ExpandProperty ProcessId"],
+            capture_output=True, text=True, timeout=25,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        for token in r.stdout.replace(",", " ").split():
+            if token.strip().isdigit():
+                return int(token.strip())
+    except Exception as e:
+        logger.warning(f"CIM pid scan failed: {e}")
     return None
 
 
@@ -140,6 +132,27 @@ def _get_max_activity_id() -> int | None:
             return row[0] if row and row[0] else None
     except Exception:
         return None
+
+
+def _pipeline_log_growing(max_age_s: int = 300) -> bool:
+    try:
+        logs = sorted(LOG_DIR.glob("pipeline_*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not logs:
+            return False
+        return (time.time() - logs[0].stat().st_mtime) < max_age_s
+    except Exception:
+        return False
+
+
+def _heal_state_pid(pid: int):
+    try:
+        data = json.loads(PIPELINE_STATE_FILE.read_text())
+        if data.get("pid") != pid:
+            data["pid"] = pid
+            PIPELINE_STATE_FILE.write_text(json.dumps(data, indent=2))
+            logger.info(f"pipeline_state.json pid curado -> {pid} (evita duplicados)")
+    except Exception as e:
+        logger.warning(f"No se pudo curar pipeline_state.json: {e}")
 
 
 def _relaunch_pipeline(state: dict) -> bool:
@@ -238,10 +251,24 @@ def main():
             break
 
         pid = _get_pipeline_pid()
+        if pid:
+            _heal_state_pid(pid)
 
         # ── Crash / proceso muerto: relanzar con la config original ──
         if not pid:
-            logger.warning("Pipeline NOT RUNNING. Relanzando...")
+            logger.warning("Pipeline no detectado. Re-verificando en 30s antes de relanzar...")
+            time.sleep(30)
+            pid = _get_pipeline_pid()
+            if pid:
+                logger.info(f"Falso positivo evitado: pipeline vivo PID={pid}")
+                _heal_state_pid(pid)
+                time.sleep(args.check_interval)
+                continue
+            if _pipeline_log_growing():
+                logger.warning("Falso positivo evitado: log del pipeline avanza aunque el PID no se detecta")
+                time.sleep(args.check_interval)
+                continue
+            logger.warning("Pipeline NOT RUNNING confirmado. Relanzando...")
             restart_attempts = [t for t in restart_attempts if now - t < RESTART_WINDOW]
             if len(restart_attempts) >= RESTART_BURST:
                 logger.error(f"Crash loop ({RESTART_BURST} restarts en {RESTART_WINDOW}s). Abandonando.")
