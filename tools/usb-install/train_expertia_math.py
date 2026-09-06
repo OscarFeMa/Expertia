@@ -17,6 +17,7 @@ class StatusCallback(TrainerCallback):
     def __init__(self):
         self.t0 = time.time()
         self.history = []
+        self.init_step = None
         try:
             if STATUS_FILE.exists():
                 old = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
@@ -32,10 +33,17 @@ class StatusCallback(TrainerCallback):
     def on_log(self, args, state, control, logs=None, **kwargs):
         try:
             STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            if self.init_step is None and state.global_step is not None:
+                self.init_step = state.global_step
             if logs and logs.get("loss") is not None:
                 self.history.append({"step": state.global_step, "loss": round(float(logs["loss"]), 4), "ts": time.time()})
-                self.history = self.history[-240:]
+                seen = {}
+                for h in self.history:
+                    if isinstance(h, dict) and h.get("step") is not None:
+                        seen[h["step"]] = h
+                self.history = [seen[k] for k in sorted(seen)][-240:]
             elapsed = int(time.time() - self.t0)
+            base = self.init_step if self.init_step is not None else 0
             payload = {
                 "phase": "training",
                 "step": state.global_step,
@@ -44,7 +52,7 @@ class StatusCallback(TrainerCallback):
                 "loss": logs.get("loss") if logs else None,
                 "lr": logs.get("learning_rate") if logs else None,
                 "elapsed_s": elapsed,
-                "steps_per_min": round(state.global_step / max(elapsed / 60, 0.01), 2),
+                "steps_per_min": round((state.global_step - base) / max(elapsed / 60, 0.01), 2),
                 "loss_history": self.history,
                 "ts": time.time(),
             }
