@@ -920,7 +920,18 @@ def training_status():
                 out["adapter"] = f"r16 · {ckpts[-1]}"
         logs = sorted((base / "logs").glob("train_*.log")) if (base / "logs").exists() else []
         if logs:
-            lines = logs[-1].read_text(encoding="utf-8", errors="ignore").splitlines()[-15:]
+            raw = logs[-1].read_bytes()
+            text = None
+            for enc in ("utf-8-sig", "utf-16", "utf-8"):
+                try:
+                    text = raw.decode(enc)
+                    break
+                except Exception:
+                    continue
+            if text is None:
+                text = raw.decode("utf-8", errors="ignore")
+            lines = [ln.replace("\x00", "") for ln in text.splitlines()]
+            lines = [ln for ln in lines if ln.strip()][-15:]
             out["log_tail"] = lines
             out["log_file"] = logs[-1].name
     except Exception as e:
