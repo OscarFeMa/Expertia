@@ -133,7 +133,7 @@ class App {
       this._trainResize = true;
       window.addEventListener('resize', () => {
         if (this.tab !== 'training') return;
-        this.fetchJSON(`${this.apiBase}/training/status`).then(d => { if (d?.loss_history) this.drawTrainLoss(d.loss_history); });
+        this.drawTrainLoss();
       });
     }
   }
@@ -253,7 +253,17 @@ class App {
     if(ds) ds.textContent = `${(d.dataset_train||0).toLocaleString()} / ${(d.dataset_val||0).toLocaleString()}`;
     if(base) base.textContent = d.base_downloaded ? 'Phi-reasoning ✓' : 'descargando…';
     if(ad) ad.textContent = d.adapter || 'r16 · seq1024';
-    if(d.loss_history) this.drawTrainLoss(d.loss_history);
+    if(d.loss_history && d.loss_history.length){
+      const lastNew = d.loss_history[d.loss_history.length-1];
+      const prev = this._trainHist || [];
+      if(!prev.length || lastNew.step !== prev[prev.length-1]?.step || lastNew.loss !== prev[prev.length-1]?.loss){
+        this._trainHist = d.loss_history;
+        this._trainView = null;
+      }
+      this.drawTrainLoss();
+    } else if(!this._trainHist?.length){
+      this.drawTrainLoss();
+    }
     if(log) log.textContent = (d.log_tail && d.log_tail.length) ? d.log_tail.join('\n') : 'sin salida reciente del worker — el entreno sigue corriendo en el 3070';
     if(prog && bar){
       if(d.max_steps && d.step){ prog.style.display=''; bar.style.opacity='1'; bar.style.width=`${Math.min(100,(d.step/d.max_steps)*100)}%`; }
@@ -265,49 +275,95 @@ class App {
     const el=document.getElementById('reports-list'); if(!el) return;
     const reps=d.reports||[];
     if(!reps.length){ el.textContent='sin informes todavía — se generan al cierre de cada ciclo de 12h'; return; }
-    el.innerHTML=reps.map(r=>{
+    el.innerHTML=reps.map((r,ix)=>{
       const s=r.summary||{};
       let when=r.ts||'';
       try{ const dt=new Date(r.ts); if(!isNaN(dt)) when=dt.toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}); }catch(e){}
       const badge=r.kind==='web'?'WEB':'ENTRENO';
       const det=r.kind==='web'
-        ? `ciclos ${s.ciclos??s.cycles??'—'} · q ${s.avg_quality??'—'} · ${s.new_packages!=null?('+'+s.new_packages+' pkgs'):'pkgs —'}` 
+        ? `ciclos ${s.ciclos??s.cycles??'—'} · q ${s.avg_quality??'—'} · ${s.new_packages!=null?('+'+s.new_packages+' pkgs'):'pkgs —'}`
         : `paso ${s.step??'—'} · loss ${s.loss_last!=null?Number(s.loss_last).toFixed(4):'—'} · ${s.phase??''}`;
-      return `<div style="padding:6px 0; border-bottom:1px solid var(--border);"><b style="color:var(--accent)">${badge}</b> · ${when}<br><span>${det}</span></div>`;
+      const extra=r.kind==='web'
+        ? `<div>por dominio:</div><div>${(s.per_domain||[]).slice(0,18).map(p=>`${escapeHtml(p.domain)} ${p.cycles}× q${p.avg_quality}`).join(' · ')||'—'}</div><div>actividad: ${escapeHtml(JSON.stringify(s.activity||{}))}</div>`
+        : `<div>checkpoints: ${escapeHtml((s.checkpoints||[]).join(', ')||'ninguno')}</div><div>dataset ${(s.dataset_train||0).toLocaleString()} / ${(s.dataset_val||0).toLocaleString()}</div>`;
+      return `<details style="padding:6px 0; border-bottom:1px solid var(--border);"><summary style="cursor:pointer;"><b style="color:var(--accent)">${badge}</b> · ${when} — ${det}</summary><div style="padding:6px 0 2px 12px; color:var(--text-mute);">${extra}<div style="color:var(--text-faint)">${escapeHtml(r.file||'')}</div></div></details>`;
     }).join('');
   }
-  drawTrainLoss(hist){
-    const cv=document.getElementById('chart-train-loss'); if(!cv) return;
-    cv.style.setProperty('flex','none','important');
-    cv.style.setProperty('min-height','0','important');
-    const box=cv.parentElement, cssW=Math.max(300,box?.clientWidth||600), H=220;
-    const dpr=Math.min(2,window.devicePixelRatio||1);
-    cv.style.width='100%'; cv.style.height=H+'px';
-    cv.width=Math.round(cssW*dpr); cv.height=Math.round(H*dpr);
-    const ctx=cv.getContext('2d'); ctx.scale(dpr,dpr);
-    const W=cssW, padL=44, padR=10, padT=22, padB=20, iw=W-padL-padR, ih=H-padT-padB;
+  async openReportsFolder(){
+    const r=await this.fetchJSON(`${this.apiBase}/reports/open-folder`,{method:'POST'});
+    if(!(r && r.status==='opened')) this.toast('Error', r?.detail || 'No se pudo abrir la carpeta', 'error');
+  }
+  drawTrainLoss(){
+    const svg=document.getElementById('chart-train-loss'); if(!svg) return;
+    const hist=this._trainHist||[];
+    const W=600, H=240, padL=46, padR=12, padT=16, padB=24, iw=W-padL-padR, ih=H-padT-padB;
     const st=getComputedStyle(document.documentElement);
+    const accent=st.getPropertyValue('--accent').trim()||'#7aa2f7';
+    const border=st.getPropertyValue('--border').trim()||'#333';
     const mute=st.getPropertyValue('--text-mute').trim()||'#888';
-    ctx.clearRect(0,0,W,H);
-    ctx.fillStyle=mute; ctx.font='10px monospace';
-    if(!hist.length){ ctx.fillText('curva disponible tras los primeros pasos…', padL+4, 24); return; }
-    const ls=hist.map(h=>h.loss), mn=Math.min(...ls), mx=Math.max(...ls), rg=(mx-mn)||1;
-    const X=i=>padL+(i/(hist.length-1||1))*iw, Y=v=>padT+ih-((v-mn)/rg)*ih;
-    ctx.save();
-    ctx.beginPath(); ctx.rect(0,0,W,H); ctx.clip();
-    ctx.strokeStyle=st.getPropertyValue('--border').trim()||'#333'; ctx.lineWidth=1;
-    for(let g=0; g<=4; g++){ const y=padT+ih*g/4; ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(W-padR,y); ctx.stroke();
-      ctx.fillText((mx-rg*g/4).toFixed(2), 4, y+3); }
-    ctx.fillText('paso '+(hist[0].step??0), padL, H-6);
-    ctx.fillText('paso '+(hist[hist.length-1].step??''), Math.max(padL,W-70), H-6);
-    ctx.strokeStyle=st.getPropertyValue('--accent').trim()||'#7aa2f7'; ctx.lineWidth=2; ctx.beginPath();
-    hist.forEach((h,i)=>{ const x=X(i), y=Y(h.loss); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
-    ctx.stroke();
-    ctx.fillStyle=st.getPropertyValue('--accent').trim()||'#7aa2f7';
-    hist.forEach((h,i)=>{ const x=X(i), y=Y(h.loss); ctx.beginPath(); ctx.arc(x,y,2.5,0,7); ctx.fill(); });
-    ctx.fillStyle=mute;
-    ctx.fillText(`min ${mn.toFixed(3)} · max ${mx.toFixed(3)} · n=${hist.length}`, padL, 14);
-    ctx.restore();
+    const NS='http://www.w3.org/2000/svg';
+    const el=(t,a)=>{ const e=document.createElementNS(NS,t); for(const k in a) e.setAttribute(k,a[k]); return e; };
+    svg.innerHTML='';
+    if(!hist.length){
+      const tx=el('text',{x:padL+6,y:30,fill:mute,'font-size':11,'font-family':'monospace'});
+      tx.textContent='curva disponible tras los primeros pasos…'; svg.appendChild(tx); return;
+    }
+    let v=this._trainView;
+    if(!v || v.i1>hist.length-1 || v.i0<0){ v=this._trainView={i0:0,i1:hist.length-1}; }
+    const n=hist.length, i0=Math.max(0,v.i0), i1=Math.min(n-1,Math.max(i0+2,v.i1));
+    const win=hist.slice(i0,i1+1);
+    const ls=win.map(h=>h.loss), mn=Math.min(...ls), mx=Math.max(...ls), rg=(mx-mn)||1e-6;
+    const X=k=>padL+(k/(win.length-1||1))*iw, Y=val=>padT+ih-((val-mn)/rg)*ih;
+    for(let g=0; g<=4; g++){
+      const y=padT+ih*g/4;
+      svg.appendChild(el('line',{x1:padL,y1:y,x2:W-padR,y2:y,stroke:border,'stroke-width':1}));
+      const t=el('text',{x:4,y:y+3,fill:mute,'font-size':9,'font-family':'monospace'});
+      t.textContent=(mx-rg*g/4).toFixed(2); svg.appendChild(t);
+    }
+    const pts=win.map((h,k)=>`${X(k).toFixed(1)},${Y(h.loss).toFixed(1)}`).join(' ');
+    svg.appendChild(el('polyline',{points:pts,fill:'none',stroke:accent,'stroke-width':2,'stroke-linejoin':'round'}));
+    win.forEach((h,k)=>{
+      const c=el('circle',{cx:X(k),cy:Y(h.loss),r:3,fill:accent});
+      const tt=document.createElementNS(NS,'title'); tt.textContent=`paso ${h.step}: loss ${h.loss}`;
+      c.appendChild(tt); svg.appendChild(c);
+    });
+    const t0=el('text',{x:padL,y:H-6,fill:mute,'font-size':9,'font-family':'monospace'});
+    t0.textContent='paso '+win[0].step; svg.appendChild(t0);
+    const t1=el('text',{x:W-64,y:H-6,fill:mute,'font-size':9,'font-family':'monospace'});
+    t1.textContent='paso '+win[win.length-1].step; svg.appendChild(t1);
+    const lg=document.getElementById('train-legend-range');
+    if(lg) lg.textContent=`min ${mn.toFixed(3)} · max ${mx.toFixed(3)} · n=${win.length}`+(win.length<n?` (zoom ${i0+1}-${i1+1}/${n})`:'');
+    if(!svg._zoomBound){
+      svg._zoomBound=true;
+      let dragX=null;
+      svg.addEventListener('wheel',e=>{
+        e.preventDefault();
+        const h2=this._trainHist||[]; if(h2.length<4) return;
+        const v2=this._trainView||{i0:0,i1:h2.length-1};
+        const span=v2.i1-v2.i0, f=e.deltaY>0?1.25:0.8;
+        const rect=svg.getBoundingClientRect();
+        const frac=Math.min(1,Math.max(0,(e.clientX-rect.left-padL)/Math.max(1,rect.width-padL-padR)));
+        const c=v2.i0+span*frac, ns=Math.min(span,Math.max(3,Math.round(span*f)));
+        let ni0=Math.round(c-ns*frac), ni1=ni0+ns;
+        if(ni0<0){ni1-=ni0;ni0=0;} if(ni1>h2.length-1){ni0-=ni1-(h2.length-1);ni1=h2.length-1;}
+        this._trainView={i0:Math.max(0,ni0),i1:ni1}; this.drawTrainLoss();
+      },{passive:false});
+      svg.addEventListener('pointerdown',e=>{dragX=e.clientX; svg.style.cursor='grabbing'; svg.setPointerCapture(e.pointerId);});
+      svg.addEventListener('pointermove',e=>{
+        if(dragX==null) return;
+        const h2=this._trainHist||[]; if(h2.length<4) return;
+        const rect=svg.getBoundingClientRect();
+        const dSteps=Math.round((dragX-e.clientX)/Math.max(1,rect.width)* (this._trainView.i1-this._trainView.i0));
+        if(!dSteps) return; dragX=e.clientX;
+        const v2=this._trainView, span=v2.i1-v2.i0;
+        let ni0=v2.i0+dSteps, ni1=v2.i1+dSteps;
+        if(ni0<0){ni1-=ni0;ni0=0;} if(ni1>h2.length-1){ni0-=ni1-(h2.length-1);ni1=h2.length-1;}
+        this._trainView={i0:ni0,i1:ni1}; this.drawTrainLoss();
+      });
+      const end=()=>{dragX=null; svg.style.cursor='grab';};
+      svg.addEventListener('pointerup',end); svg.addEventListener('pointercancel',end);
+      svg.addEventListener('dblclick',()=>{this._trainView=null; this.drawTrainLoss();});
+    }
   }
   async refresh() {
     const t0 = Date.now();

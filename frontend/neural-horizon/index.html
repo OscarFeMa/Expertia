@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>EXPERTIA · Neural Horizon</title>
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <link rel="stylesheet" href="style.css?v=19">
+  <link rel="stylesheet" href="style.css?v=20">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>◈</text></svg>">
 </head>
 <body>
@@ -125,12 +125,20 @@
         <h2 style="margin:0; font:700 15px var(--sans); letter-spacing:.06em;">EXPERTIAMATH · ENTRENAMIENTO EN VIVO</h2>
         <span class="sys-val" id="train-phase" style="font:700 11px var(--mono); color:var(--accent); text-transform:uppercase;">idle</span>
         <span id="train-step" style="font:600 12px var(--mono); color:var(--text)">—</span>
+        <span style="margin-left:auto; font:400 10px var(--mono); color:var(--text-faint)">ui-v20</span>
       </div>
       <div class="progress" id="train-progress" style="display:none; height:8px; background:var(--border); border-radius:999px; overflow:hidden; margin-bottom:12px;"><div id="train-progress-bar" style="height:100%; width:0%; background:var(--accent); transition:width .3s"></div></div>
       <div class="metrics-grid metrics-grid--duo" style="margin-bottom:12px;">
         <div class="panel panel--large">
           <div class="panel-head"><h3>Curva de loss</h3><span class="sys-val" id="train-loss">—</span></div>
-          <div style="height:240px; flex:none; display:block; overflow:hidden;"><canvas id="chart-train-loss"></canvas></div>
+          <div id="train-chart-box" style="height:240px; overflow:hidden;">
+            <svg id="chart-train-loss" viewBox="0 0 600 240" preserveAspectRatio="none" style="width:100%; height:240px; display:block; cursor:grab;"></svg>
+          </div>
+          <div style="display:flex; gap:14px; align-items:center; padding-top:8px; font:400 10px var(--mono); color:var(--text-mute); flex-wrap:wrap;">
+            <span><span style="display:inline-block; width:18px; height:2px; background:var(--accent); vertical-align:middle;"></span> loss por paso</span>
+            <span id="train-legend-range">—</span>
+            <span style="margin-left:auto">rueda = zoom · arrastrar = desplazar · doble clic = ver todo</span>
+          </div>
         </div>
         <div class="panel">
           <div class="panel-head"><h3>Estado</h3></div>
@@ -149,8 +157,13 @@
         <div id="train-log" style="font:400 11px var(--mono); color:var(--text-mute); white-space:pre-wrap; max-height:320px; overflow:auto; padding:10px 16px;"></div>
       </div>
       <div class="panel" style="padding:0; overflow:hidden; margin-top:12px;">
-        <div class="panel-head" style="padding:10px 16px;"><h3>Informes de ciclo (12h)</h3><span class="sys-val">seguimiento diario</span></div>
-        <div id="reports-list" style="padding:10px 16px; font:400 11px var(--mono); color:var(--text-mute);">cargando…</div>
+        <div class="panel-head" style="padding:10px 16px;"><h3>Informes de ciclo (12h)</h3>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <span class="sys-val">seguimiento diario</span>
+            <button class="ghost-btn" onclick="app.openReportsFolder()" title="Abrir carpeta de informes en el explorador">📁 Carpeta</button>
+          </div>
+        </div>
+        <div id="reports-list" style="padding:6px 16px 12px; font:400 11px var(--mono); color:var(--text-mute);">cargando…</div>
       </div>
     </section>
 
@@ -199,7 +212,7 @@
     </div>
   </div>
 
-  <script src="charts.js?v=19"></script>
-  <script src="app.js?v=19"></script>
+  <script src="charts.js?v=20"></script>
+  <script src="app.js?v=20"></script>
 </body>
 </html>
