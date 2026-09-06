@@ -8,8 +8,13 @@ $S = New-PSSession -ComputerName 192.168.1.41 -Credential $cred -ErrorAction Sto
 $copied = $false
 for ($i = 0; $i -lt 3 -and -not $copied; $i++) {
   try {
-    Copy-Item -FromSession $S -Path "C:\training\logs\train_status.json" -Destination (Join-Path $inc "train_status.json") -Force -ErrorAction Stop
-    $copied = $true
+    $txt = Invoke-Command -Session $S -ScriptBlock { Get-Content C:\training\logs\train_status.json -Raw -Encoding utf8 } -ErrorAction Stop
+    if ($txt -match '"step"\s*:\s*\d+') {
+      [IO.File]::WriteAllText((Join-Path $inc "train_status.json"), [string]$txt)
+      $copied = $true
+    } else {
+      Start-Sleep -Seconds 5
+    }
   } catch {
     Start-Sleep -Seconds 5
   }
