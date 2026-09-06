@@ -949,12 +949,26 @@ def list_reports(limit: int = 10):
             try:
                 rep = json.loads(f.read_text(encoding="utf-8"))
                 out.append({"file": f.name, "kind": rep.get("kind"), "ts": rep.get("ts"),
-                            "summary": {k: rep.get(k) for k in ("cycles", "avg_quality", "new_packages", "step", "loss_last", "phase") if k in rep}})
+                            "summary": {k: rep.get(k) for k in ("cycles", "avg_quality", "new_packages", "step", "loss_last", "phase", "per_domain", "activity", "checkpoints", "dataset_train", "dataset_val") if k in rep}})
             except Exception:
                 continue
     except Exception as e:
         return {"reports": [], "error": str(e)[:200]}
     return {"reports": out}
+
+
+@router.post("/reports/open-folder")
+def open_reports_folder():
+    rd = Path(__file__).parent / "storage" / "reports"
+    try:
+        rd.mkdir(parents=True, exist_ok=True)
+        if os.name == "nt":
+            os.startfile(str(rd))
+        else:
+            subprocess.run(["xdg-open", str(rd)], timeout=5)
+        return {"status": "opened", "path": str(rd)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)[:200])
 
 
 @router.get("/ollama/models")
