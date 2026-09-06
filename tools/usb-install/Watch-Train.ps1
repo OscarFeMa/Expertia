@@ -12,6 +12,25 @@ while ($true) {
       $stale = $age -gt $StaleMin
     }
     $py = Get-Process python* -ErrorAction SilentlyContinue | Where-Object { $_.WorkingSet64 -gt 500MB }
+    $done = $false
+    try {
+      $st = Get-Content (Join-Path $TrainRoot "logs\train_status.json") -Raw -Encoding utf8 | ConvertFrom-Json
+      $done = $st.phase -eq "done"
+    } catch {}
+    if ($done) {
+      WLog "ENTRENO COMPLETADO. Evaluando base vs adapter..."
+      try {
+        & (Join-Path $TrainRoot "python311\python.exe") (Join-Path $TrainRoot "eval_expertia_math.py") --model (Join-Path $TrainRoot "base\phi-4-mini-reasoning") --val (Join-Path $TrainRoot "datasets\expertia-math-puro_val.jsonl") --max-samples 500 --out (Join-Path $TrainRoot "logs\eval_base.json")
+        WLog "eval base OK"
+      } catch { WLog ("eval base FALLO: " + $_.Exception.Message) }
+      try {
+        & (Join-Path $TrainRoot "python311\python.exe") (Join-Path $TrainRoot "eval_expertia_math.py") --model (Join-Path $TrainRoot "base\phi-4-mini-reasoning") --adapter (Join-Path $TrainRoot "adapters\expertia-math-r16") --val (Join-Path $TrainRoot "datasets\expertia-math-puro_val.jsonl") --max-samples 500 --out (Join-Path $TrainRoot "logs\eval_adapter.json")
+        WLog "eval adapter OK"
+      } catch { WLog ("eval adapter FALLO: " + $_.Exception.Message) }
+      WLog "Evaluaciones listas. Esperando promocion manual."
+      Start-Sleep -Seconds 3600
+      continue
+    }
     if ($stale -and -not $py) {
       try {
         $t = nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,memory.used --format=csv,noheader 2>$null
