@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>EXPERTIA · Neural Horizon</title>
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <link rel="stylesheet" href="style.css?v=23">
+  <link rel="stylesheet" href="style.css?v=24">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>◈</text></svg>">
 </head>
 <body>
@@ -126,7 +126,7 @@
         <span class="sys-val" id="train-phase" style="font:700 11px var(--mono); color:var(--accent); text-transform:uppercase;">idle</span>
         <span id="train-step" style="font:600 12px var(--mono); color:var(--text)">—</span>
         <span id="train-worker" style="font:600 10px var(--mono); color:var(--gold); border:1px solid var(--border-hi); border-radius:4px; padding:2px 8px;">—</span>
-        <span style="margin-left:auto; font:400 10px var(--mono); color:var(--text-faint)">ui-v23</span>
+        <span style="margin-left:auto; font:400 10px var(--mono); color:var(--text-faint)">ui-v24</span>
       </div>
       <div id="train-kpis" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:12px;">
         <div class="panel" style="padding:10px 12px;"><div style="font:500 10px var(--mono); color:var(--text-mute)">PROGRESO</div><div id="kpi-prog" style="font:700 20px var(--mono); color:var(--accent)">—</div><div class="progress" style="height:5px; background:var(--border); border-radius:99px; overflow:hidden; margin-top:6px;"><div id="kpi-prog-bar" style="height:100%; width:0%; background:var(--accent);"></div></div></div>
@@ -163,10 +163,10 @@
         </div>
       </div>
       <div class="panel" style="padding:0; overflow:hidden;">
-        <div class="panel-head" style="padding:10px 16px;"><h3>Log en vivo</h3>
+        <div class="panel-head" style="padding:8px 16px;"><h3>Log en vivo</h3>
           <label style="font:400 10px var(--mono); color:var(--text-mute); display:flex; gap:6px; align-items:center;"><input type="checkbox" id="train-autoscroll" checked> auto-scroll</label>
         </div>
-        <div id="train-log" style="font:400 11px var(--mono); color:var(--text-mute); white-space:pre-wrap; min-height:180px; max-height:320px; overflow:auto; padding:10px 16px;"></div>
+        <div id="train-log" style="font:400 11px var(--mono); color:var(--text-mute); white-space:pre; height:38px; overflow:hidden; padding:4px 16px; line-height:1.5;"></div>
       </div>
       <div class="panel" style="padding:0; overflow:hidden; margin-top:12px; min-height:220px; margin-bottom:24px;">
         <div class="panel-head" style="padding:10px 16px;"><h3>Informes de ciclo (12h)</h3>
@@ -224,7 +224,7 @@
     </div>
   </div>
 
-  <script src="charts.js?v=23"></script>
-  <script src="app.js?v=23"></script>
+  <script src="charts.js?v=24"></script>
+  <script src="app.js?v=24"></script>
 </body>
 </html>
