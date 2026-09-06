@@ -31,7 +31,12 @@ while ($true) {
       Start-Sleep -Seconds 3600
       continue
     }
-    if ($stale -and -not $py) {
+    $justLaunched = $false
+    try {
+      $sl = Get-ChildItem (Join-Path $TrainRoot "logs\train_status.json") -ErrorAction Stop
+      $justLaunched = ((Get-Date) - $sl.LastWriteTime).TotalMinutes -lt 8
+    } catch {}
+    if ($stale -and -not $py -and -not $justLaunched) {
       try {
         $t = nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,memory.used --format=csv,noheader 2>$null
         WLog "forense muerte: GPU $t"
