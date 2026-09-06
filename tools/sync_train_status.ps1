@@ -19,7 +19,7 @@ Invoke-Command -Session $S -ScriptBlock {
   $ad = "C:\training\adapters\expertia-math-r16"
   $g = try { nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,memory.used,memory.free,power.draw,power.limit,clocks.sm --format=csv,noheader,nounits 2>$null } catch { $null }
   [pscustomobject]@{
-    log_tail = $(if ($l) { Get-Content $l.FullName -Tail 25 })
+    log_tail = @($(if ($l) { Get-Content $l.FullName -Tail 25 | ForEach-Object { ([string]$_ -replace "`0", "") } }))
     log_file = $(if ($l) { $l.Name } else { $null })
     checkpoints = @()
     gpu_raw = $g
