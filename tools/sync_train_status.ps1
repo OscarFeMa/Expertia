@@ -21,8 +21,10 @@ for ($i = 0; $i -lt 3 -and -not $copied; $i++) {
 }
 if (-not $copied) { throw "Copy train_status.json failed x3" }
 try {
-  $localTs = (Get-ChildItem (Join-Path $inc "train_status.json")).LastWriteTime
-  $staleMin = ((Get-Date) - $localTs).TotalMinutes
+  $repTs = Get-Content (Join-Path $inc "train_status.json") -Raw -Encoding utf8 | ConvertFrom-Json | Select-Object -ExpandProperty ts
+  $origin = [datetime]'1970-01-01Z'
+  $staleMin = ((Get-Date).ToUniversalTime() - $origin.AddSeconds($repTs)).TotalMinutes
+  if (-not ($staleMin -ge 0)) { $staleMin = 9999 }
   $bigPy = Invoke-Command -Session $S -ScriptBlock {
     Get-Process python* -ErrorAction SilentlyContinue | Where-Object { $_.WorkingSet64 -gt 500MB } | Select-Object -First 1 Id
   }
