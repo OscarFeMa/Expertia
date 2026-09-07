@@ -24,7 +24,15 @@ try {
   $repTs = Get-Content (Join-Path $inc "train_status.json") -Raw -Encoding utf8 | ConvertFrom-Json | Select-Object -ExpandProperty ts
   $origin = [datetime]'1970-01-01Z'
   $staleMin = ((Get-Date).ToUniversalTime() - $origin.AddSeconds($repTs)).TotalMinutes
-  if (-not ($staleMin -ge 0)) { $staleMin = 9999 }
+  if (-not ($staleMin -ge 0) -or $staleMin -gt 10080) {
+    $fileAge = ((Get-Date) - (Get-ChildItem (Join-Path $inc "train_status.json")).LastWriteTime).TotalMinutes
+    if ($fileAge -ge 0 -and $fileAge -lt 10080) {
+      Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ts futuro/ileible ($([int]$staleMin)min), usando file age $([int]$fileAge)min"
+      $staleMin = $fileAge
+    } else {
+      $staleMin = 9999
+    }
+  }
   $bigPy = Invoke-Command -Session $S -ScriptBlock {
     Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*train_expertia*" } | Select-Object -First 1 ProcessId
   }
