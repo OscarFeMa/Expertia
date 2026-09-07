@@ -3,6 +3,17 @@ $Log = "D:\proyectos\expertia\training\incoming_3070\night_watch.log"
 $Repo = "D:\proyectos\expertia\incubator-root"
 $Hive = "C:\Users\usuario\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe"
 function WLog($m) { Add-Content $Log "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $m" }
+function CooldownOk() {
+  $f = "D:\proyectos\expertia\training\incoming_3070\last_relaunch.txt"
+  try {
+    if (Test-Path $f) {
+      $age = ((Get-Date) - (Get-ChildItem $f).LastWriteTime).TotalMinutes
+      if ($age -lt 20) { WLog "cooldown: ultimo relaunch hace $([int]$age)min, se omite"; return $false }
+    }
+    Set-Content $f (Get-Date -Format o)
+    return $true
+  } catch { return $true }
+}
 function Cred3070() {
   $inc = "D:\proyectos\expertia\training\incoming_3070"
   $pw = ConvertTo-SecureString "Experto3070!" -AsPlainText -Force
@@ -33,6 +44,7 @@ while ($true) {
     $procs = Remote({ Get-Process python* -ErrorAction SilentlyContinue | Select-Object Id }) 
     $npy = @($procs).Count
     if ($idleMin -gt 40 -and $st.phase -eq "training") {
+      if (-not (CooldownOk)) { Start-Sleep -Seconds 300; continue }
       WLog "SIN AVANCE ${idleMin}m (paso $step). Reiniciando worker..."
       try {
         $rs = New-PSSession -ComputerName 192.168.1.41 -Credential (Cred3070) -ErrorAction Stop -Name NightRelaunch

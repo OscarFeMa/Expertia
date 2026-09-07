@@ -50,7 +50,12 @@ while ($true) {
         }
       }
     } catch {}
-    if ($stale -and -not $py -and -not $justLaunched) {
+    $coolOk = $true
+    try {
+      $lf = Join-Path $TrainRoot "logs\last_relaunch.txt"
+      if ((Test-Path $lf) -and (((Get-Date) - (Get-ChildItem $lf).LastWriteTime).TotalMinutes -lt 20)) { $coolOk = $false }
+    } catch {}
+    if ($stale -and -not $py -and -not $justLaunched -and $coolOk) {
       Start-Sleep -Seconds 20
       $py2 = Get-Process python* -ErrorAction SilentlyContinue | Where-Object { $_.WorkingSet64 -gt 500MB }
       if ($py2) { WLog "carrera evitada: worker aparecio durante la espera"; Start-Sleep -Seconds $IntervalS; continue }
@@ -63,6 +68,7 @@ while ($true) {
         if ($e) { WLog ("ultima linea: " + (Get-Content $e.FullName -Tail 1 | Out-String).Trim()) }
       } catch {}
       WLog "MUERTO (stale, sin proceso). Relanzando con resume..."
+      Set-Content (Join-Path $TrainRoot "logs\last_relaunch.txt") (Get-Date -Format o)
       $env:TRAIN_STATUS_FILE = Join-Path $TrainRoot "logs\train_status.json"
       $env:PYTHONUNBUFFERED = "1"
       $ts = Get-Date -Format "yyyyMMdd_HHmmss"

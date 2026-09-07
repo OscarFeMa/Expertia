@@ -28,7 +28,21 @@ try {
   $bigPy = Invoke-Command -Session $S -ScriptBlock {
     Get-Process python* -ErrorAction SilentlyContinue | Where-Object { $_.WorkingSet64 -gt 500MB } | Select-Object -First 1 Id
   }
-  if ($staleMin -gt 15 -and -not $bigPy) {
+  if ($staleMin -eq 9999) {
+    Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ts ilegible, se reintenta en el proximo ciclo (sin relanzar)"
+  }
+  $coolFile = Join-Path $inc "last_relaunch.txt"
+  $coolOk = $true
+  try {
+    if (Test-Path $coolFile) {
+      $age = ((Get-Date) - (Get-ChildItem $coolFile).LastWriteTime).TotalMinutes
+      if ($age -lt 20) {
+        $coolOk = $false
+        Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') cooldown activo ($([int]$age)min), se omite"
+      }
+    }
+  } catch {}
+  if ($staleMin -gt 15 -and $staleMin -lt 9999 -and -not $bigPy -and $coolOk) {
     Start-Sleep -Seconds 20
     $bigPy2 = Invoke-Command -Session $S -ScriptBlock {
       Get-Process python* -ErrorAction SilentlyContinue | Where-Object { $_.WorkingSet64 -gt 500MB } | Select-Object -First 1 Id
@@ -36,7 +50,9 @@ try {
     if ($bigPy2) {
       Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') carrera evitada"
     } else {
+      Set-Content $coolFile (Get-Date -Format o)
       Invoke-Command -Session $S -ScriptBlock {
+        Set-Content C:\training\logs\last_relaunch.txt (Get-Date -Format o)
         $env:TRAIN_STATUS_FILE = "C:\training\logs\train_status.json"
         Start-Process -FilePath "C:\training\python311\python.exe" -ArgumentList "C:\training\train_expertia_math.py --model C:\training\base\phi-4-mini-reasoning --train C:\training\datasets\expertia-math-puro.jsonl --out C:\training\adapters\expertia-math-r16 --offload C:\training\offload --epochs 3 --seq-len 2048 --batch 1 --accum 16 --bf16 --no-offload --save-steps 200" -RedirectStandardOutput "C:\training\logs\train_auto.log" -WindowStyle Hidden
         Start-Process -FilePath "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File C:\training\Watch-Train.ps1" -WindowStyle Hidden
