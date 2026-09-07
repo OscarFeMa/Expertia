@@ -36,6 +36,20 @@ while ($true) {
       $sl = Get-ChildItem (Join-Path $TrainRoot "logs\train_status.json") -ErrorAction Stop
       $justLaunched = ((Get-Date) - $sl.LastWriteTime).TotalMinutes -lt 8
     } catch {}
+    try {
+      $el = Get-ChildItem (Join-Path $TrainRoot "logs\train_*.err.log") | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+      if ($el) {
+        $tail = Get-Content $el.FullName -Tail 3 | Out-String
+        if ($tail -match '(\d+\.\d+)s/it') {
+          $sit = [double]$Matches[1]
+          if ($sit -gt 30) {
+            WLog "DEGRADADO (${sit}s/it). Relanzamiento preventivo..."
+            Get-Process python* -ErrorAction SilentlyContinue | Where-Object { $_.WorkingSet64 -gt 500MB } | ForEach-Object { Stop-Process -Id $_.Id -Force }
+            Start-Sleep -Seconds 20
+          }
+        }
+      }
+    } catch {}
     if ($stale -and -not $py -and -not $justLaunched) {
       Start-Sleep -Seconds 20
       $py2 = Get-Process python* -ErrorAction SilentlyContinue | Where-Object { $_.WorkingSet64 -gt 500MB }
