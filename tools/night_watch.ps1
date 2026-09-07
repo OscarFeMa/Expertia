@@ -51,11 +51,22 @@ while ($true) {
     }
     if ($npy -gt 1) { WLog "AVISO: $npy pythons en 3070 (posible duplicado)" }
     try {
-      $r = Invoke-RestMethod -Uri "http://localhost:8011/api/health" -TimeoutSec 10
+      $r = Invoke-RestMethod -Uri "http://localhost:8011/api/health" -TimeoutSec 60
+      $Script:apiFails = 0
     } catch {
-      WLog "API caida, relanzando..."
-      $np = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine = "$Hive D:\proyectos\expertia\incubator-root\query_api.py" }
-      WLog ("API relanzada PID=" + $np.ProcessId)
+      $Script:apiFails = ([int]$Script:apiFails) + 1
+      WLog ("API health fallo ${Script:apiFails}/2: " + $_.Exception.Message)
+      if ([int]$Script:apiFails -ge 2) {
+        $alive = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*query_api*" }
+        if ($alive) {
+          WLog "API procesa viva pese al health: NO se mata (falso positivo)"
+        } else {
+          WLog "API caida confirmada, relanzando..."
+          $np = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine = "$Hive D:\proyectos\expertia\incubator-root\query_api.py" }
+          WLog ("API relanzada PID=" + $np.ProcessId)
+        }
+        $Script:apiFails = 0
+      }
     }
     $pipe = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*orchestrator*" }
     if (-not $pipe) {
