@@ -26,7 +26,7 @@ try {
   $staleMin = ((Get-Date).ToUniversalTime() - $origin.AddSeconds($repTs)).TotalMinutes
   if (-not ($staleMin -ge 0)) { $staleMin = 9999 }
   $bigPy = Invoke-Command -Session $S -ScriptBlock {
-    Get-Process python* -ErrorAction SilentlyContinue | Where-Object { $_.WorkingSet64 -gt 500MB } | Select-Object -First 1 Id
+    Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*train_expertia*" } | Select-Object -First 1 ProcessId
   }
   if ($staleMin -eq 9999) {
     Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ts ilegible, se reintenta en el proximo ciclo (sin relanzar)"
@@ -45,16 +45,27 @@ try {
   if ($staleMin -gt 15 -and $staleMin -lt 9999 -and -not $bigPy -and $coolOk) {
     Start-Sleep -Seconds 20
     $bigPy2 = Invoke-Command -Session $S -ScriptBlock {
-      Get-Process python* -ErrorAction SilentlyContinue | Where-Object { $_.WorkingSet64 -gt 500MB } | Select-Object -First 1 Id
+      Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*train_expertia*" } | Select-Object -First 1 ProcessId
     }
     if ($bigPy2) {
-      Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') carrera evitada"
+      Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') carrera evitada (aparecio $($bigPy2.ProcessId))"
     } else {
       Set-Content $coolFile (Get-Date -Format o)
       Invoke-Command -Session $S -ScriptBlock {
         Set-Content C:\training\logs\last_relaunch.txt (Get-Date -Format o)
+        Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*train_expertia*" } | ForEach-Object {
+          try { Stop-Process -Id $_.ProcessId -Force } catch {}
+        }
+        $wait = 0
+        while ($wait -lt 90) {
+          $used = try { [int]((nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>$null) -replace "[^0-9]","") } catch { 9999 }
+          if ($used -lt 500) { break }
+          Start-Sleep -Seconds 5
+          $wait += 5
+        }
         $env:TRAIN_STATUS_FILE = "C:\training\logs\train_status.json"
-        Start-Process -FilePath "C:\training\python311\python.exe" -ArgumentList "C:\training\train_expertia_math.py --model C:\training\base\phi-4-mini-reasoning --train C:\training\datasets\expertia-math-puro.jsonl --out C:\training\adapters\expertia-math-r16 --offload C:\training\offload --epochs 3 --seq-len 2048 --batch 1 --accum 16 --bf16 --no-offload --save-steps 200" -RedirectStandardOutput "C:\training\logs\train_auto.log" -WindowStyle Hidden
+        $env:PYTHONUNBUFFERED = "1"
+        Start-Process -FilePath "C:\training\python311\python.exe" -ArgumentList "-u C:\training\train_expertia_math.py --model C:\training\base\phi-4-mini-reasoning --train C:\training\datasets\expertia-math-puro.jsonl --out C:\training\adapters\expertia-math-r16 --offload C:\training\offload --epochs 3 --seq-len 2048 --batch 1 --accum 16 --bf16 --no-offload --save-steps 200" -RedirectStandardOutput "C:\training\logs\train_auto.log" -RedirectStandardError "C:\training\logs\train_auto.err.log" -WindowStyle Hidden
         Start-Process -FilePath "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File C:\training\Watch-Train.ps1" -WindowStyle Hidden
       }
       Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') auto-relaunch (stale $([int]$staleMin)min)"

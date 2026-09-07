@@ -11,7 +11,7 @@ while ($true) {
       $age = ((Get-Date) - (Get-ChildItem $sf).LastWriteTime).TotalMinutes
       $stale = $age -gt $StaleMin
     }
-    $py = Get-Process python* -ErrorAction SilentlyContinue | Where-Object { $_.WorkingSet64 -gt 500MB }
+    $py = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*train_expertia*" }
     $done = $false
     try {
       $st = Get-Content (Join-Path $TrainRoot "logs\train_status.json") -Raw -Encoding utf8 | ConvertFrom-Json
@@ -44,8 +44,14 @@ while ($true) {
           $sit = [double]$Matches[1]
           if ($sit -gt 30) {
             WLog "DEGRADADO (${sit}s/it). Relanzamiento preventivo..."
-            Get-Process python* -ErrorAction SilentlyContinue | Where-Object { $_.WorkingSet64 -gt 500MB } | ForEach-Object { Stop-Process -Id $_.Id -Force }
-            Start-Sleep -Seconds 20
+            Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*train_expertia*" } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force } catch {} }
+          $wait = 0
+          while ($wait -lt 90) {
+            $used = try { [int]((nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>$null) -replace "[^0-9]","") } catch { 9999 }
+            if ($used -lt 500) { break }
+            Start-Sleep -Seconds 5
+            $wait += 5
+          }
           }
         }
       }
@@ -57,7 +63,7 @@ while ($true) {
     } catch {}
     if ($stale -and -not $py -and -not $justLaunched -and $coolOk) {
       Start-Sleep -Seconds 20
-      $py2 = Get-Process python* -ErrorAction SilentlyContinue | Where-Object { $_.WorkingSet64 -gt 500MB }
+      $py2 = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*train_expertia*" }
       if ($py2) { WLog "carrera evitada: worker aparecio durante la espera"; Start-Sleep -Seconds $IntervalS; continue }
       try {
         $t = nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,memory.used --format=csv,noheader 2>$null
