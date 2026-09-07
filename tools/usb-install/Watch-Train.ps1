@@ -47,7 +47,9 @@ while ($true) {
       } catch {}
       WLog "MUERTO (stale, sin proceso). Relanzando con resume..."
       $env:TRAIN_STATUS_FILE = Join-Path $TrainRoot "logs\train_status.json"
-      Start-Process -FilePath (Join-Path $TrainRoot "python311\python.exe") -ArgumentList "C:\training\train_expertia_math.py --model C:\training\base\phi-4-mini-reasoning --train C:\training\datasets\expertia-math-puro.jsonl --out C:\training\adapters\expertia-math-r16 --offload C:\training\offload --epochs 3 --seq-len 2048 --batch 1 --accum 16 --bf16 --no-offload --save-steps 200" -RedirectStandardOutput (Join-Path $TrainRoot ("logs\train_wd_{0}.log" -f (Get-Date -Format "yyyyMMdd_HHmmss"))) -WindowStyle Hidden
+      $env:PYTHONUNBUFFERED = "1"
+      $ts = Get-Date -Format "yyyyMMdd_HHmmss"
+      Start-Process -FilePath (Join-Path $TrainRoot "python311\python.exe") -ArgumentList "-u C:\training\train_expertia_math.py --model C:\training\base\phi-4-mini-reasoning --train C:\training\datasets\expertia-math-puro.jsonl --out C:\training\adapters\expertia-math-r16 --offload C:\training\offload --epochs 3 --seq-len 2048 --batch 1 --accum 16 --bf16 --no-offload --save-steps 200" -RedirectStandardOutput (Join-Path $TrainRoot ("logs\train_wd_${ts}.log")) -RedirectStandardError (Join-Path $TrainRoot ("logs\train_wd_${ts}.err.log")) -WindowStyle Hidden
       WLog "relanzado"
     }
   } catch {
