@@ -41,7 +41,7 @@ while ($true) {
     $step = [int]$st.step
     if ($step -gt $lastStep) { $lastStep = $step; $lastAdvance = Get-Date; $Script:lastLoss = $st.loss }
     $idleMin = ((Get-Date) - $lastAdvance).TotalMinutes
-    $procs = Remote({ Get-Process python* -ErrorAction SilentlyContinue | Select-Object Id }) 
+    $procs = Remote({ Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*train_expertia*" } | Select-Object ProcessId })
     $npy = @($procs).Count
     if ($idleMin -gt 40 -and $st.phase -eq "training") {
       if (-not (CooldownOk)) { Start-Sleep -Seconds 300; continue }
@@ -49,9 +49,16 @@ while ($true) {
       try {
         $rs = New-PSSession -ComputerName 192.168.1.41 -Credential (Cred3070) -ErrorAction Stop -Name NightRelaunch
         Invoke-Command -Session $rs -ScriptBlock {
-          Get-Process python* -ErrorAction SilentlyContinue | Where-Object { $_.WorkingSet64 -gt 500MB } | ForEach-Object { Stop-Process -Id $_.Id -Force }
-          Start-Sleep -Seconds 20
+          Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*train_expertia*" } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force } catch {} }
+          $wait = 0
+          while ($wait -lt 90) {
+            $used = try { [int]((nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>$null) -replace "[^0-9]","") } catch { 9999 }
+            if ($used -lt 500) { break }
+            Start-Sleep -Seconds 5
+            $wait += 5
+          }
           $env:TRAIN_STATUS_FILE = "C:\training\logs\train_status.json"
+          $env:PYTHONUNBUFFERED = "1"
           Start-Process -FilePath "C:\training\python311\python.exe" -ArgumentList "-u C:\training\train_expertia_math.py --model C:\training\base\phi-4-mini-reasoning --train C:\training\datasets\expertia-math-puro.jsonl --out C:\training\adapters\expertia-math-r16 --offload C:\training\offload --epochs 3 --seq-len 2048 --batch 1 --accum 16 --bf16 --no-offload --save-steps 200" -RedirectStandardOutput "C:\training\logs\train_night.log" -RedirectStandardError "C:\training\logs\train_night.err.log" -WindowStyle Hidden
         } | Out-Null
         Disconnect-PSSession -Session $rs | Out-Null
