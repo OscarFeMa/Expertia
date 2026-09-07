@@ -26,13 +26,21 @@ try {
   $bigPy = Invoke-Command -Session $S -ScriptBlock {
     Get-Process python* -ErrorAction SilentlyContinue | Where-Object { $_.WorkingSet64 -gt 500MB } | Select-Object -First 1 Id
   }
-  if ($staleMin -gt 25 -and -not $bigPy) {
-    Invoke-Command -Session $S -ScriptBlock {
-      $env:TRAIN_STATUS_FILE = "C:\training\logs\train_status.json"
-      Start-Process -FilePath "C:\training\python311\python.exe" -ArgumentList "C:\training\train_expertia_math.py --model C:\training\base\phi-4-mini-reasoning --train C:\training\datasets\expertia-math-puro.jsonl --out C:\training\adapters\expertia-math-r16 --offload C:\training\offload --epochs 3 --seq-len 2048 --batch 1 --accum 16 --bf16 --no-offload --save-steps 200" -RedirectStandardOutput "C:\training\logs\train_auto.log" -WindowStyle Hidden
-      Start-Process -FilePath "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File C:\training\Watch-Train.ps1" -WindowStyle Hidden
+  if ($staleMin -gt 15 -and -not $bigPy) {
+    Start-Sleep -Seconds 20
+    $bigPy2 = Invoke-Command -Session $S -ScriptBlock {
+      Get-Process python* -ErrorAction SilentlyContinue | Where-Object { $_.WorkingSet64 -gt 500MB } | Select-Object -First 1 Id
     }
-    Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') auto-relaunch (stale $([int]$staleMin)min)"
+    if ($bigPy2) {
+      Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') carrera evitada"
+    } else {
+      Invoke-Command -Session $S -ScriptBlock {
+        $env:TRAIN_STATUS_FILE = "C:\training\logs\train_status.json"
+        Start-Process -FilePath "C:\training\python311\python.exe" -ArgumentList "C:\training\train_expertia_math.py --model C:\training\base\phi-4-mini-reasoning --train C:\training\datasets\expertia-math-puro.jsonl --out C:\training\adapters\expertia-math-r16 --offload C:\training\offload --epochs 3 --seq-len 2048 --batch 1 --accum 16 --bf16 --no-offload --save-steps 200" -RedirectStandardOutput "C:\training\logs\train_auto.log" -WindowStyle Hidden
+        Start-Process -FilePath "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File C:\training\Watch-Train.ps1" -WindowStyle Hidden
+      }
+      Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') auto-relaunch (stale $([int]$staleMin)min)"
+    }
   }
 } catch { }
 $trend = Invoke-Command -Session $S -ScriptBlock {

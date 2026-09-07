@@ -1,4 +1,4 @@
-param([int]$StaleMin = 15, [int]$IntervalS = 120)
+param([int]$StaleMin = 10, [int]$IntervalS = 120)
 $TrainRoot = "C:\training"
 $Log = Join-Path $TrainRoot "logs\watch-train.log"
 function WLog($m) { Add-Content $Log "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $m" }
@@ -37,6 +37,9 @@ while ($true) {
       $justLaunched = ((Get-Date) - $sl.LastWriteTime).TotalMinutes -lt 8
     } catch {}
     if ($stale -and -not $py -and -not $justLaunched) {
+      Start-Sleep -Seconds 20
+      $py2 = Get-Process python* -ErrorAction SilentlyContinue | Where-Object { $_.WorkingSet64 -gt 500MB }
+      if ($py2) { WLog "carrera evitada: worker aparecio durante la espera"; Start-Sleep -Seconds $IntervalS; continue }
       try {
         $t = nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,memory.used --format=csv,noheader 2>$null
         WLog "forense muerte: GPU $t"
