@@ -24,10 +24,12 @@ try {
   $repTs = Get-Content (Join-Path $inc "train_status.json") -Raw -Encoding utf8 | ConvertFrom-Json | Select-Object -ExpandProperty ts
   $origin = [datetime]'1970-01-01Z'
   $staleMin = ((Get-Date).ToUniversalTime() - $origin.AddSeconds($repTs)).TotalMinutes
-  if (-not ($staleMin -ge 0) -or $staleMin -gt 10080) {
+  if ((-not ($staleMin -ge 0) -or $staleMin -gt 10080 -or $staleMin -lt -2)) {
     $fileAge = ((Get-Date) - (Get-ChildItem (Join-Path $inc "train_status.json")).LastWriteTime).TotalMinutes
     if ($fileAge -ge 0 -and $fileAge -lt 10080) {
-      Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ts futuro/ileible ($([int]$staleMin)min), usando file age $([int]$fileAge)min"
+      if ($staleMin -ne 9999) {
+        Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ts desvio ($([int]$staleMin)min), usando file age $([int]$fileAge)min"
+      }
       $staleMin = $fileAge
     } else {
       $staleMin = 9999
