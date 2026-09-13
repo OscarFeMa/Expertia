@@ -1,145 +1,41 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
-
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-env/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
+# Secretos y credenciales: JAMAS commitear
 .env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+**/cred.xml
+**/*token*
+**/*secret*
 
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# Pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# PyCharm
-.idea/
-
-# VS Code
-.vscode/
-*.code-workspace
-
-# Local environment files
-.env
-.env.local
-.env.development
-.env.test
-.env.production
-
-# Logs
-logs/
-*.log
-
-# Temporary files
-*.tmp
-*.temp
-tmp/
-
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Data
-storage/
+# Datos pesados (van a Hugging Face, no a git)
 *.db
+*.db-journal
 *.db-shm
 *.db-wal
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+storage/
+incoming_3070/
 
-# Test files (root level only)
-/test_*.py
-tmp_streamlit_test/
-
-# Pipeline state
+# Runtime y logs
+logs/
+*.log
 pipeline_state.json
-tools/watchdog_state.json
-
-# SQLite journal files
-*.db-journal
-
-# Windows shortcuts
-*.lnk
-
-# Expertia - no subir a GitHub (documentado, no necesario)
-*.bak
-backups/
-archive/stray_empty_file
-.opencode/
 pipeline_state.json.stale
-frontend/assets/
-launch_all.cmd
-launcher.cmd
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv*/
+venv/
+node_modules/
+frontend/*/node_modules/
+frontend/*/dist/
+
+# Sistema y temporales
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+.vscode/
+.idea/

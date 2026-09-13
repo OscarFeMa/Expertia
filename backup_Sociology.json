@@ -1,0 +1,7 @@
+{
+ "domain": "Sociology",
+ "model": "gemma3:4b",
+ "ema_score": 0.9999366259551948,
+ "tier": 4,
+ "packages_absorbed": 9039211
+}

@@ -1,0 +1,24 @@
+{
+  "start_epoch": 1781736785.2836056,
+  "stuck_counts": {
+    "Linguistics": 0,
+    "Psychology": 0,
+    "EnvironmentalScience": 0,
+    "Sociology": 0
+  },
+  "blocked": [
+    "Geopolitics, LegalSystem, Sociology"
+  ],
+  "last_cycle_id": {},
+  "stuck_since": null,
+  "current_specialist": "LegalSystem",
+  "last_heartbeat": "2026-09-08 12:00:20:Sociology:2734243",
+  "strike_counts": {
+    "EnvironmentalScience": 1,
+    "desconocido": 15,
+    "Medicine": 1,
+    "Geopolitics, LegalSystem, Sociology": 0,
+    "PhilosophyHistory": 2,
+    "LegalSystem": 1
+  }
+}

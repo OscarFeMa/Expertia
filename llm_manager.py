@@ -38,6 +38,11 @@ from config.settings import (
 
 logger = logging.getLogger(__name__)
 
+# Models with default-ON thinking mode (Ollama generate API): thinking tokens
+# eat the num_predict budget and yield empty responses for distillation.
+# Fix: top-level "think": False (NOT inside options — silently ignored there).
+THINKING_MODELS = ("qwen3.5",)
+
 
 # ============================================================================
 # CUSTOM EXCEPTIONS
@@ -645,6 +650,8 @@ class LLMRunner:
             },
             "keep_alive": "5m"
         }
+        if model_name.startswith(THINKING_MODELS):
+            payload["think"] = False
         
         logger.info(f"Sending query to model '{model_name}'")
         
@@ -682,6 +689,8 @@ class LLMRunner:
         max_tokens = max_tokens or LLM_MAX_TOKENS
         url = f"{self.api_base_url}/api/generate"
         payload = {"model": model_name, "prompt": prompt, "stream": True, "options": {"temperature": temperature, "num_predict": max_tokens, "num_ctx": 8192}, "keep_alive": "5m"}
+        if model_name.startswith(THINKING_MODELS):
+            payload["think"] = False
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=LLM_TIMEOUT*2))
         async with self._session.post(url, json=payload) as resp:

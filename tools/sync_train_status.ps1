@@ -4,7 +4,7 @@ $here = Split-Path -Parent $PSCommandPath
 $inc = "D:\proyectos\expertia\training\incoming_3070"
 New-Item -ItemType Directory -Path $inc -Force | Out-Null
 $cred = Import-Clixml (Join-Path $inc "cred.xml")
-$S = New-PSSession -ComputerName 192.168.1.41 -Credential $cred -ErrorAction Stop
+$S = New-PSSession -ComputerName 192.168.1.34 -Credential $cred -ErrorAction Stop
 $copied = $false
 for ($i = 0; $i -lt 3 -and -not $copied; $i++) {
   try {
@@ -52,7 +52,10 @@ try {
       }
     }
   } catch {}
-  if ($staleMin -gt 15 -and $staleMin -lt 9999 -and -not $bigPy -and $coolOk) {
+  $phaseDone = $false
+  try { $phaseDone = ((Get-Content (Join-Path $inc "train_status.json") -Raw -Encoding utf8 | ConvertFrom-Json).phase -eq "done") } catch {}
+  if ($phaseDone) { Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') fase done, no se relanza" }
+  if ($staleMin -gt 15 -and $staleMin -lt 9999 -and -not $bigPy -and $coolOk -and -not $phaseDone) {
     Start-Sleep -Seconds 20
     $bigPy2 = Invoke-Command -Session $S -ScriptBlock {
       Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*train_expertia*" } | Select-Object -First 1 ProcessId
@@ -68,31 +71,41 @@ try {
         }
         $wait = 0
         while ($wait -lt 90) {
-          $used = try { [int]((nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>$null) -replace "[^0-9]","") } catch { 9999 }
+          $used = try { $ln = ((nvidia-smi --query-gpu=memory.used --format=csv 2>$null) | Where-Object { $_ -match "\d" } | Select-Object -Last 1); [int](($ln -replace "[^0-9]", "")) } catch { 9999 }
           if ($used -lt 500) { break }
           Start-Sleep -Seconds 5
           $wait += 5
         }
-        $env:TRAIN_STATUS_FILE = "C:\training\logs\train_status.json"
-        $env:PYTHONUNBUFFERED = "1"
-        Start-Process -FilePath "C:\training\python311\python.exe" -ArgumentList "-u C:\training\train_expertia_math.py --model C:\training\base\phi-4-mini-reasoning --train C:\training\datasets\expertia-math-puro.jsonl --out C:\training\adapters\expertia-math-r16 --offload C:\training\offload --epochs 3 --seq-len 2048 --batch 1 --accum 16 --bf16 --no-offload --save-steps 200" -RedirectStandardOutput "C:\training\logs\train_auto.log" -RedirectStandardError "C:\training\logs\train_auto.err.log" -WindowStyle Hidden
-        Start-Process -FilePath "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File C:\training\Watch-Train.ps1" -WindowStyle Hidden
+        # Lanzamiento blindado: tarea SYSTEM (los hijos de sesion WinRM mueren al cerrarla)
+        try { Invoke-WebRequest "http://192.168.1.42:8000/Run-Chemistry.cmd" -OutFile C:\training\Run-Chemistry.cmd -UseBasicParsing } catch {}
+        schtasks /Create /TN "ExpertiaTrainChemistry" /TR "C:\training\Run-Chemistry.cmd" /SC ONCE /ST 23:59 /RU SYSTEM /F
+        schtasks /Run /TN "ExpertiaTrainChemistry"
       }
-      Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') auto-relaunch (stale $([int]$staleMin)min)"
+      Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') auto-relaunch por tarea (stale $([int]$staleMin)min)"
     }
   }
 } catch { }
 $trend = Invoke-Command -Session $S -ScriptBlock {
   $pys = Get-Process python* -ErrorAction SilentlyContinue | ForEach-Object { [math]::Round($_.WorkingSet64/1GB,2) }
-  $g = try { nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,memory.used --format=csv,noheader,nounits 2>$null } catch { $null }
+  $g = try { ((nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv 2>$null) | Where-Object { $_ -match "\d" } | Select-Object -Last 1) } catch { $null }
   "$(Get-Date -Format 'HH:mm:ss') pyGB=$($pys -join '+') gpu=$g"
 }
 if ($trend) { Add-Content (Join-Path $inc "trend.log") $trend }
 Invoke-Command -Session $S -ScriptBlock {
   $l = Get-ChildItem C:\training\logs\train_*.log | Sort-Object LastWriteTime | Select-Object -Last 1
   $e = Get-ChildItem C:\training\logs\train_*.err.log -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
-  $ad = "C:\training\adapters\expertia-math-r16"
-  $g = try { nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,memory.used,memory.free,power.draw,power.limit,clocks.sm --format=csv,noheader,nounits 2>$null } catch { $null }
+  $ad = "C:\training\adapters\expertia-chemistry-r16"
+  $g = $null
+  try {
+    $q = ((nvidia-smi -q -d TEMPERATURE,POWER,CLOCK 2>$null) -join "`n")
+    $t = if ($q -match "GPU Current Temp\s*:\s*([\d\.]+)") { $Matches[1] } else { "-1" }
+    $pw = if ($q -match "Average Power Draw\s*:\s*([\d\.]+)") { $Matches[1] } else { "-1" }
+    $pl = if ($q -match "Current Power Limit\s*:\s*([\d\.]+)") { $Matches[1] } else { "-1" }
+    $ck = if ($q -match "(?m)^\s*SM\s*:\s*([\d\.]+)") { $Matches[1] } else { "-1" }
+    $ln = ((nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.free --format=csv 2>$null) | Where-Object { $_ -match "\d" } | Select-Object -Last 1)
+    $p = @($ln -split "," | ForEach-Object { ($_ -replace "[^0-9.]", "") })
+    if ($p.Count -ge 3 -and $p[0] -ne "") { $g = "$t, $($p[0]), $($p[1]), $($p[2]), $pw, $pl, $ck" }
+  } catch {}
   $cks = @($(if (Test-Path $ad) { Get-ChildItem $ad -Directory -Filter "checkpoint-*" -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -ExpandProperty Name }))
   $tail = @()
   if ($e) { $tail += Get-Content $e.FullName -Tail 18 | ForEach-Object { ([string]$_ -replace "`0", "") } }

@@ -1,0 +1,7 @@
+{
+ "domain": "Psychology",
+ "model": "phi4-mini:latest",
+ "ema_score": 0.9999367827736041,
+ "tier": 4,
+ "packages_absorbed": 9051766
+}

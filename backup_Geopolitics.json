@@ -1,0 +1,7 @@
+{
+ "domain": "Geopolitics",
+ "model": "gemma3:4b",
+ "ema_score": 0.9999327033014147,
+ "tier": 4,
+ "packages_absorbed": 9029437
+}

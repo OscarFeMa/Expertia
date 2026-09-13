@@ -1,0 +1,7 @@
+{
+ "domain": "Cybersecurity",
+ "model": "qwen2.5-coder:3b",
+ "ema_score": 0.9999673441690088,
+ "tier": 4,
+ "packages_absorbed": 9033316
+}

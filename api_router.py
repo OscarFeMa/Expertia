@@ -898,7 +898,7 @@ def training_status():
                     pass
                 rep["dataset_train"] = rep.get("dataset_train", 45000)
                 rep["dataset_val"] = rep.get("dataset_val", 5000)
-                rep["adapter"] = "r16 · seq2048 · Phi-reasoning · 3070"
+                rep["adapter"] = "r16 · seq1024 · Phi-reasoning · 3070 (chemistry)"
                 rep["base_downloaded"] = True
                 return rep
     except Exception:

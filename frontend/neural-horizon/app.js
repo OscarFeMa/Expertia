@@ -331,7 +331,9 @@ class App {
     set('train-loss', d.loss!=null?Number(d.loss).toFixed(4):'—');
     set('kpi-rate', rate!=null?rate.toFixed(1)+'/min':'—');
     set('kpi-rate-sub', `total ${this._fmtDur(this._totalElapsed(d))} · sesión ${this._fmtDur(d.elapsed_s)}`);
-    const util=d.gpu_util, temp=d.gpu_temp;
+    const util=d.gpu_util, temp=(d.gpu_temp!=null&&d.gpu_temp>=0)?d.gpu_temp:null;
+    const tt=$('train-title');
+    if(tt){ const an=(d.adapter||'').toLowerCase(); tt.textContent=an.includes('physic')?'EXPERTIAPHYSICS · ENTRENAMIENTO EN VIVO':(an.includes('math')?'EXPERTIAMATH · ENTRENAMIENTO EN VIVO':'ENTRENAMIENTO EN VIVO'); }
     set('kpi-gpu', util!=null?Math.round(util)+'%':'—');
     const gbt=$('kpi-gpu-bar'); if(gbt) gbt.style.width=(util!=null?Math.min(100,util):0)+'%';
     let tcol='var(--text)';
@@ -339,11 +341,11 @@ class App {
     const gt=$('kpi-gpu-t'); if(gt){ gt.textContent=temp!=null?temp+'°C':'(sin sonda)'; gt.style.color=tcol; }
     const mu=d.gpu_mem_used, mf=d.gpu_mem_free;
     set('kpi-vram', (mu!=null)?`${(mu/1024).toFixed(1)} / ${((mu+mf)/1024).toFixed(1)} GB`:'—');
-    set('kpi-pow', (d.gpu_power!=null)?`${d.gpu_power}W / ${d.gpu_power_limit??'?'}W${temp!=null&&temp>=85?' · ¡REFRIGERAR!':''}`:'—');
+    set('kpi-pow', (d.gpu_power!=null&&d.gpu_power>=0)?`${d.gpu_power}W / ${(d.gpu_power_limit!=null&&d.gpu_power_limit>0)?d.gpu_power_limit:'?'}W${temp!=null&&temp>=85?' · ¡REFRIGERAR!':''}`:'n/d');
     set('train-lr', d.lr!=null?Number(d.lr).toExponential(1):'—');
     set('train-time', d.elapsed_s!=null?this._fmtDur(d.elapsed_s):'—');
     set('train-ds', `${(d.dataset_train||0).toLocaleString()} / ${(d.dataset_val||0).toLocaleString()}`);
-    set('train-clock', d.gpu_clock!=null?Math.round(d.gpu_clock)+' MHz':'—');
+    set('train-clock', (d.gpu_clock!=null&&d.gpu_clock>=0)?Math.round(d.gpu_clock)+' MHz':'n/d');
     set('train-base', d.base_downloaded?'Phi-reasoning ✓':'descargando…');
     set('train-adapter', d.adapter||'r16 · seq2048');
     const ck=[...(d.checkpoints||[])].sort((a,b)=>(parseInt((a.match(/\d+/)||[0])[0],10)||0)-(parseInt((b.match(/\d+/)||[0])[0],10)||0));

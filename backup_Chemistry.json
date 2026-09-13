@@ -1,0 +1,7 @@
+{
+ "domain": "Chemistry",
+ "model": "phi4-mini:latest",
+ "ema_score": 0.9999001807254316,
+ "tier": 4,
+ "packages_absorbed": 9150448
+}

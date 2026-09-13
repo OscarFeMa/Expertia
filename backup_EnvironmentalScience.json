@@ -1,0 +1,7 @@
+{
+ "domain": "EnvironmentalScience",
+ "model": "phi4-mini:latest",
+ "ema_score": 0.999938411871246,
+ "tier": 4,
+ "packages_absorbed": 10883178
+}

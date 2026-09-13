@@ -1,0 +1,7 @@
+{
+ "domain": "Physics",
+ "model": "phi4-mini:latest",
+ "ema_score": 0.9998830865209659,
+ "tier": 4,
+ "packages_absorbed": 9149319
+}

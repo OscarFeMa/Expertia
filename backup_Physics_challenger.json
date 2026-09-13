@@ -1,0 +1,7 @@
+{
+ "domain": "Physics",
+ "model": "qwen3.5:4b-8k",
+ "ema_score": 0.999955219225299,
+ "tier": 4,
+ "packages_absorbed": 9152609
+}
