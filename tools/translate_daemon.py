@@ -20,6 +20,9 @@ except Exception as e:
 
 TARGETS = ["es", "hi", "fr", "zh", "ar", "ru"]
 ROTATE = {"es": 0, "hi": 1, "fr": 2, "zh": 3, "ar": 4, "ru": 5}
+# es-first estricto: el primer idioma con trabajo pendiente consume la noche;
+# solo se avanza al siguiente cuando un idioma sale saturado (0 nuevos).
+BUDGET = {"es": 2400, "hi": 400, "fr": 400, "zh": 400, "ar": 400, "ru": 400}
 
 def precache(limit=2000, tgt="es"):
     if translate is None:
@@ -85,7 +88,7 @@ def precache(limit=2000, tgt="es"):
 if __name__ == "__main__":
     once = "--once" in sys.argv
     logging.info("daemon start once=%s", once)
-    print("daemon 22:00-08:00 hot-set 6 langs start", flush=True)
+    print("daemon 22:00-08:00 es-first NLLB start", flush=True)
     while True:
         h = datetime.now().hour
         if h >= 22 or h < 8:
@@ -93,13 +96,16 @@ if __name__ == "__main__":
                 if not (22 <= datetime.now().hour or datetime.now().hour < 8):
                     break
                 try:
-                    n = precache(400, tgt)
+                    n = precache(BUDGET.get(tgt, 400), tgt)
                 except Exception as e:
                     logging.error(f"precache {tgt} failed: {e}")
                     n = -1
                 msg = f"precached {tgt} {n}"
                 print(msg, flush=True)
                 logging.info(msg)
+                if n > 0:
+                    logging.info(f"es-first: {tgt} aun con trabajo ({n} nuevos), resto manana")
+                    break
                 time.sleep(10)
             if once:
                 logging.info("once done, exit 0")

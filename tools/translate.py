@@ -14,9 +14,9 @@ try:
 except Exception:
     pass
 
-# Per-target Marian caches (BUGFIX: antes un solo global reutilizaba
-# el modelo del primer idioma para todos los demas -> solo 'es' funcionaba)
-_MARIAN = {}
+# Motor unico: NLLB-200-distilled-600M (acordado). Sin Helsinki.
+_NLLB = (None, None)
+_NLLB_FAILS = 0
 
 def _get_db():
     db = sqlite3.connect(str(DATABASE_PATH), timeout=120, check_same_thread=False)
@@ -78,29 +78,16 @@ def _load_nllb():
         from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
         tok = AutoTokenizer.from_pretrained("facebook/nllb-200-distilled-600M", local_files_only=False, trust_remote_code=False)
         mod = AutoModelForSeq2SeqLM.from_pretrained("facebook/nllb-200-distilled-600M")
-        _NLLB = (tok, mod)
-        return True
-    except Exception as e:
-        print(f"NLLB load failed: {e}")
-        return False
-
-def _load_helsinki(tgt):
-    if tgt in _MARIAN:
-        return True
-    try:
-        from transformers import MarianMTModel, MarianTokenizer
-        tok = MarianTokenizer.from_pretrained(f"Helsinki-NLP/opus-mt-en-{tgt}")
-        mod = MarianMTModel.from_pretrained(f"Helsinki-NLP/opus-mt-en-{tgt}")
         try:
             mod.eval()
         except Exception:
             pass
-        _MARIAN[tgt] = (tok, mod)
-        logging.info(f"Helsinki loaded en->{tgt}")
+        _NLLB = (tok, mod)
+        logging.info("NLLB loaded")
         return True
     except Exception as e:
-        logging.warning(f"Helsinki load failed en->{tgt}: {e}")
-        print(f"Helsinki load failed en->{tgt}: {e}")
+        logging.warning(f"NLLB load failed: {e}")
+        print(f"NLLB load failed: {e}")
         return False
 
 def translate(text, src="en", tgt="es"):
@@ -112,16 +99,10 @@ def translate(text, src="en", tgt="es"):
     cached = _cache_get(h)
     if cached:
         return cached
-    # Helsinki primero (rapido en CPU); NLLB solo si hay CUDA (600M en CPU
-    # es inviable para precache nocturno de 2400 docs)
-    use_nllb = False
-    try:
-        import torch
-        use_nllb = torch.cuda.is_available() and tgt in {"zh", "ar", "ru", "hi"}
-    except Exception:
-        use_nllb = False
+    # NLLB puro: unico motor. Sin fallback (si falla, se devuelve el
+    # original y el precache lo reintentara la proxima noche).
     ml = 256 if tgt == "zh" else 384 if tgt == "ar" else 512
-    if src == "en" and use_nllb and _load_nllb():
+    if src == "en" and _load_nllb():
         try:
             tok, mod = _NLLB
             tok.src_lang = f"eng_Latn"
@@ -132,19 +113,10 @@ def translate(text, src="en", tgt="es"):
             _cache_put(h, src, tgt, text, out)
             return out
         except Exception as e:
-            logging.warning(f"translate NLLB error en->{tgt}: {e}")
+            global _NLLB_FAILS
+            _NLLB_FAILS += 1
+            logging.warning(f"translate NLLB error en->{tgt} (#{_NLLB_FAILS}): {e}")
             print(f"translate NLLB error en->{tgt}: {e}")
-    if src == "en" and _load_helsinki(tgt):
-        try:
-            _tokenizer, _model = _MARIAN[tgt]
-            batch = _tokenizer([text], return_tensors="pt", padding=True, truncation=True, max_length=ml)
-            gen = _model.generate(**batch, max_length=ml)
-            out = _tokenizer.decode(gen[0], skip_special_tokens=True)
-            _cache_put(h, src, tgt, text, out)
-            return out
-        except Exception as e:
-            logging.warning(f"translate Helsinki error en->{tgt}: {e}")
-            print(f"translate Helsinki error: {e}")
     return text
 
 def translate_stream(text, src="en", tgt="es"):
