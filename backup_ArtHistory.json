@@ -1,0 +1,7 @@
+{
+ "domain": "ArtHistory",
+ "model": "phi4-mini:latest",
+ "ema_score": 0.9999652751313476,
+ "tier": 4,
+ "packages_absorbed": 9186037
+}

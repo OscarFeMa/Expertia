@@ -1,0 +1,7 @@
+{
+ "domain": "Chemistry",
+ "model": "qwen3.5:4b-8k",
+ "ema_score": 0.9999688519461805,
+ "tier": 4,
+ "packages_absorbed": 9154632
+}

@@ -4,7 +4,18 @@ $here = Split-Path -Parent $PSCommandPath
 $inc = "D:\proyectos\expertia\training\incoming_3070"
 New-Item -ItemType Directory -Path $inc -Force | Out-Null
 $cred = Import-Clixml (Join-Path $inc "cred.xml")
-$S = New-PSSession -ComputerName 192.168.1.34 -Credential $cred -ErrorAction Stop
+$ip3070 = @(arp -a 2>$null | Select-String "E0-0A-F6-9E-CB-01" | ForEach-Object { if ($_ -match "(192\.168\.1\.\d+)") { $Matches[1] } }) | Select-Object -First 1
+if (-not $ip3070) { $ip3070 = "192.168.1.46" }
+try {
+  $S = New-PSSession -ComputerName $ip3070 -Credential $cred -ErrorAction Stop
+} catch {
+  $pw = $cred.GetNetworkCredential().Password
+  net use "\\$ip3070\C$" /user:expertia $pw 2>$null | Out-Null
+  Copy-Item "\\$ip3070\C$\training\logs\train_status.json" (Join-Path $inc "train_status.json") -Force -ErrorAction Stop
+  Remove-Item (Join-Path $inc "remote_extra.json") -Force -ErrorAction SilentlyContinue
+  net use "\\$ip3070\C$" /delete 2>$null | Out-Null
+  exit 0
+}
 $copied = $false
 for ($i = 0; $i -lt 3 -and -not $copied; $i++) {
   try {
@@ -55,7 +66,16 @@ try {
   $phaseDone = $false
   try { $phaseDone = ((Get-Content (Join-Path $inc "train_status.json") -Raw -Encoding utf8 | ConvertFrom-Json).phase -eq "done") } catch {}
   if ($phaseDone) { Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') fase done, no se relanza" }
-  if ($staleMin -gt 15 -and $staleMin -lt 9999 -and -not $bigPy -and $coolOk -and -not $phaseDone) {
+  $tempNow = -1
+  try {
+    $tq = Invoke-Command -Session $S -ScriptBlock {
+      $qq = ((nvidia-smi -q -d TEMPERATURE 2>$null) -join "`n")
+      if ($qq -match "GPU Current Temp\s*:\s*([\d\.]+)") { $Matches[1] } else { "-1" }
+    } -ErrorAction Stop
+    $tempNow = [double]$tq
+  } catch {}
+  if ($tempNow -ge 80) { Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') pausa termica ($([int]$tempNow)C), se omite relaunch" }
+  if ($staleMin -gt 15 -and $staleMin -lt 9999 -and -not $bigPy -and $coolOk -and -not $phaseDone -and ($tempNow -lt 0 -or $tempNow -lt 80)) {
     Start-Sleep -Seconds 20
     $bigPy2 = Invoke-Command -Session $S -ScriptBlock {
       Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*train_expertia*" } | Select-Object -First 1 ProcessId
@@ -77,9 +97,9 @@ try {
           $wait += 5
         }
         # Lanzamiento blindado: tarea SYSTEM (los hijos de sesion WinRM mueren al cerrarla)
-        try { Invoke-WebRequest "http://192.168.1.42:8000/Run-Chemistry.cmd" -OutFile C:\training\Run-Chemistry.cmd -UseBasicParsing } catch {}
-        schtasks /Create /TN "ExpertiaTrainChemistry" /TR "C:\training\Run-Chemistry.cmd" /SC ONCE /ST 23:59 /RU SYSTEM /F
-        schtasks /Run /TN "ExpertiaTrainChemistry"
+        try { Invoke-WebRequest "http://192.168.1.42:8000/Run-Electronics.cmd" -OutFile C:\training\Run-Electronics.cmd -UseBasicParsing } catch {}
+        schtasks /Create /TN "ExpertiaTrainElectronics" /TR "C:\training\Run-Electronics.cmd" /SC ONCE /ST 23:59 /RU SYSTEM /F
+        schtasks /Run /TN "ExpertiaTrainElectronics"
       }
       Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') auto-relaunch por tarea (stale $([int]$staleMin)min)"
     }
@@ -94,7 +114,7 @@ if ($trend) { Add-Content (Join-Path $inc "trend.log") $trend }
 Invoke-Command -Session $S -ScriptBlock {
   $l = Get-ChildItem C:\training\logs\train_*.log | Sort-Object LastWriteTime | Select-Object -Last 1
   $e = Get-ChildItem C:\training\logs\train_*.err.log -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
-  $ad = "C:\training\adapters\expertia-chemistry-r16"
+  $ad = "C:\training\adapters\expertia-electronics-r16"
   $g = $null
   try {
     $q = ((nvidia-smi -q -d TEMPERATURE,POWER,CLOCK 2>$null) -join "`n")
@@ -110,11 +130,28 @@ Invoke-Command -Session $S -ScriptBlock {
   $tail = @()
   if ($e) { $tail += Get-Content $e.FullName -Tail 18 | ForEach-Object { ([string]$_ -replace "`0", "") } }
   if ($l) { $tail += Get-Content $l.FullName -Tail 8 | ForEach-Object { ([string]$_ -replace "`0", "") } }
+  $talert = ""
+  $tnum = -1
+  try { $tnum = [double]$t } catch {}
+  if ($tnum -ge 90) {
+    $trainers = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*train_expertia*" })
+    if ($trainers.Count -gt 0) {
+      $trainers | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force } catch {} }
+      $talert = "PAUSA-TERMICA $([int]$tnum)C, reanuda <80C"
+      Add-Content "C:\training\logs\thermal.log" "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') PAUSA termica ${tnum}C, entreno detenido"
+    } else {
+      $talert = "TEMP-ALTA $([int]$tnum)C (sin proceso)"
+    }
+  } elseif ($tnum -ge 80) {
+    $talert = "AVISO-TEMP $([int]$tnum)C"
+  }
   [pscustomobject]@{
     log_tail = @($tail | Where-Object { $_ -and $_.Trim() })
     log_file = $(if ($e) { $e.Name } elseif ($l) { $l.Name } else { $null })
     checkpoints = $cks
     gpu_raw = $g
+    thermal_alert = $talert
+    thermal_temp = $t
   }
 } | ConvertTo-Json -Depth 3 | Set-Content (Join-Path $inc "remote_extra.json") -Encoding utf8
 Remove-PSSession $S

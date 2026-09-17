@@ -677,12 +677,15 @@ class DatabaseManager:
 
                 cursor.execute("SELECT id FROM _migration_log WHERE name = 'kp_language_and_cache'")
                 if not cursor.fetchone():
-                    try:
-                        cursor.execute("ALTER TABLE knowledge_packages ADD COLUMN language TEXT DEFAULT 'en'")
-                        cursor.execute("ALTER TABLE knowledge_packages ADD COLUMN source_language TEXT DEFAULT NULL")
-                        cursor.execute("CREATE INDEX IF NOT EXISTS idx_kp_language ON knowledge_packages(language)")
-                    except sqlite3.OperationalError:
-                        pass
+                    for stmt in (
+                        "ALTER TABLE knowledge_packages ADD COLUMN language TEXT DEFAULT 'en'",
+                        "ALTER TABLE knowledge_packages ADD COLUMN source_language TEXT DEFAULT NULL",
+                        "CREATE INDEX IF NOT EXISTS idx_kp_language ON knowledge_packages(language)",
+                    ):
+                        try:
+                            cursor.execute(stmt)
+                        except sqlite3.OperationalError:
+                            pass
                     try:
                         cursor.execute("""
                             CREATE TABLE IF NOT EXISTS translations_cache (

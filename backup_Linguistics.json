@@ -1,0 +1,7 @@
+{
+ "domain": "Linguistics",
+ "model": "phi4-mini:latest",
+ "ema_score": 0.9999609330946808,
+ "tier": 4,
+ "packages_absorbed": 36354313
+}

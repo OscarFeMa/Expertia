@@ -295,6 +295,8 @@ class App {
     ph.textContent = d.phase || 'idle';
     const worker=$('train-worker');
     if(worker) worker.textContent = d.origen==='3070' ? '◉ RTX 3070' : (d.phase==='training'?'● local':'—');
+    if(worker&&d.thermal_alert){ worker.textContent+=' · ⚠ '+d.thermal_alert; worker.style.color='var(--red,#d96a5c)'; }
+    else if(worker){ worker.style.color=''; }
     const st=$('train-step');
     if(st) st.textContent = d.step ? `${d.step}${d.max_steps?` / ${d.max_steps}`:''} · ep ${d.epoch??'—'}` : 'en espera';
     const hist=d.loss_history||[];

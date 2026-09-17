@@ -1,0 +1,7 @@
+{
+ "domain": "Astronomy",
+ "model": "phi4-mini:latest",
+ "ema_score": 0.9999586153321285,
+ "tier": 4,
+ "packages_absorbed": 9187566
+}

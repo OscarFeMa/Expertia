@@ -51,6 +51,13 @@ Borrar junctions + renombrar `.pre-f` de vuelta + arrancar API y pipeline.
   Backups filas: `backup_<Dominio>.json` + `.pre-qwen3*.backup`.
   Pendientes (genéricos): 6xphi4 (Psych/Env/Philo/Astro/Art/Ling), finance-phi3,
   llama-medx, law_model. Medicine/Legal, últimos.
+- 2026-09-13: trio phi4-B (Astro/Art/Ling) probado con qwen3.5 (6/6 OK) pero
+  REVERTIDO a phi4-mini (q -0.01/-0.03 sin mejora evidente; regla del proyecto).
+  Trío-A (Psych/Env/Philo) adoptado con flag de vigilancia 48h.
+- 2026-09-14: ExpertiaChemistry adoptado (eval PPL 823->60, canario q 0.864/0.879
+  vs retador 0.845; EMA intacto 0.999973 — los fallos de tag fueron `system`).
+  Lección: `ollama create` exige tag explícito (`:latest`) y `FROM` no atraviesa
+  junctions (usar rutas `F:\` reales).
 - 2026-09-12: trio phi4 (Psychology/EnvironmentalScience/PhilosophyHistory) ->
   `qwen3.5:4b-8k`. Canario 2+2+3 ciclos: Philo 0.919, Env 0.885, Psych 0.873
   (vs 0.927/0.894/0.895). Timeout 120min en 1 ciclo Psych (arXiv 429, system).
