@@ -11,9 +11,9 @@ class ExpertiaSettings(BaseSettings):
     ollama_port: int = 11434
     distillation_enabled: bool = True
     distillation_model: str = "qwen2.5:3b"
-    llm_timeout: int = 90
-    llm_temperature: float = 0.7
-    llm_max_tokens: int = 1000
+    llm_timeout: int = 240
+    llm_temperature: float = 0.3
+    llm_max_tokens: int = 500
     llm_retry_max_attempts: int = 3
 
     search_delay_min: float = 0.2
@@ -41,7 +41,7 @@ class ExpertiaSettings(BaseSettings):
     reporting_interval_seconds: int = 3600
     cooldown_seconds: int = 10
 
-    languages: str = "en|es|fr|de|pt|it"
+    languages: str = "en|es|zh|hi|ar|fr|ru"
 
     blocklist_labels: FrozenSet[str] = frozenset({
         "field of study", "academic discipline", "branch of science",

@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 import time
 from datetime import datetime
@@ -7,12 +8,20 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import DATABASE_PATH
 
+_LOG = Path(__file__).parent.parent / "logs" / "translate_precache.log"
+logging.basicConfig(filename=str(_LOG), level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(message)s")
+
 try:
     from tools.translate import translate
-except Exception:
+except Exception as e:
+    logging.error(f"import translate failed: {e}")
     translate = None
 
-def precache(limit=2000):
+TARGETS = ["es", "hi", "fr", "zh", "ar", "ru"]
+ROTATE = {"es": 0, "hi": 1, "fr": 2, "zh": 3, "ar": 4, "ru": 5}
+
+def precache(limit=2000, tgt="es"):
     if translate is None:
         return 0
     import gc
@@ -21,19 +30,30 @@ def precache(limit=2000):
         has_torch = True
     except Exception:
         has_torch = False
-    db = sqlite3.connect(str(DATABASE_PATH), timeout=30)
-    rows = db.execute("SELECT id, topic, structured_knowledge FROM knowledge_packages WHERE language='en' ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    db = sqlite3.connect(str(DATABASE_PATH), timeout=120)
+    try:
+        db.execute("PRAGMA busy_timeout=120000")
+    except Exception:
+        pass
+    # hot-set: high trust + recent, ventana de ids recientes (la tabla tiene
+    # 900M+ filas sin indice en language: el ORDER BY global tardaba 10+ min)
+    rows = db.execute(
+        "SELECT kp.id, kp.topic, kp.structured_knowledge FROM knowledge_packages kp "
+        "LEFT JOIN source_reputation sr ON sr.netloc = substr(kp.source_url, instr(kp.source_url, '://')+3, instr(substr(kp.source_url, instr(kp.source_url, '://')+3), '/')-1) "
+        "WHERE kp.id > (SELECT COALESCE(MAX(id),0)-200000 FROM knowledge_packages) "
+        "AND kp.language='en' ORDER BY COALESCE(sr.trust_score,40) DESC, kp.id DESC LIMIT ?", (limit,)
+    ).fetchall()
     done = 0
     for r in rows:
         txt = (r[2] or "")[:800]
         if not txt:
             continue
-        h = __import__('hashlib').sha256(f"en->es:{txt}".encode()).hexdigest()[:16]
+        h = __import__('hashlib').sha256(f"en->{tgt}:{txt}".encode()).hexdigest()[:16]
         exists = db.execute("SELECT 1 FROM translations_cache WHERE hash=?", (h,)).fetchone()
         if exists:
             continue
         try:
-            out = translate(txt, "en", "es")
+            out = translate(txt, "en", tgt)
         except Exception as e:
             if "bad allocation" in str(e).lower():
                 gc.collect()
@@ -45,29 +65,49 @@ def precache(limit=2000):
                 time.sleep(0.5)
                 continue
             raise
-        time.sleep(0.05)
         done += 1
         if done % 50 == 0:
-            print(f"precache {done}/{limit}")
+            msg = f"precache {tgt} {done}/{limit}"
+            print(msg, flush=True)
+            logging.info(msg)
             gc.collect()
             if has_torch:
                 try:
                     torch.cuda.empty_cache()
                 except Exception:
                     pass
-        if datetime.now().hour >= 6:
+        if not (22 <= datetime.now().hour or datetime.now().hour < 8):
             break
     db.close()
     gc.collect()
     return done
 
 if __name__ == "__main__":
-    print("daemon 00:00-06:00 start")
+    once = "--once" in sys.argv
+    logging.info("daemon start once=%s", once)
+    print("daemon 22:00-08:00 hot-set 6 langs start", flush=True)
     while True:
         h = datetime.now().hour
-        if 0 <= h < 6:
-            n = precache(100)
-            print(f"precached {n}")
+        if h >= 22 or h < 8:
+            for tgt in TARGETS:
+                if not (22 <= datetime.now().hour or datetime.now().hour < 8):
+                    break
+                try:
+                    n = precache(400, tgt)
+                except Exception as e:
+                    logging.error(f"precache {tgt} failed: {e}")
+                    n = -1
+                msg = f"precached {tgt} {n}"
+                print(msg, flush=True)
+                logging.info(msg)
+                time.sleep(10)
+            if once:
+                logging.info("once done, exit 0")
+                break
             time.sleep(60)
         else:
+            msg = "outside window 22-08, exit 0" if once else "outside window, sleep"
+            logging.info(msg)
+            if once:
+                break
             time.sleep(300)

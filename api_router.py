@@ -452,6 +452,7 @@ def get_insights():
     prow = _fetch_one("SELECT * FROM pipeline_status ORDER BY id DESC LIMIT 1")
     mode = None
     proc_alive = False
+    _st = {}
     start_epoch = prow.get("start_epoch") if prow else None
     try:
         if _PIPELINE_STATE_FILE.exists():
@@ -463,6 +464,21 @@ def get_insights():
                 start_epoch = _st.get("start_time")
     except Exception:
         pass
+    if not proc_alive:
+        # Fallback: pipeline_state.json puede quedar con pid null/stale
+        # (p.ej. relanzamiento del guard). Escaneo por linea de comandos.
+        try:
+            import psutil
+            for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+                try:
+                    cmd = " ".join(proc.info.get("cmdline") or [])
+                    if "orchestrator.py" in cmd and "--parallel" in cmd:
+                        proc_alive = True
+                        break
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        except ImportError:
+            pass
 
     last_act = _fetch_one("SELECT timestamp, message FROM activity_log ORDER BY id DESC LIMIT 1")
     life_age_min = None
@@ -879,9 +895,13 @@ def training_status():
                 rep = json.loads(sf_inc.read_text(encoding="utf-8"))
                 rep["origen"] = "3070"
                 try:
-                    extra = json.loads((inc / "remote_extra.json").read_text(encoding="utf-8-sig"))
+                    _xp = inc / "remote_extra.json"
+                    if _t.time() - _xp.stat().st_mtime >= 1200:
+                        raise FileNotFoundError("remote_extra stale")
+                    extra = json.loads(_xp.read_text(encoding="utf-8-sig"))
                     rep["log_tail"] = extra.get("log_tail", [])
                     rep["log_file"] = extra.get("log_file")
+                    rep["thermal_alert"] = extra.get("thermal_alert", "")
                     rep["checkpoints"] = extra.get("checkpoints", [])
                     rep["gpu"] = extra.get("gpu")
                     raw = (extra.get("gpu_raw") or "").strip()
@@ -898,7 +918,7 @@ def training_status():
                     pass
                 rep["dataset_train"] = rep.get("dataset_train", 45000)
                 rep["dataset_val"] = rep.get("dataset_val", 5000)
-                rep["adapter"] = "r16 · seq1024 · Phi-reasoning · 3070 (chemistry)"
+                rep["adapter"] = "r16 · seq1024 · Phi-reasoning · 3070 (electronics)"
                 rep["base_downloaded"] = True
                 return rep
     except Exception:
