@@ -68,9 +68,19 @@ def main():
     cur = lo
     while cur <= mx:
         hi = cur + args.batch
-        rows = db.execute(
-            "SELECT id, structured_knowledge FROM knowledge_packages "
-            "WHERE domain=? AND id>=? AND id<?", (args.domain, cur, hi)).fetchall()
+        for attempt in range(4):
+            try:
+                rows = db.execute(
+                    "SELECT id, structured_knowledge FROM knowledge_packages "
+                    "WHERE domain=? AND id>=? AND id<?", (args.domain, cur, hi)).fetchall()
+                break
+            except sqlite3.OperationalError as e:
+                logging.warning(f"ventana <{hi} SELECT bloqueado (try {attempt}): {e}")
+                time.sleep(60)
+        else:
+            logging.error(f"ventana <{hi} SELECT imposible, saltando")
+            cur = hi
+            continue
         scanned += len(rows)
         groups = {}
         for _id, sk in rows:
@@ -84,10 +94,19 @@ def main():
                 dups.extend(sorted(ids)[1:])
         for i in range(0, len(dups), 1000):
             chunk = dups[i:i + 1000]
-            db.execute(
-                f"DELETE FROM knowledge_packages WHERE id IN ({','.join('?'*len(chunk))})",
-                chunk)
-            db.commit()
+            for attempt in range(4):
+                try:
+                    db.execute(
+                        f"DELETE FROM knowledge_packages WHERE id IN ({','.join('?'*len(chunk))})",
+                        chunk)
+                    db.commit()
+                    break
+                except sqlite3.OperationalError as e:
+                    logging.warning(f"DELETE bloqueado (try {attempt}): {e}")
+                    time.sleep(60)
+            else:
+                logging.error(f"DELETE imposible tras 4 intentos, abortando ventana")
+                break
         deleted += len(dups)
         cur = hi
         windows += 1
