@@ -292,7 +292,8 @@ SPECIALIST_REGISTRY = [
     {"domain": "Linguistics", "model": "phi4-mini:latest", "root": "Q81798", "props": ["P31", "P279", "P2826", "P1990"]},
     {"domain": "Psychology", "model": "qwen3.5:4b-8k", "root": "Q9418", "props": ["P31", "P279", "P921", "P659"]},
     {"domain": "EnvironmentalScience", "model": "qwen3.5:4b-8k", "root": "Q188069", "props": ["P31", "P279", "P361", "P527"]},
-    {"domain": "Sociology", "model": "qwen3.5:4b-8k", "root": "Q21201", "props": ["P31", "P279", "P2826", "P101"]}
+    {"domain": "Sociology", "model": "qwen3.5:4b-8k", "root": "Q21201", "props": ["P31", "P279", "P2826", "P101"]},
+    {"domain": "Biology", "model": "qwen3.5:4b-8k", "root": "Q420", "props": ["P31", "P279", "P171", "P703", "P225"]},
 ]
 
 # Derive WIKIDATA_SCHEMAS from single source of truth
