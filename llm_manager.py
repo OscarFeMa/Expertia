@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # Models with default-ON thinking mode (Ollama generate API): thinking tokens
 # eat the num_predict budget and yield empty responses for distillation.
 # Fix: top-level "think": False (NOT inside options — silently ignored there).
-THINKING_MODELS = ("qwen3.5",)
+THINKING_MODELS = ("qwen3.5", "expertia-", "ExpertiaMath")
 
 
 # ============================================================================
