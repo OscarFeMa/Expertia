@@ -7,6 +7,7 @@ Requiere pipeline parado para maxima velocidad (tolera convivencia).
 import argparse
 import hashlib
 import json
+import logging
 import shutil
 import sqlite3
 import sys
@@ -17,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import DATABASE_PATH
 
 PROGRESS = Path(__file__).parent.parent / "storage" / "dedupe_progress.json"
+logging.basicConfig(filename=str(Path(__file__).parent.parent / "logs" / "dedupe.log"),
+                    level=logging.INFO, format="%(asctime)s %(message)s")
 
 
 def load_progress():
@@ -59,6 +62,7 @@ def main():
     st = load_progress().get(args.domain, {})
     lo = max(args.start_after, int(st.get("done_below", 0)))
     print(f"dedupe {args.domain}: ids {lo}..{mx} ventanas {args.batch}", flush=True)
+    logging.info(f"dedupe {args.domain}: ids {lo}..{mx}")
 
     windows = deleted = scanned = 0
     cur = lo
@@ -90,6 +94,8 @@ def main():
         save_progress({args.domain: {"done_below": cur}})
         print(f"ventana <{hi}: filas={len(rows)} dupes={len(dups)} "
               f"total_del={deleted}", flush=True)
+        logging.info(f"ventana <{hi}: filas={len(rows)} dupes={len(dups)} "
+                     f"total_del={deleted}")
         g = guards(DATABASE_PATH)
         if g:
             print(f"ABORT {g}", flush=True)
@@ -99,6 +105,7 @@ def main():
         time.sleep(args.sleep)
     db.close()
     print(f"DONE {args.domain}: scanned={scanned} deleted={deleted}", flush=True)
+    logging.info(f"DONE {args.domain}: scanned={scanned} deleted={deleted}")
 
 
 if __name__ == "__main__":
