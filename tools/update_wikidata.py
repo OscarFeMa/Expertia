@@ -332,6 +332,8 @@ def main():
                         help='Max QIDs per specialist (0 = unlimited)')
     parser.add_argument('--specialist', type=str, default='all',
                         help='Only update this specialist domain')
+    parser.add_argument('--minutes-per-domain', type=int, default=25,
+                        help='Time budget per specialist; exceeding it skips to next')
     args = parser.parse_args()
 
     db = get_db_manager()
@@ -339,7 +341,8 @@ def main():
         '''SELECT id, domain, root_qid, last_wikidata_download
            FROM specialist_registry
            WHERE parent_id IS NULL
-           ORDER BY domain''',
+           ORDER BY last_wikidata_download IS NOT NULL,
+                    last_wikidata_download ASC''',
         fetch=True
     )
 
@@ -374,17 +377,24 @@ def main():
         progress['packages_this_domain'] = 0
         write_progress(progress)
 
-        added = update_specialist(
-            sid, domain, root_qid,
-            since=since, limit=args.limit,
-            dry_run=args.dry_run
-        )
+        t0 = time.time()
+        try:
+            added = update_specialist(
+                sid, domain, root_qid,
+                since=since, limit=args.limit,
+                dry_run=args.dry_run
+            )
+            status = 'SUCCESS' if added > 0 else 'EMPTY'
+        except Exception as e:
+            logger.error(f'[{domain}] update crashed: {e}')
+            added, status = 0, 'FAILED'
+        elapsed_min = (time.time() - t0) / 60
         total_added += added
         progress['packages_this_domain'] = added
         progress['total_added'] = total_added
         write_progress(progress)
 
-        if added > 0 and not args.dry_run:
+        if not args.dry_run:
             db.execute_query(
                 '''UPDATE specialist_registry
                    SET last_wikidata_download = CURRENT_TIMESTAMP
@@ -394,9 +404,13 @@ def main():
             db.execute_query(
                 '''INSERT INTO wikidata_sync_log
                    (specialist_id, domain, qids_added, sync_type, status, completed_at)
-                   VALUES (?, ?, ?, ?, 'SUCCESS', CURRENT_TIMESTAMP)''',
-                (sid, domain, added, 'full' if args.full else 'incremental')
+                   VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)''',
+                (sid, domain, added, 'full' if args.full else 'incremental', status)
             )
+        logger.info(f'[{domain}] {status} +{added} en {elapsed_min:.1f}min')
+        if elapsed_min > args.minutes_per_domain:
+            logger.warning(f'[{domain}] sobre presupuesto '
+                           f'({elapsed_min:.0f}>{args.minutes_per_domain}min), siguiente')
 
     progress['current_domain'] = ''
     progress['finished'] = True
