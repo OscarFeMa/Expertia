@@ -205,6 +205,13 @@ DOMAIN_QUERY_SEEDS = {
         "Remote sensing GIS environmental monitoring", "Hydrology water resources management",
         "Soil science agriculture land degradation", "Renewable energy solar wind sustainable",
     ],
+    "Biology": [
+        "Genetics heredity DNA gene expression", "Cell biology organelles membrane function",
+        "Evolution natural selection speciation", "Microbiology bacteria viruses pathogens",
+        "Botany plant physiology photosynthesis", "Zoology animal behavior physiology",
+        "Molecular biology proteins enzymes", "Ecology populations ecosystems interactions",
+        "Taxonomy classification systematics", "Biochemistry metabolism pathways",
+    ],
 }
 
 # Domain stability: controls how urgently stale knowledge decays per domain
@@ -214,7 +221,7 @@ DOMAIN_STABILITY = {
     "Medicine": 0.5, "LegalSystem": 0.5,
     "DataScience": 0.6, "SoftwareEngineering": 0.6, "Electronics": 0.6,
     "Linguistics": 0.6, "Psychology": 0.5, "Sociology": 0.5,
-    "EnvironmentalScience": 0.4,
+    "EnvironmentalScience": 0.4, "Biology": 0.5,
     "Physics": 0.8, "Chemistry": 0.8, "Astronomy": 0.8,
     "PhilosophyHistory": 0.9, "ArtHistory": 0.9, "Mathematics": 1.0,
     "GeneralKnowledge": 0.7,
@@ -1310,6 +1317,18 @@ class PipelineController:
 
             self._log_activity(f"Modelo {model} listo — iniciando {domain}")
             self.db_manager.execute_query("UPDATE specialist_registry SET status='ACTIVE' WHERE id=?", (sid,))
+            # Live counters + stale flags: reset per-cycle base; clear ACTIVE
+            # rancios (>30 min) para que solo workers vivos salgan activos
+            self._live_touch = getattr(self, '_live_touch', {})
+            self._live_base = getattr(self, '_live_base', {})
+            self._live_base[sid] = 0
+            try:
+                self.db_manager.execute_query(
+                    "UPDATE specialist_registry SET status='IDLE' WHERE id != ? "
+                    "AND status IN ('ACTIVE','INIT','PROCESSING') "
+                    "AND updated_at < datetime('now','-30 minutes')", (sid,))
+            except Exception as e:
+                logger.debug(f"stale-active reset failed: {e}")
 
             total_c, total_l, trusts, pkgs_saved = 0, 0, [], 0
             distill_buffer: List[tuple] = []
@@ -1402,6 +1421,21 @@ class PipelineController:
                             distill_buffer.append((query[:100], item['url'], domain, None, summary[:500]))
                             pkgs_saved += 1
                             trusts.append(item['trust'])
+                            # Contador en vivo (throttle 60s): el dashboard se mueve
+                            # a mitad de ciclo en vez de solo al final
+                            try:
+                                _now = time.time()
+                                if _now - self._live_touch.get(sid, 0) >= 60:
+                                    _delta = pkgs_saved - self._live_base.get(sid, 0)
+                                    if _delta > 0:
+                                        self.db_manager.execute_query(
+                                            "UPDATE specialist_registry SET packages_absorbed = "
+                                            "packages_absorbed + ?, updated_at = CURRENT_TIMESTAMP "
+                                            "WHERE id = ?", (_delta, sid))
+                                        self._live_base[sid] = pkgs_saved
+                                    self._live_touch[sid] = _now
+                            except Exception as e:
+                                logger.debug(f"live touch failed: {e}")
                             if len(distill_buffer) >= 20:
                                 flush_distill_buffer()
                     self._log_activity(f"{domain} > {pkgs_saved} packages tras destilar {len(valid_items)} items en {((len(valid_items)+batch_size-1)//batch_size)} batches")
@@ -1412,10 +1446,13 @@ class PipelineController:
             self.web_scraper.force_flush()
 
             if pkgs_saved > 0:
-                self.db_manager.execute_query(
-                    "UPDATE specialist_registry SET packages_absorbed = packages_absorbed + ? WHERE id = ?",
-                    (pkgs_saved, sid)
-                )
+                _final = pkgs_saved - self._live_base.get(sid, 0)
+                if _final > 0:
+                    self.db_manager.execute_query(
+                        "UPDATE specialist_registry SET packages_absorbed = packages_absorbed + ? WHERE id = ?",
+                        (_final, sid)
+                    )
+                self._live_base[sid] = pkgs_saved
 
             self.metrics.record_phase_b(specialist_id=sid, domain=domain, success=total_c > 0, contents_count=total_c)
             avg_t = sum(trusts) / len(trusts) if trusts else 50.0
