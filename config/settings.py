@@ -24,7 +24,7 @@ class ExpertiaSettings(BaseSettings):
     include_links: bool = True
     suitability_threshold: float = 0.85
 
-    wikidata_dump_path: str = "E:/aria2-1.37.0-win-64bit-build1/latest-all.json.gz"
+    wikidata_dump_path: str = "F:/expertia/aria2/latest-all.json.gz"
     wikidata_output_dir: str = "E:/expertia-data"
     wikidata_extraction_timeout_hours: float = 36.0
     wikidata_entity_api: str = "https://www.wikidata.org/w/api.php"
