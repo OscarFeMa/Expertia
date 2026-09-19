@@ -34,6 +34,8 @@ from config.settings import (
     LLM_TIMEOUT,
     LLM_TEMPERATURE,
     LLM_MAX_TOKENS,
+    LLM_KEEP_ALIVE,
+    LLM_NUM_CTX,
 )
 
 logger = logging.getLogger(__name__)
@@ -646,9 +648,9 @@ class LLMRunner:
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
-                "num_ctx": 8192
+                "num_ctx": LLM_NUM_CTX
             },
-            "keep_alive": "5m"
+            "keep_alive": LLM_KEEP_ALIVE
         }
         if model_name.startswith(THINKING_MODELS):
             payload["think"] = False
@@ -688,7 +690,7 @@ class LLMRunner:
         temperature = temperature or LLM_TEMPERATURE
         max_tokens = max_tokens or LLM_MAX_TOKENS
         url = f"{self.api_base_url}/api/generate"
-        payload = {"model": model_name, "prompt": prompt, "stream": True, "options": {"temperature": temperature, "num_predict": max_tokens, "num_ctx": 8192}, "keep_alive": "5m"}
+        payload = {"model": model_name, "prompt": prompt, "stream": True, "options": {"temperature": temperature, "num_predict": max_tokens, "num_ctx": LLM_NUM_CTX}, "keep_alive": LLM_KEEP_ALIVE}
         if model_name.startswith(THINKING_MODELS):
             payload["think"] = False
         if self._session is None or self._session.closed:

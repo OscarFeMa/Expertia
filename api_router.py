@@ -1081,7 +1081,7 @@ def wiki_feed_now():
     import subprocess, sys, time
     # Parar pipeline actual si existe
     try:
-        from api_router import _pipeline as _pl
+        _pl = _pipeline
         pid = _pl.get("pid")
         if pid and _is_pid_alive(pid):
             try:
