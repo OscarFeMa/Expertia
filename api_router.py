@@ -102,7 +102,9 @@ def _is_pid_alive(pid):
     try:
         import psutil
         return psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
-    except (ImportError, psutil.NoSuchProcess, psutil.AccessDenied):
+    except Exception:
+        # psutil ausente, pid muerto, o errores de plataforma (OSError/TypeError
+        # segun version de psutil): caer al fallback subprocess/os.kill.
         pass
     # Fallback if psutil unavailable
     try:
