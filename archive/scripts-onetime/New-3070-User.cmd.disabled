@@ -21,7 +21,7 @@ net user expertia >nul 2>&1
 if not errorlevel 1 (
   echo Y | net user expertia /delete >> "%OUT%" 2>&1
 )
-net user expertia "***REDACTED***" /add /expires:never /passwordchg:no >> "%OUT%" 2>&1
+net user expertia "***ROTADA***" /add /expires:never /passwordchg:no >> "%OUT%" 2>&1
 if errorlevel 1 (
   echo FALLO crear usuario
   echo FALLO crear usuario >> "%OUT%"
@@ -48,7 +48,7 @@ if errorlevel 1 (
 )
 echo [6/6] autotest WinRM local
 echo [6/6] autotest WinRM local >> "%OUT%"
-winrm identify -r:http://localhost:5985/wsman -u:localhost\expertia -p:***REDACTED*** -auth:negotiate >> "%OUT%" 2>&1
+winrm identify -r:http://localhost:5985/wsman -u:localhost\expertia -p:***ROTADA*** -auth:negotiate >> "%OUT%" 2>&1
 if errorlevel 1 (
   echo FALLO autotest WinRM
   echo FALLO autotest WinRM >> "%OUT%"
