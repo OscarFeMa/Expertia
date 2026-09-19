@@ -1,4 +1,4 @@
-"""Generate seed JSON files for all 18 domains with 10 high-quality URLs each."""
+"""Generate seed JSON files for all 19 domains with 10 high-quality URLs each."""
 import json
 from pathlib import Path
 
@@ -113,6 +113,18 @@ SEEDS = {
         {"title": "NASA ADS", "url": "https://ui.adsabs.harvard.edu/", "trust": 100, "tier": 1, "description": "NASA Astrophysics Data System, bibliographic database."},
         {"title": "International Astronomical Union", "url": "https://www.iau.org/", "trust": 100, "tier": 1, "description": "International authority for astronomical nomenclature."},
         {"title": "Planetary Society", "url": "https://www.planetary.org/", "trust": 85, "tier": 1, "description": "Nonprofit dedicated to space exploration and planetary science."},
+    ],
+    "Biology": [
+        {"title": "Biology - Wikipedia", "url": "https://en.wikipedia.org/wiki/Biology", "trust": 70, "tier": 2, "description": "Overview of biology, its branches, and fundamental principles."},
+        {"title": "NCBI - National Center for Biotechnology Information", "url": "https://www.ncbi.nlm.nih.gov/", "trust": 100, "tier": 1, "description": "GenBank, PubMed, and biomedical/genetic databases."},
+        {"title": "ArXiv Quantitative Biology", "url": "https://arxiv.org/list/q-bio/new", "trust": 100, "tier": 1, "description": "Preprints in quantitative biology (q-bio)."},
+        {"title": "Nature - Biological Sciences", "url": "https://www.nature.com/subjects/biological-sciences", "trust": 95, "tier": 1, "description": "Nature research across the biological sciences."},
+        {"title": "PLOS Biology", "url": "https://journals.plos.org/plosbiology/", "trust": 95, "tier": 1, "description": "Open-access journal covering all biology."},
+        {"title": "Encyclopedia of Life", "url": "https://eol.org/", "trust": 100, "tier": 1, "description": "Global reference for species and biodiversity."},
+        {"title": "GBIF - Global Biodiversity Information Facility", "url": "https://www.gbif.org/", "trust": 100, "tier": 1, "description": "Open biodiversity occurrence data."},
+        {"title": "iNaturalist", "url": "https://www.inaturalist.org/", "trust": 70, "tier": 2, "description": "Community observations of organisms for taxonomy."},
+        {"title": "Cell", "url": "https://www.cell.com/cell/", "trust": 100, "tier": 1, "description": "High-impact journal for cell and molecular biology."},
+        {"title": "Tree of Life Web Project", "url": "http://tolweb.org/", "trust": 85, "tier": 1, "description": "Phylogenetic information on organismal groups."},
     ],
     "PhilosophyHistory": [
         {"title": "Philosophy - Wikipedia", "url": "https://en.wikipedia.org/wiki/Philosophy", "trust": 70, "tier": 2, "description": "Overview of philosophy, its branches, and history."},
