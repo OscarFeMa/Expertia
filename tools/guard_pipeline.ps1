@@ -1,9 +1,9 @@
 $ErrorActionPreference = "Continue"
-$repo = "D:\proyectos\expertia\incubator-root"
+$repo = Split-Path -Parent $PSScriptRoot
 $log = Join-Path $repo "logs\guard.log"
 function GLog($m) { Add-Content $log "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $m" }
 $py = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
-  Where-Object { $_.CommandLine -like "*orchestrator.py*" -and $_.CommandLine -like "*--parallel*" }
+  Where-Object { $_.CommandLine -like "*orchestrator.py*" -and $_.CommandLine -like "*--phase*" }
 $lastLog = Get-ChildItem (Join-Path $repo "logs\pipeline_*.log") -ErrorAction SilentlyContinue |
   Sort-Object LastWriteTime -Descending | Select-Object -First 1
 $ageMin = if ($lastLog) { ((Get-Date) - $lastLog.LastWriteTime).TotalMinutes } else { 9999 }

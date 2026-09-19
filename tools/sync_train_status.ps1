@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Continue"
 function json2obj($p) { Get-Content $p -Raw -Encoding utf8 | ConvertFrom-Json }
 $here = Split-Path -Parent $PSCommandPath
-$inc = "D:\proyectos\expertia\training\incoming_3070"
+$inc = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) "training\incoming_3070"
 New-Item -ItemType Directory -Path $inc -Force | Out-Null
 $cred = Import-Clixml (Join-Path $inc "cred.xml")
 $ip3070 = @(arp -a 2>$null | Select-String "E0-0A-F6-9E-CB-01" | ForEach-Object { if ($_ -match "(192\.168\.1\.\d+)") { $Matches[1] } }) | Select-Object -First 1

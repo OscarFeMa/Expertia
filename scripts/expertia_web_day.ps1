@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Continue"
-$repo = "D:\proyectos\expertia\incubator-root"
+$repo = Split-Path -Parent $PSScriptRoot
 $py = "C:\Users\usuario\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe"
 & $py (Join-Path $repo "tools\gen_cycle_report.py") --kind training 2>&1 | Out-Null
 Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like "*train_expertia_math.py*" } | ForEach-Object {

@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Continue"
-$repo = "D:\proyectos\expertia\incubator-root"
-$trainRoot = "D:\proyectos\expertia\training"
+$repo = Split-Path -Parent $PSScriptRoot
+$trainRoot = Join-Path (Split-Path -Parent $repo) "training"
 $stateFile = Join-Path $repo "pipeline_state.json"
 $py = "C:\Users\usuario\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe"
 $trainPy = Join-Path $trainRoot ".venv-train\Scripts\python.exe"
