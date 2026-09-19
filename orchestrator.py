@@ -274,6 +274,7 @@ from config.settings import (
     WIKIDATA_LABEL_BATCH_SIZE,
     LANGUAGES,
     LLM_RETRY_MAX_ATTEMPTS,
+    DB_WAL_AUTOCHECKPOINT_PAGES,
 )
 from config.log_setup import setup_logging
 
@@ -1107,7 +1108,7 @@ class PipelineController:
         try:
             self.db_manager.execute_query("PRAGMA synchronous=NORMAL")
             self.db_manager.execute_query("PRAGMA cache_size=-256000")
-            self.db_manager.execute_query("PRAGMA wal_autocheckpoint=10000")
+            self.db_manager.execute_query(f"PRAGMA wal_autocheckpoint={DB_WAL_AUTOCHECKPOINT_PAGES}")
         except Exception as e:
             logger.warning(f"Failed to set cascade pragmas: {e}")
 
@@ -1769,11 +1770,13 @@ class PipelineController:
         # Single mass UPDATE instead of 18 per-domain COUNT+UPDATE pairs
         # This avoids scanning the 430M-row table 18 times
         try:
-            self.db_manager.execute_query("""
-                UPDATE knowledge_packages
-                SET absorbed_at = CURRENT_TIMESTAMP
-                WHERE absorbed_at IS NULL AND qid IS NOT NULL
-            """)
+            from datetime import datetime, timezone as _tz
+            _feed_ts = datetime.now(_tz.utc).strftime("%Y-%m-%d %H:%M:%S")
+            self.db_manager.execute_query(
+                "UPDATE knowledge_packages SET absorbed_at = ? "
+                "WHERE absorbed_at IS NULL AND qid IS NOT NULL",
+                (_feed_ts,)
+            )
 
             total = self.db_manager.execute_query(
                 "SELECT changes()", fetch=True
@@ -1786,8 +1789,9 @@ class PipelineController:
             domain_counts = self.db_manager.execute_query(
                 """SELECT domain, COUNT(*) AS cnt
                    FROM knowledge_packages
-                   WHERE absorbed_at = CURRENT_TIMESTAMP
-                   GROUP BY domain""", fetch=True
+                   WHERE absorbed_at = ?
+                   GROUP BY domain""",
+                (_feed_ts,), fetch=True
             ) or []
 
             domain_map = {s['domain']: s['id'] for s in all_specialists}
