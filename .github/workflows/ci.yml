@@ -13,8 +13,8 @@ jobs:
           pip install -r requirements.txt
           pip install pytest pytest-asyncio ruff
       - name: Lint
-        run: ruff check . --ignore=E501,E402,F403,F405,F811 2>&1 || true
+        run: ruff check . --exclude archive,backups --select E9,F63,F7,F82,E722
       - name: Test imports
         run: python tests/test_orchestrator_imports.py
-      - name: Run unit tests
-        run: python -m pytest tests/unit/ -v
+      - name: Run tests
+        run: python -m pytest tests/ -q

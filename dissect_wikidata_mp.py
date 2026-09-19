@@ -157,7 +157,7 @@ def worker_main(
         while True:
             try:
                 batch = work_queue.get(timeout=5)
-            except:
+            except Exception:
                 if stop_event.is_set() and work_queue.empty():
                     break
                 continue

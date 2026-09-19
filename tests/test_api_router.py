@@ -16,10 +16,11 @@ class TestIsPidAlive:
     @patch("api_router.subprocess.run")
     def test_windows_pid_alive(self, mock_run):
         from api_router import _is_pid_alive
-        mock_run.return_value = MagicMock(stdout="python.exe 1234 Console 1 10,000 K")
-        result = _is_pid_alive(1234)
-        assert result is True
-        mock_run.assert_called_once()
+        with patch("psutil.pid_exists", return_value=True), \
+             patch("psutil.Process") as mp, \
+             patch("psutil.STATUS_ZOMBIE", "zombie"):
+            mp.return_value.status.return_value = "running"
+            assert _is_pid_alive(1234) is True
 
     @patch("api_router.os.name", "nt")
     @patch("api_router.subprocess.run")
@@ -33,9 +34,11 @@ class TestIsPidAlive:
     @patch("api_router.os.kill")
     def test_posix_pid_alive(self, mock_kill):
         from api_router import _is_pid_alive
-        mock_kill.return_value = None
-        result = _is_pid_alive(1234)
-        assert result is True
+        with patch("psutil.pid_exists", return_value=True), \
+             patch("psutil.Process") as mp, \
+             patch("psutil.STATUS_ZOMBIE", "zombie"):
+            mp.return_value.status.return_value = "running"
+            assert _is_pid_alive(1234) is True
 
     @patch("api_router.os.name", "posix")
     @patch("api_router.os.kill")
