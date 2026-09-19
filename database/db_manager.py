@@ -21,7 +21,14 @@ from pathlib import Path
 from typing import Optional, ContextManager
 from contextlib import contextmanager
 
-from config.settings import DATABASE_PATH as _DEFAULT_DB_PATH
+from config.settings import (
+    DATABASE_PATH as _DEFAULT_DB_PATH,
+    DB_CONNECT_TIMEOUT_S,
+    DB_BUSY_TIMEOUT_RO_MS,
+    DB_BUSY_TIMEOUT_RW_MS,
+    DB_CACHE_SIZE_KIB,
+    DB_WAL_AUTOCHECKPOINT_PAGES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +75,8 @@ class DatabaseManager:
                 cp_result = self._connection.execute("PRAGMA wal_checkpoint(RESTART)").fetchone()
                 if cp_result and cp_result[1] > 0:
                     logger.debug(f"WAL checkpoint: {cp_result[1]} pages written, WAL={cp_result[2]}")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("WAL checkpoint failed: %s", e)
     
     def _get_connection(self) -> sqlite3.Connection:
         """
@@ -102,24 +109,25 @@ class DatabaseManager:
                     f"file:{self.db_path}?mode=ro",
                     uri=True,
                     check_same_thread=False,
-                    timeout=5.0
+                    timeout=DB_CONNECT_TIMEOUT_S
                 )
             else:
                 conn = sqlite3.connect(
                     str(self.db_path),
                     check_same_thread=False,
-                    timeout=30.0
+                    timeout=DB_CONNECT_TIMEOUT_S
                 )
             if read_only:
-                conn.execute("PRAGMA busy_timeout=1000;")
+                conn.execute(f"PRAGMA busy_timeout={DB_BUSY_TIMEOUT_RO_MS};")
+                conn.execute("PRAGMA cache_size=-65536;")
             else:
                 conn.execute("PRAGMA journal_mode=WAL;")
                 conn.execute("PRAGMA synchronous=NORMAL;")
-                conn.execute("PRAGMA busy_timeout=60000;")
+                conn.execute(f"PRAGMA busy_timeout={DB_BUSY_TIMEOUT_RW_MS};")
                 conn.execute("PRAGMA mmap_size=1073741824;")
-            conn.execute("PRAGMA cache_size=-1048576;")
+                conn.execute(f"PRAGMA cache_size={DB_CACHE_SIZE_KIB};")
             conn.execute("PRAGMA temp_store=MEMORY;")
-            conn.execute("PRAGMA wal_autocheckpoint=500;")
+            conn.execute(f"PRAGMA wal_autocheckpoint={DB_WAL_AUTOCHECKPOINT_PAGES};")
             conn.execute("PRAGMA foreign_keys=ON;")
             conn.row_factory = sqlite3.Row
             mode = "READ-ONLY" if read_only else "WAL + perf pragmas"
@@ -326,7 +334,8 @@ class DatabaseManager:
             try:
                 self._get_connection()
                 return True
-            except:
+            except Exception as e:
+                logger.error(f"Database reconnect failed: {e}")
                 return False
     
     def initialize_specialist_tables(self) -> bool:

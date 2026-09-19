@@ -9,7 +9,11 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from config.settings import DATABASE_PATH as _DEFAULT_DB_PATH
+from config.settings import (
+    DATABASE_PATH as _DEFAULT_DB_PATH,
+    DB_CONNECT_TIMEOUT_S,
+    DB_BUSY_TIMEOUT_RO_MS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +32,8 @@ def _open_conn() -> sqlite3.Connection:
     if _ro_path is None:
         raise RuntimeError("readonly_db not initialized: call init(db_path) first")
     uri = f"file:{_ro_path}?mode=ro"
-    conn = sqlite3.connect(uri, uri=True, timeout=10.0, check_same_thread=False)
-    conn.execute("PRAGMA busy_timeout=10000")
+    conn = sqlite3.connect(uri, uri=True, timeout=DB_CONNECT_TIMEOUT_S, check_same_thread=False)
+    conn.execute(f"PRAGMA busy_timeout={DB_BUSY_TIMEOUT_RO_MS}")
     conn.execute("PRAGMA cache_size=-256000")
     conn.execute("PRAGMA temp_store=MEMORY")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -41,7 +45,8 @@ def _is_alive(conn: sqlite3.Connection) -> bool:
     try:
         conn.execute("SELECT 1")
         return True
-    except sqlite3.Error:
+    except sqlite3.Error as e:
+        logger.debug("RO connection muerta: %s", e)
         return False
 
 
