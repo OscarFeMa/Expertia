@@ -9,7 +9,8 @@ import time
 import sys
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent.parent / "storage" / "incubator.db"
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config.settings import DATABASE_PATH as DB_PATH
 QUERY_TIMEOUT_SEC = 600  # 10 min max for the full scan
 
 

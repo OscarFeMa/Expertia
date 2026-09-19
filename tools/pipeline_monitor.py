@@ -7,6 +7,7 @@ Read-only: no modifica DB ni archivos del pipeline, solo crea storage/monitor_re
 import time
 import logging
 import sqlite3
+import sys
 import os
 import json
 import subprocess
@@ -18,8 +19,10 @@ from typing import Optional, Dict, List, Any
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config.settings import DATABASE_PATH as DB_PATH
+
 BASE_DIR = Path(__file__).parent.parent
-DB_PATH = BASE_DIR / "storage" / "incubator.db"
 LOGS_DIR = BASE_DIR / "logs"
 REPORT_FILE = BASE_DIR / "storage" / "monitor_reports.json"
 INTERVAL_MINUTES = 20
