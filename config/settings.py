@@ -59,6 +59,26 @@ class ExpertiaSettings(BaseSettings):
     database_path: str = "E:/expertia-data/incubator.db"
     openalex_email: str = ""
     openalex_api_key: str = ""
+    pubmed_api_key: str = ""
+    quality_threshold_min: float = 0.30
+
+    # --- SQLite (tabla unica de timeouts; F-026) ---
+    db_connect_timeout_s: float = 30.0
+    db_busy_timeout_ro_ms: int = 30000
+    db_busy_timeout_rw_ms: int = 60000
+    db_busy_timeout_batch_ms: int = 300000
+    db_wal_autocheckpoint_pages: int = 2000
+    db_cache_size_kib: int = -262144
+    db_mmap_size_bytes: int = 1073741824
+
+    # --- LLM timeouts unificados (F-027) ---
+    llm_control_timeout_s: int = 30
+    llm_query_timeout_s: int = 180
+    llm_pull_timeout_s: int = 600
+    phase_b_specialist_timeout_s: int = 7200
+    subprocess_short_timeout_s: int = 5
+    llm_keep_alive: str = "5m"
+    llm_num_ctx: int = 8192
 
 
 _SETTINGS = ExpertiaSettings()
@@ -114,12 +134,30 @@ WIKIPEDIA_API_URL = _SETTINGS.wikipedia_api_url
 WIKIPEDIA_USER_AGENT = _SETTINGS.wikipedia_user_agent
 
 # Quality thresholds (0.0 - 1.0)
-QUALITY_THRESHOLD_MIN = getattr(_SETTINGS, 'quality_threshold_min', 0.30)
+QUALITY_THRESHOLD_MIN = _SETTINGS.quality_threshold_min
 
 # Academic API keys (empty = anonymous/rate-limited)
-PUBMED_API_KEY = getattr(_SETTINGS, 'pubmed_api_key', '')
-OPENALEX_EMAIL = getattr(_SETTINGS, 'openalex_email', 'expertia@localhost')
-OPENALEX_API_KEY = getattr(_SETTINGS, 'openalex_api_key', '')
+PUBMED_API_KEY = _SETTINGS.pubmed_api_key
+OPENALEX_EMAIL = _SETTINGS.openalex_email or 'expertia@localhost'
+OPENALEX_API_KEY = _SETTINGS.openalex_api_key
+
+# --- SQLite (tabla unica de timeouts) ---
+DB_CONNECT_TIMEOUT_S = _SETTINGS.db_connect_timeout_s
+DB_BUSY_TIMEOUT_RO_MS = _SETTINGS.db_busy_timeout_ro_ms
+DB_BUSY_TIMEOUT_RW_MS = _SETTINGS.db_busy_timeout_rw_ms
+DB_BUSY_TIMEOUT_BATCH_MS = _SETTINGS.db_busy_timeout_batch_ms
+DB_WAL_AUTOCHECKPOINT_PAGES = _SETTINGS.db_wal_autocheckpoint_pages
+DB_CACHE_SIZE_KIB = _SETTINGS.db_cache_size_kib
+DB_MMAP_SIZE_BYTES = _SETTINGS.db_mmap_size_bytes
+
+# --- LLM timeouts unificados ---
+LLM_CONTROL_TIMEOUT_S = _SETTINGS.llm_control_timeout_s
+LLM_QUERY_TIMEOUT_S = _SETTINGS.llm_query_timeout_s
+LLM_PULL_TIMEOUT_S = _SETTINGS.llm_pull_timeout_s
+PHASE_B_SPECIALIST_TIMEOUT_S = _SETTINGS.phase_b_specialist_timeout_s
+SUBPROCESS_SHORT_TIMEOUT_S = _SETTINGS.subprocess_short_timeout_s
+LLM_KEEP_ALIVE = _SETTINGS.llm_keep_alive
+LLM_NUM_CTX = _SETTINGS.llm_num_ctx
 
 REPORTING_INTERVAL_SECONDS = _SETTINGS.reporting_interval_seconds
 COOLDOWN_SECONDS = _SETTINGS.cooldown_seconds
