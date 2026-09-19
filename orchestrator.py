@@ -283,7 +283,7 @@ setup_logging(log_file=log_file)
 logger = logging.getLogger(__name__)
 
 SPECIALIST_REGISTRY = [
-    {"domain": "SoftwareEngineering", "model": "qwen3.5:4b-8k", "root": "Q80993", "props": ["P31", "P279", "P306", "P400"]},
+    {"domain": "SoftwareEngineering", "model": "expertia-swe:latest", "root": "Q80993", "props": ["P31", "P279", "P306", "P400"]},
     {"domain": "Mathematics", "model": "ExpertiaMath:latest", "root": "Q395", "props": ["P31", "P279", "P2534", "P192"]},
     {"domain": "Medicine", "model": "richardyoung/llama-medx_v32:latest", "root": "Q11190", "props": ["P31", "P279", "P923", "P780", "P699"]},
     {"domain": "LegalSystem", "model": "initium/law_model:latest", "root": "Q7748", "props": ["P31", "P279", "P1684", "P427"]},
