@@ -11,7 +11,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install pytest ruff
+          pip install pytest pytest-asyncio ruff
       - name: Lint
         run: ruff check . --ignore=E501,E402,F403,F405,F811 2>&1 || true
       - name: Test imports

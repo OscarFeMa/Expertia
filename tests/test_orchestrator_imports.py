@@ -39,10 +39,11 @@ def test_imports():
 
     from orchestrator import PipelineController, validate_paths, WIKIDATA_SCHEMAS, SPECIALIST_REGISTRY
     assert validate_paths is not None
-    # 18 raices historicas + Biology (Q420, 18-sep-2026). Actualizar a proposito al anadir raices.
-    assert len(WIKIDATA_SCHEMAS) == 19
-    assert len(SPECIALIST_REGISTRY) == 19
-    assert len(WIKIDATA_SCHEMAS) == len(SPECIALIST_REGISTRY)
+    # Invariante: ambos registros cubren exactamente las mismas raices.
+    # No fijar conteo exacto: cada raiz nueva no deberia romper el CI.
+    assert len(WIKIDATA_SCHEMAS) >= 19, "no se deben perder raices existentes"
+    assert set(WIKIDATA_SCHEMAS.keys()) == {s["domain"] for s in SPECIALIST_REGISTRY}, \
+        "desajuste de raices entre WIKIDATA_SCHEMAS y SPECIALIST_REGISTRY"
 
     from dissect_wikidata import WikidataStreamingExtractor, TAG_TO_QID_MAP
     assert WikidataStreamingExtractor is not None

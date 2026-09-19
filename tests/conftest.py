@@ -13,6 +13,12 @@ def isolate_db(tmp_path, monkeypatch):
 
     test_db = tmp_path / "test_incubator.db"
     monkeypatch.setattr("config.settings.DATABASE_PATH", test_db)
+    # F-039: db_manager/readonly_db enlazan _DEFAULT_DB_PATH en import;
+    # hay que parcharlos tambien o los tests escribirian la BD de produccion.
+    import database.db_manager as _dbm
+    import database.readonly_db as _ro
+    monkeypatch.setattr(_dbm, "_DEFAULT_DB_PATH", test_db)
+    monkeypatch.setattr(_ro, "_DEFAULT_DB_PATH", test_db)
     monkeypatch.setattr("config.settings.STORAGE_DIR", tmp_path / "storage")
     monkeypatch.setattr("config.settings.PACKAGES_DIR", tmp_path / "storage" / "packages")
     monkeypatch.setattr("config.settings.REPORTS_DIR", tmp_path / "storage" / "reports")

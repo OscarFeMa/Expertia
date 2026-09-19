@@ -259,28 +259,18 @@ class TestA6_SignalHandlerThreadSafe:
 # B1: start_all.bat — cd /d fix
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestB1_StartAllBat:
-    """B1: start_all.bat must change to script directory first."""
+class TestB1_Launcher:
+    """B1: launcher.cmd debe fijar el directorio de trabajo antes de invocar launcher.py."""
 
-    def test_has_cd_d(self):
-        bat_path = Path(__file__).parent.parent / "start_all.bat"
-        content = bat_path.read_text(encoding="utf-8")
-        assert 'cd /d' in content
+    def test_launcher_cmd_has_cd_d_dp0(self):
+        p = Path(__file__).parent.parent / "launcher.cmd"
+        c = p.read_text(encoding="utf-8")
+        assert 'cd /d "%~dp0"' in c
 
-    def test_has_dp0(self):
-        bat_path = Path(__file__).parent.parent / "start_all.bat"
-        content = bat_path.read_text(encoding="utf-8")
-        assert '%~dp0' in content
-
-    def test_timeout_5_seconds(self):
-        bat_path = Path(__file__).parent.parent / "start_all.bat"
-        content = bat_path.read_text(encoding="utf-8")
-        assert "timeout /t 5" in content
-
-    def test_uses_pythonw(self):
-        bat_path = Path(__file__).parent.parent / "start_all.bat"
-        content = bat_path.read_text(encoding="utf-8")
-        assert "pythonw.exe" in content
+    def test_launcher_py_sets_cwd(self):
+        p = Path(__file__).parent.parent / "tools" / "launcher.py"
+        c = p.read_text(encoding="utf-8")
+        assert 'cwd=str(REPO_ROOT)' in c
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
