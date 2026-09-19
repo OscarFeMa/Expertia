@@ -140,7 +140,7 @@ class App {
 
   startPolling() {
     if (this._timer) clearInterval(this._timer);
-    this.pollMs = document.hidden ? 30000 : 3000;
+    this.pollMs = document.hidden ? 30000 : 10000;
     this._timer = setInterval(() => {
       if (document.hidden) return;
       this.refresh();
