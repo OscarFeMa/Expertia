@@ -101,7 +101,7 @@ try {
         # One-shot sin cita-trampa: programa a +2min con /Z y borra tras verificar arranque.
         # (/SC ONCE /ST 23:59 + /Run dejaba la cita viva: el /Run no la consume y re-dispara a las 23:59.)
         $stNow = (Get-Date).AddMinutes(2).ToString('HH:mm')
-        schtasks /Create /TN "ExpertiaTrainElectronics" /TR "C:\training\Run-Electronics.cmd" /SC ONCE /ST $stNow /RU SYSTEM /Z /F
+        schtasks /Create /TN "ExpertiaTrainElectronics" /TR "C:\training\Run-Electronics.cmd" /SC ONCE /ST $stNow /RU SYSTEM /F
         schtasks /Run /TN "ExpertiaTrainElectronics"
         Start-Sleep -Seconds 60
         $upNow = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*train_expertia*" }
