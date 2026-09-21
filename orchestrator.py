@@ -1826,14 +1826,8 @@ class PipelineController:
         finally:
             # Always recreate FTS5 AFTER UPDATE trigger if we dropped it
             try:
-                self.db_manager.execute_query("""
-                    CREATE TRIGGER IF NOT EXISTS kp_au AFTER UPDATE ON knowledge_packages BEGIN
-                        INSERT INTO knowledge_packages_fts(knowledge_packages_fts, rowid, topic, structured_knowledge, domain)
-                        VALUES ('delete', old.id, old.topic, old.structured_knowledge, old.domain);
-                        INSERT INTO knowledge_packages_fts(rowid, topic, structured_knowledge, domain)
-                        VALUES (new.id, new.topic, new.structured_knowledge, new.domain);
-                    END
-                """)
+                from database.db_manager import KP_AU_DDL
+                self.db_manager.execute_query(KP_AU_DDL)
             except Exception as e:
                 logger.warning(f"Could not recreate kp_au trigger: {e}")
 

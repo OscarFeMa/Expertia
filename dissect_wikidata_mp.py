@@ -20,6 +20,7 @@ import sqlite3
 
 from tools.update_wikidata import build_structured_knowledge, _pick_first
 from config.settings import LANGUAGES, WIKIDATA_DUMP_PATH
+from database.db_manager import KP_AU_DDL
 
 logger = logging.getLogger(__name__)
 
@@ -406,14 +407,7 @@ class ParallelWikidataExtractor:
                     VALUES ('delete', old.id, old.topic, old.structured_knowledge, old.domain);
                 END
             """)
-            conn.execute("""
-                CREATE TRIGGER IF NOT EXISTS kp_au AFTER UPDATE ON knowledge_packages BEGIN
-                    INSERT INTO knowledge_packages_fts(knowledge_packages_fts, rowid, topic, structured_knowledge, domain)
-                    VALUES ('delete', old.id, old.topic, old.structured_knowledge, old.domain);
-                    INSERT INTO knowledge_packages_fts(rowid, topic, structured_knowledge, domain)
-                    VALUES (new.id, new.topic, new.structured_knowledge, new.domain);
-                END
-            """)
+            conn.execute(KP_AU_DDL)
             conn.commit()
             logger.info("FTS5 index + triggers rebuilt after cascade")
         except Exception as e:

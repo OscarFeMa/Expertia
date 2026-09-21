@@ -30,6 +30,17 @@ from config.settings import (
     DB_WAL_AUTOCHECKPOINT_PAGES,
 )
 
+# DDL único del trigger FTS5 kp_au (F-032): todos los consumidores deben
+# importar esta constante en vez de duplicar el literal.
+KP_AU_DDL = """
+CREATE TRIGGER IF NOT EXISTS kp_au AFTER UPDATE ON knowledge_packages BEGIN
+    INSERT INTO knowledge_packages_fts(knowledge_packages_fts, rowid, topic, structured_knowledge, domain)
+    VALUES ('delete', old.id, old.topic, old.structured_knowledge, old.domain);
+    INSERT INTO knowledge_packages_fts(rowid, topic, structured_knowledge, domain)
+    VALUES (new.id, new.topic, new.structured_knowledge, new.domain);
+END
+"""
+
 logger = logging.getLogger(__name__)
 
 
@@ -424,14 +435,7 @@ class DatabaseManager:
                         VALUES ('delete', old.id, old.topic, old.structured_knowledge, old.domain);
                     END
                 """)
-                cursor.execute("""
-                    CREATE TRIGGER IF NOT EXISTS kp_au AFTER UPDATE ON knowledge_packages BEGIN
-                        INSERT INTO knowledge_packages_fts(knowledge_packages_fts, rowid, topic, structured_knowledge, domain)
-                        VALUES ('delete', old.id, old.topic, old.structured_knowledge, old.domain);
-                        INSERT INTO knowledge_packages_fts(rowid, topic, structured_knowledge, domain)
-                        VALUES (new.id, new.topic, new.structured_knowledge, new.domain);
-                    END
-                """)
+                cursor.execute(KP_AU_DDL)
                 
                 # Create ema_history table for scoring
                 cursor.execute("""

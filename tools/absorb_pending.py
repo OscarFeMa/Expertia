@@ -16,17 +16,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import DATABASE_PATH
+from database.db_manager import KP_AU_DDL as KP_AU
 
 PROGRESS = Path(__file__).parent.parent / "storage" / "absorb_progress.json"
 logging.basicConfig(filename=str(Path(__file__).parent.parent / "logs" / "absorb.log"),
                     level=logging.INFO, format="%(asctime)s %(message)s")
-
-KP_AU = """CREATE TRIGGER IF NOT EXISTS kp_au AFTER UPDATE ON knowledge_packages BEGIN
-    INSERT INTO knowledge_packages_fts(knowledge_packages_fts, rowid, topic, structured_knowledge, domain)
-    VALUES ('delete', old.id, old.topic, old.structured_knowledge, old.domain);
-    INSERT INTO knowledge_packages_fts(rowid, topic, structured_knowledge, domain)
-    VALUES (new.id, new.topic, new.structured_knowledge, new.domain);
-END"""
 
 
 def guards(db_path, wal_start):
