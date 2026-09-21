@@ -5,7 +5,7 @@ $inc = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) "traini
 New-Item -ItemType Directory -Path $inc -Force | Out-Null
 $cred = Import-Clixml (Join-Path $inc "cred.xml")
 $ip3070 = @(arp -a 2>$null | Select-String "E0-0A-F6-9E-CB-01" | ForEach-Object { if ($_ -match "(192\.168\.1\.\d+)") { $Matches[1] } }) | Select-Object -First 1
-if (-not $ip3070) { $ip3070 = "192.168.1.46" }
+if (-not $ip3070) { $ip3070 = "192.168.1.41" }
 try {
   $S = New-PSSession -ComputerName $ip3070 -Credential $cred -ErrorAction Stop
 } catch {
