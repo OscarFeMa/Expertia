@@ -24,7 +24,7 @@ TARGETS = ["es", "hi", "fr", "zh", "ar", "ru"]
 ROTATE = {"es": 0, "hi": 1, "fr": 2, "zh": 3, "ar": 4, "ru": 5}
 # es-first estricto: el primer idioma con trabajo pendiente consume la noche;
 # solo se avanza al siguiente cuando un idioma sale saturado (0 nuevos).
-BUDGET = {"es": 2400, "hi": 400, "fr": 400, "zh": 400, "ar": 400, "ru": 400}
+BUDGET = {"es": 800, "hi": 400, "fr": 400, "zh": 400, "ar": 400, "ru": 400}
 
 def precache(limit=2000, tgt="es"):
     if translate is None:
