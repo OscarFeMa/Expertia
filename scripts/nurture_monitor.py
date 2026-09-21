@@ -1,7 +1,10 @@
 import json
+import logging
 import sys
 import time
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 API_BASE = "http://localhost:8011"
 CYCLE_DATA = []
@@ -15,7 +18,8 @@ def api_get(path):
         import urllib.request
         resp = urllib.request.urlopen(f"{API_BASE}{path}", timeout=10)
         return json.loads(resp.read().decode())
-    except Exception:
+    except Exception as e:
+        logger.debug("api_get %s fallo: %s", path, e)
         return None
 
 
@@ -50,8 +54,8 @@ def log_write(text):
         try:
             with open(LOG_FILE, "a", encoding="utf-8") as f:
                 f.write(text + "\n")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("escritura en LOG_FILE fallo: %s", e)
 
 
 def hr(title=""):

@@ -99,8 +99,8 @@ def estimate_completion(logs: List[str]) -> Dict:
                     "pct": round(pct, 1)
                 })
                 return result
-            except (ValueError, IndexError):
-                pass
+            except (ValueError, IndexError) as e:
+                logger.debug("estimate_completion skip parse failed: %s", e)
         if "Wikidata API fetch" in line:
             result["phase"] = "phase_a_fetch"
             result["detail"] = line.strip()
@@ -142,10 +142,11 @@ def get_pipeline_pid() -> Optional[int]:
                 pid_str = parts[1].strip().strip('"')
                 try:
                     return int(pid_str)
-                except ValueError:
-                    pass
+                except ValueError as e:
+                    logger.debug("get_pipeline_pid pid parse failed: %s", e)
         return None
-    except Exception:
+    except Exception as e:
+        logger.warning("get_pipeline_pid failed: %s", e)
         return None
 
 
@@ -173,10 +174,10 @@ def generate_report() -> Dict:
                     if len(cols) >= 3:
                         try:
                             mem_mb = round(int(cols[2]) / (1024 * 1024), 1)
-                        except (ValueError, IndexError):
-                            pass
-        except Exception:
-            pass
+                        except (ValueError, IndexError) as e:
+                            logger.debug("pipeline_monitor mem parse failed: %s", e)
+        except Exception as e:
+            logger.debug("pipeline_monitor wmic check failed: %s", e)
 
     report: Dict[str, Any] = {
         "timestamp": datetime.now().isoformat(),

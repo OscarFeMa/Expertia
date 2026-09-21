@@ -623,8 +623,8 @@ class BatchWikidataExtractor:
                     qid = claim.get('mainsnak', {}).get('datavalue', {}).get('value', {}).get('id')
                     if qid and qid.startswith('Q'):
                         qids.add(qid)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("_get_entity_qids claim parse failed: %s", e)
         return qids
 
 

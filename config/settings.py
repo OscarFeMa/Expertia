@@ -75,6 +75,7 @@ class ExpertiaSettings(BaseSettings):
     llm_control_timeout_s: int = 30
     llm_query_timeout_s: int = 180
     llm_pull_timeout_s: int = 600
+    llm_run_timeout_s: int = 300        # ollama run (carga de modelo en VRAM)
     phase_b_specialist_timeout_s: int = 7200
     subprocess_short_timeout_s: int = 5
     llm_keep_alive: str = "5m"
@@ -154,6 +155,7 @@ DB_MMAP_SIZE_BYTES = _SETTINGS.db_mmap_size_bytes
 LLM_CONTROL_TIMEOUT_S = _SETTINGS.llm_control_timeout_s
 LLM_QUERY_TIMEOUT_S = _SETTINGS.llm_query_timeout_s
 LLM_PULL_TIMEOUT_S = _SETTINGS.llm_pull_timeout_s
+LLM_RUN_TIMEOUT_S = _SETTINGS.llm_run_timeout_s
 PHASE_B_SPECIALIST_TIMEOUT_S = _SETTINGS.phase_b_specialist_timeout_s
 SUBPROCESS_SHORT_TIMEOUT_S = _SETTINGS.subprocess_short_timeout_s
 LLM_KEEP_ALIVE = _SETTINGS.llm_keep_alive

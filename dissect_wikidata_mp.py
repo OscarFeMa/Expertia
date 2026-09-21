@@ -61,8 +61,8 @@ def _get_entity_qids(entity: Dict) -> Set[int]:
                 qid = claim.get('mainsnak', {}).get('datavalue', {}).get('value', {}).get('id')
                 if qid and qid.startswith('Q'):
                     qids.add(int(qid[1:]))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("_get_entity_qids parse failed: %s", e)
     return qids
 
 
@@ -97,8 +97,8 @@ def worker_main(
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""")
         conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("matched_qids ensure table failed: %s", e)
 
     def flush():
         nonlocal pending_qids, pending_kp
@@ -135,8 +135,8 @@ def worker_main(
                         if attempt < 4:
                             time.sleep(0.5)
                             continue
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("worker matched_qids create failed: %s", e)
                 if 'locked' in err_str and attempt < 4:
                     time.sleep(1.0 * (2 ** attempt))
                     conn.rollback()

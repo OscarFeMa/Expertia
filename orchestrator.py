@@ -25,9 +25,9 @@ from datetime import datetime
 from dissect_wikidata import ClassHierarchyCache, BatchWikidataExtractor, CHECKPOINT_INTERVAL
 from dissect_wikidata_mp import ParallelWikidataExtractor
 from tools.update_wikidata import fetch_entities_batch, build_structured_knowledge
+from config.settings import LLM_QUERY_TIMEOUT_S as LLM_QUERY_TIMEOUT, PHASE_B_SPECIALIST_TIMEOUT_S
 
-LLM_QUERY_TIMEOUT = 180
-PHASE_B_PER_SPECIALIST_TIMEOUT = 7200  # 120 min max per specialist per cycle
+PHASE_B_PER_SPECIALIST_TIMEOUT = PHASE_B_SPECIALIST_TIMEOUT_S  # 120 min max per specialist per cycle
 MAX_PHASE_B_CONCURRENCY = 3  # máx. especialistas fase B simultáneos (1 GPU/6GB)
 MODEL_PHASE_B_CONCURRENCY = {'phi4-mini:4k': 2, 'phi4-mini:latest': 2, 'phi4-mini:3.8b': 2, 'phi4-mini:Q5_K_M': 1, 'qwen3:8b': 1, 'initium/law_model:latest': 1, 'qwen3:4b-8k': 2}
 MAX_PHASE_B_CYCLES = 100
@@ -66,7 +66,7 @@ TIER_CRITERIA = {
 LEGEND_EMA_MIN = 0.995
 LEGEND_CYCLES_CLEAN = 25
 
-NURTURE_CYCLE_TIMEOUT = 7200  # 2 hours per specialist cycle
+NURTURE_CYCLE_TIMEOUT = PHASE_B_SPECIALIST_TIMEOUT_S  # 2 hours per specialist cycle
 NURTURE_MAX_CYCLES_PER_TARGET = 30  # max cycles before forcing target switch
 
 # ── Nurture Priority Scoring Weights ─────────────────────────────────────────
@@ -625,8 +625,8 @@ class PipelineController:
                        elapsed_seconds=?, updated_at=CURRENT_TIMESTAMP WHERE id=1""",
                     (elapsed,)
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("periodic status update failed: %s", e)
             return
         self._last_status_update = now
         try:
@@ -1090,8 +1090,8 @@ class PipelineController:
                     cascade_entities=entities_processed, cascade_max=max_entities,
                     status='ACTIVE'
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("phase A progress callback failed: %s", e)
 
         # Force WAL checkpoint at start of Phase A to prevent WAL bloat accumulation
         try:
@@ -1177,8 +1177,8 @@ class PipelineController:
         # Close dedicated checkpoint connection
         try:
             checkpoint_conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("checkpoint connection close failed: %s", e)
 
         if not success:
             for sid in specialist_matchers:
@@ -1500,8 +1500,8 @@ class PipelineController:
                 fails = ch[0].get('fails', 0) or 0
                 if total > 0:
                     fail_rate = fails / max(1, total)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("fail-rate stats compute failed: %s", e)
 
         # Domain-aware staleness: volatile domains (< 1.0) increase urgency faster
         stability = DOMAIN_STABILITY.get(domain, 0.7)
@@ -2152,8 +2152,8 @@ def _signal_handler(signum, frame):
             conn = sqlite3.connect(str(_DATABASE_PATH), timeout=1)
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("signal handler WAL checkpoint failed: %s", e)
     if _signal_loop is not None and _signal_loop.is_running():
         _signal_loop.call_soon_threadsafe(_signal_loop.stop)
 
@@ -2192,8 +2192,8 @@ async def main(sample_size: Optional[int] = None, min_duration_hours: float = 5.
                 cl = ' '.join(proc.info['cmdline'] or [])
                 if 'python' in proc.info.get('name', '') and ('dissect_wikidata_mp' in cl or 'orchestrator' in cl):
                     logger.info(f"Ignorando proceso PID {proc.info['pid']} (no se mata por riesgo de code 15 en Windows)")
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
+            except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+                logger.debug("zombie sweep process vanished: %s", e)
     except ImportError:
         logger.warning("psutil no disponible — limpieza de zombies saltada")
 
@@ -2277,5 +2277,5 @@ if __name__ == "__main__":
         if pidfile.exists():
             pidfile.unlink()
             logger.info("PID file cleaned up — normal exit")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("pidfile cleanup failed: %s", e)

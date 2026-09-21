@@ -75,8 +75,8 @@ def _fetch_p279_parents(qid: str) -> Set[str]:
         for claim in entity.get('claims', {}).get('P279', []):
             try:
                 p279.add(claim['mainsnak']['datavalue']['value']['id'])
-            except (KeyError, TypeError):
-                pass
+            except (KeyError, TypeError) as e:
+                logger.debug("P279 claim parse failed: %s", e)
         return p279
     except Exception as e:
         logger.warning(f"Failed to fetch P279 for {qid}: {e}")
@@ -106,8 +106,8 @@ def _batch_fetch_p279(qids: List[str], cache: Dict[str, Set[str]]):
                     for claim in entity.get('claims', {}).get('P279', []):
                         try:
                             p279.add(claim['mainsnak']['datavalue']['value']['id'])
-                        except (KeyError, TypeError):
-                            pass
+                        except (KeyError, TypeError) as e:
+                            logger.debug("batch P279 claim parse failed: %s", e)
                     cache[qid] = p279
         except Exception as e:
             logger.warning(f"Batch P279 fetch failed for batch: {e}")

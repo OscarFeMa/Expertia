@@ -7,10 +7,13 @@ Uso: python tools/model_updater_external.py --dry-run
       python tools/model_updater_external.py --check
 """
 import json
+import logging
 import subprocess
 import sys
 from pathlib import Path
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 PENDING = ROOT / "storage" / "model_updater" / "pending.json"
@@ -20,7 +23,8 @@ def get_vram():
     try:
         out = subprocess.check_output(["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"], text=True)
         return int(out.strip().split()[0])
-    except Exception:
+    except Exception as e:
+        logger.debug("nvidia-smi no disponible, VRAM por defecto: %s", e)
         return 6144
 
 def get_ollama_models():
@@ -28,7 +32,8 @@ def get_ollama_models():
         import requests
         r = requests.get("http://localhost:11434/api/tags", timeout=5)
         return [m["name"] for m in r.json().get("models", [])]
-    except Exception:
+    except Exception as e:
+        logger.debug("ollama /api/tags no disponible: %s", e)
         return []
 
 def search_candidates(vram_mb):

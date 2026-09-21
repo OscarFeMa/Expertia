@@ -1,7 +1,10 @@
 import argparse
 import json
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 import time
 import torch
@@ -27,8 +30,8 @@ class StatusCallback(TrainerCallback):
                         if isinstance(h, dict) and h.get("step") is not None:
                             seen[h["step"]] = h
                     self.history = [seen[k] for k in sorted(seen)][-240:]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("resume historial train_status fallo: %s", e)
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         try:
@@ -57,8 +60,8 @@ class StatusCallback(TrainerCallback):
                 "ts": time.time(),
             }
             STATUS_FILE.write_text(json.dumps(payload), encoding="utf-8")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("escritura train_status fallo: %s", e)
 
 BASE_MODEL = "microsoft/Phi-4-mini-reasoning"
 DEFAULT_TRAIN = r"D:\proyectos\expertia\training\datasets\expertia-math-puro.jsonl"
@@ -169,8 +172,8 @@ def main():
     try:
         STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
         STATUS_FILE.write_text(json.dumps({"phase": "starting", "step": 0, "ts": time.time()}), encoding="utf-8")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("train_status starting fallo: %s", e)
     resume = None
     if not args.no_resume:
         ckpts = sorted(out_dir.glob("checkpoint-*"), key=lambda p: int(p.name.split("-")[-1]))
@@ -178,13 +181,13 @@ def main():
             resume = str(ckpts[-1])
     try:
         STATUS_FILE.write_text(json.dumps({"phase": "resuming" if resume else "starting", "step": 0, "resume_from": resume, "ts": time.time()}), encoding="utf-8")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("train_status resume/starting fallo: %s", e)
     trainer.train(resume_from_checkpoint=resume)
     try:
         STATUS_FILE.write_text(json.dumps({"phase": "done", "step": trainer.state.global_step, "ts": time.time()}), encoding="utf-8")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("train_status done fallo: %s", e)
     trainer.save_model(str(out_dir))
     tok.save_pretrained(str(out_dir))
 

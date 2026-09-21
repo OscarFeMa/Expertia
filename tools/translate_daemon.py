@@ -8,6 +8,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import DATABASE_PATH
 
+logger = logging.getLogger(__name__)
+
 _LOG = Path(__file__).parent.parent / "logs" / "translate_precache.log"
 logging.basicConfig(filename=str(_LOG), level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
@@ -36,8 +38,8 @@ def precache(limit=2000, tgt="es"):
     db = sqlite3.connect(str(DATABASE_PATH), timeout=120)
     try:
         db.execute("PRAGMA busy_timeout=120000")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("PRAGMA busy_timeout failed: %s", e)
     # hot-set: high trust + recent, ventana de ids recientes (la tabla tiene
     # 900M+ filas sin indice en language: el ORDER BY global tardaba 10+ min)
     rows = db.execute(
@@ -63,8 +65,8 @@ def precache(limit=2000, tgt="es"):
                 if has_torch:
                     try:
                         torch.cuda.empty_cache()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("torch.cuda.empty_cache failed (oom path): %s", e)
                 time.sleep(0.5)
                 continue
             raise
@@ -77,8 +79,8 @@ def precache(limit=2000, tgt="es"):
             if has_torch:
                 try:
                     torch.cuda.empty_cache()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("torch.cuda.empty_cache failed (periodic): %s", e)
         if not (22 <= datetime.now().hour or datetime.now().hour < 8):
             break
     db.close()

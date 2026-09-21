@@ -76,8 +76,8 @@ def _release(conn: sqlite3.Connection):
         else:
             try:
                 conn.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("RO pool release-close fallo: %s", e)
 
 
 def select(query: str, params: tuple = ()) -> list[dict]:

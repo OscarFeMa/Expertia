@@ -13,12 +13,15 @@ Solo double-click / sin args: menú interactivo.
 """
 import argparse
 import json
+import logging
 import os
 import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LOGS_DIR = REPO_ROOT / "logs"
@@ -57,7 +60,8 @@ def _ollama_ok() -> bool:
         import urllib.request
         with urllib.request.urlopen(f"{OLLAMA_API}/api/tags", timeout=5) as r:
             return r.status == 200
-    except Exception:
+    except Exception as e:
+        logger.debug("ollama /api/tags no alcanzable: %s", e)
         return False
 
 
@@ -70,7 +74,8 @@ def _list_specialists() -> list:
                 "SELECT id, domain, model FROM specialist_registry ORDER BY domain"
             ).fetchall()
             return [dict(r) for r in rows]
-    except Exception:
+    except Exception as e:
+        logger.debug("lista de especialistas fallo: %s", e)
         return []
 
 

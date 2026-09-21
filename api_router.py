@@ -21,7 +21,7 @@ from pydantic import BaseModel, field_validator
 from database.db_manager import get_db_manager
 from database.readonly_db import select, select_one
 from tools.spawn_specialist import spawn_child
-from config.settings import DATABASE_PATH
+from config.settings import DATABASE_PATH, SUBPROCESS_SHORT_TIMEOUT_S, LLM_PULL_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -102,23 +102,24 @@ def _is_pid_alive(pid):
     try:
         import psutil
         return psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
-    except Exception:
+    except Exception as e:
         # psutil ausente, pid muerto, o errores de plataforma (OSError/TypeError
         # segun version de psutil): caer al fallback subprocess/os.kill.
-        pass
+        logger.debug("psutil pid check failed, using fallback: %s", e)
     # Fallback if psutil unavailable
     try:
         if os.name == "nt":
             r = subprocess.run(
                 ["tasklist", "/FI", f"PID eq {pid}"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=SUBPROCESS_SHORT_TIMEOUT_S,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
             )
             return bool(re.search(rf"\b{re.escape(str(pid))}\b", r.stdout))
         else:
             os.kill(pid, 0)
             return True
-    except Exception:
+    except Exception as e:
+        logger.warning("_is_pid_alive fallback check failed: %s", e)
         return False
 
 
@@ -142,8 +143,8 @@ def get_status():
         if _PIPELINE_STATE_FILE.exists():
             _st = json.loads(_PIPELINE_STATE_FILE.read_text())
             mode = _st.get("mode")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("pipeline state mode read failed: %s", e)
     if not row:
         return {"status": "IDLE", "phase": "System idle", "mode": mode}
     return {
@@ -464,8 +465,8 @@ def get_insights():
             proc_alive = bool(p_pid) and _is_pid_alive(p_pid)
             if not start_epoch:
                 start_epoch = _st.get("start_time")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("pipeline state extended read failed: %s", e)
     if not proc_alive:
         # Fallback: pipeline_state.json puede quedar con pid null/stale
         # (p.ej. relanzamiento del guard). Escaneo por linea de comandos.
@@ -479,8 +480,8 @@ def get_insights():
                         break
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
-        except ImportError:
-            pass
+        except ImportError as e:
+            logger.debug("psutil not available, skipping process scan: %s", e)
 
     last_act = _fetch_one("SELECT timestamp, message FROM activity_log ORDER BY id DESC LIMIT 1")
     life_age_min = None
@@ -499,8 +500,8 @@ def get_insights():
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=_tz.utc)
             life_age_min = (_dt.now(_tz.utc) - dt).total_seconds() / 60
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("activity timestamp parse failed: %s", e)
 
     elapsed_str = "--"
     if start_epoch and start_epoch > 0:
@@ -512,8 +513,8 @@ def get_insights():
                 alt_el = time.time() - float(_st.get("start_time"))
                 if alt_el > el:
                     el = alt_el
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("alt elapsed compute failed: %s", e)
         h, rem = int(el // 3600), int(el % 3600)
         m = int(rem // 60)
         elapsed_str = f"{h}h {m:02d}m" if h else f"{m} min"
@@ -640,8 +641,9 @@ def search_knowledge(q: str = "", domain: str = "", limit: int = 10):
                    ORDER BY rank LIMIT ?""",
                 (fts_query, limit)
             )
-    except Exception:
+    except Exception as e:
         # Fallback to LIKE search (id DESC ≈ recent-first, sin índice en created_at)
+        logger.debug("FTS search failed, falling back to LIKE: %s", e)
         like_pattern = f"%{q}%"
         if domain:
             rows = _fetch_all(
@@ -673,8 +675,8 @@ async def search_knowledge_stream(q: str = "", domain: str = "", limit: int = 10
         try:
             from tools.translate import translate
             q_en = translate(q, "es", "en")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("query translate failed, using original: %s", e)
     try:
         like_pattern = f"%{q_en}%"
         if domain:
@@ -729,8 +731,8 @@ async def search_knowledge_stream(q: str = "", domain: str = "", limit: int = 10
                     r["topic"] = t_topic
                     r["structured_knowledge"] = t_sk
                     r["translated"] = True
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("result translate failed, skipping item: %s", e)
             yield f"data: {__import__('json').dumps(r, ensure_ascii=False)}\n\n"
             await __import__('asyncio').sleep(0.02)
         yield "data: [DONE]\n\n"
@@ -812,7 +814,7 @@ def _kill_pipeline(pid: int):
         if os.name == "nt":
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
-                capture_output=True, timeout=5,
+                capture_output=True, timeout=SUBPROCESS_SHORT_TIMEOUT_S,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
         else:
@@ -845,7 +847,7 @@ def stop_pipeline():
         if os.name == "nt":
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
-                capture_output=True, timeout=5,
+                capture_output=True, timeout=SUBPROCESS_SHORT_TIMEOUT_S,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
         else:
@@ -914,17 +916,17 @@ def training_status():
                         for k, v in zip(keys, parts):
                             try:
                                 rep[k] = float(v)
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
+                            except Exception as e:
+                                logger.debug("gpu metric value parse failed: %s", e)
+                except Exception as e:
+                    logger.debug("gpu block parse failed: %s", e)
                 rep["dataset_train"] = rep.get("dataset_train", 45000)
                 rep["dataset_val"] = rep.get("dataset_val", 5000)
                 rep["adapter"] = "r16 · seq1024 · Phi-reasoning · 3070 (electronics)"
                 rep["base_downloaded"] = True
                 return rep
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("training report read failed, using idle default: %s", e)
     out = {"phase": "idle", "step": 0, "loss": None, "dataset_train": 0, "dataset_val": 0, "base_downloaded": False, "log_tail": [], "adapter": "r16 · seq1024 · Phi-reasoning"}
     try:
         sf = base / "logs" / "train_status.json"
@@ -999,12 +1001,13 @@ def open_reports_folder():
             try:
                 os.startfile(str(rd))
                 method = "startfile"
-            except Exception:
+            except Exception as e:
+                logger.debug("os.startfile failed, trying explorer.exe: %s", e)
                 subprocess.Popen(["explorer.exe", str(rd)],
                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                 method = "explorer"
         else:
-            subprocess.run(["xdg-open", str(rd)], timeout=5)
+            subprocess.run(["xdg-open", str(rd)], timeout=SUBPROCESS_SHORT_TIMEOUT_S)
             method = "xdg-open"
         return {"status": "opened", "path": str(rd), "method": method}
     except Exception as e:
@@ -1039,7 +1042,7 @@ def pull_model(req: PullModelRequest):
         logger.info(f"Pulling model {req.model}...")
         r = subprocess.run(
             ["ollama", "pull", req.model],
-            capture_output=True, text=True, timeout=600,
+            capture_output=True, text=True, timeout=LLM_PULL_TIMEOUT_S,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
         )
         if r.returncode != 0:
@@ -1072,8 +1075,8 @@ def wiki_status():
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("wikidata date parse failed: %s", e)
     return {"last_wikidata_download": last_dl, "last_wikidata_feed": last_feed, "last_update": last, "days_since_update": round(days, 1) if days is not None else None, "needs_update": (days is None or days > 7)}
 
 
@@ -1088,15 +1091,15 @@ def wiki_feed_now():
         if pid and _is_pid_alive(pid):
             try:
                 if os.name == "nt":
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=SUBPROCESS_SHORT_TIMEOUT_S, creationflags=subprocess.CREATE_NO_WINDOW)
                 else:
                     os.kill(pid, 15)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("pipeline pid kill failed: %s", e)
             _pl["pid"] = None
             time.sleep(1)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("pre-feed cleanup failed: %s", e)
     # Lanzar feed wiki en modo feed con ventana avisando
     try:
         py = sys.executable
@@ -1109,8 +1112,8 @@ def wiki_feed_now():
             _fetch_one("SELECT 1")
             # Marcar inicio feed para que métricas lo reflejen
             _execute("UPDATE pipeline_status SET status='FEEDING_WIKI', phase='Wiki: Wikidata/Wikipedia (feed)', current_specialist='Wiki', updated_at=CURRENT_TIMESTAMP WHERE id=1")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("feed db status update failed: %s", e)
         return {"status": "started", "mode": "feed", "message": "Alimentación Wiki iniciada (Wikidata/Wikipedia). Ventana activa.", "pid": proc.pid, "log": str(log_path)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1230,7 +1233,7 @@ def kill_all():
                 if os.name == "nt":
                     subprocess.run(
                         ["taskkill", "/F", "/T", "/PID", str(pid)],
-                        capture_output=True, timeout=5,
+                        capture_output=True, timeout=SUBPROCESS_SHORT_TIMEOUT_S,
                         creationflags=subprocess.CREATE_NO_WINDOW,
                     )
                 else:
@@ -1255,7 +1258,7 @@ def kill_all():
                 if os.name == "nt":
                     subprocess.run(
                         ["taskkill", "/F", "/PID", str(mpid)],
-                        capture_output=True, timeout=5,
+                        capture_output=True, timeout=SUBPROCESS_SHORT_TIMEOUT_S,
                         creationflags=subprocess.CREATE_NO_WINDOW,
                     )
                 else:
@@ -1418,7 +1421,7 @@ def monitor_stop():
 
     try:
         if os.name == "nt":
-            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=5,
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=SUBPROCESS_SHORT_TIMEOUT_S,
                            creationflags=subprocess.CREATE_NO_WINDOW)
         else:
             os.kill(pid, 15)

@@ -1,8 +1,11 @@
 import json
+import logging
 import subprocess
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _HERE = Path(__file__).resolve().parent
 ROOT = _HERE.parent if (_HERE.parent / "logs").exists() else _HERE
@@ -83,7 +86,8 @@ def count_lines(p):
     try:
         with open(p, "rb") as f:
             return sum(1 for _ in f)
-    except Exception:
+    except Exception as e:
+        logger.debug("count_lines %s fallo: %s", p, e)
         return 0
 
 
@@ -91,28 +95,31 @@ def snapshot():
     out = {"phase": "idle", "step": 0, "loss": None}
     try:
         out.update(json.loads((LOGS / "train_status.json").read_text(encoding="utf-8")))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("snapshot sin train_status: %s", e)
     out["dataset_train"] = count_lines(DATASETS / "expertia-math-puro.jsonl")
     out["dataset_val"] = count_lines(DATASETS / "expertia-math-puro_val.jsonl")
     out["base_ok"] = (BASE / "config.json").exists()
     try:
         out["checkpoints"] = sorted([p.name for p in ADAPTERS.glob("checkpoint-*")])
-    except Exception:
+    except Exception as e:
+        logger.debug("snapshot checkpoints fallo: %s", e)
         out["checkpoints"] = []
     try:
         logs = sorted(LOGS.glob("train_*.log"), key=lambda p: p.stat().st_mtime)
         if logs:
             out["log_tail"] = logs[-1].read_text(encoding="utf-8", errors="ignore").splitlines()[-25:]
             out["log_file"] = logs[-1].name
-    except Exception:
+    except Exception as e:
+        logger.debug("snapshot log_tail fallo: %s", e)
         out["log_tail"] = []
     try:
         r = subprocess.run(["nvidia-smi", "--query-gpu=memory.used,memory.free", "--format=csv,noheader,nounits"],
                            capture_output=True, text=True, timeout=10)
         parts = r.stdout.strip().split(",")
         out["gpu"] = f"{parts[0].strip()} usadas / {parts[1].strip()} libres MB"
-    except Exception:
+    except Exception as e:
+        logger.debug("snapshot gpu fallo: %s", e)
         out["gpu"] = None
     return out
 

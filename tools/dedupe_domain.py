@@ -17,6 +17,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import DATABASE_PATH
 
+logger = logging.getLogger(__name__)
+
 PROGRESS = Path(__file__).parent.parent / "storage" / "dedupe_progress.json"
 logging.basicConfig(filename=str(Path(__file__).parent.parent / "logs" / "dedupe.log"),
                     level=logging.INFO, format="%(asctime)s %(message)s")
@@ -25,7 +27,8 @@ logging.basicConfig(filename=str(Path(__file__).parent.parent / "logs" / "dedupe
 def load_progress():
     try:
         return json.loads(PROGRESS.read_text())
-    except Exception:
+    except Exception as e:
+        logger.debug("load_progress failed: %s", e)
         return {}
 
 

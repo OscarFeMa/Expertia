@@ -183,8 +183,8 @@ def build_structured_knowledge(entity: Dict, languages: str = LANGUAGES) -> str:
                     val_str = str(value)
                 property_label = PROPERTY_LABELS.get(prop_id, prop_id)
                 claim_lines.append(f'  {property_label}: {val_str[:200]}')
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("build_structured_knowledge claim parse failed: %s", e)
 
     parts = []
     if label:

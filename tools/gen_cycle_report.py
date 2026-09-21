@@ -1,9 +1,12 @@
 import argparse
 import json
+import logging
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REPORTS_DIR = REPO_ROOT / "storage" / "reports"
@@ -18,7 +21,8 @@ WINDOW_H = 12
 def load_state():
     try:
         return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        logger.debug("load_state fallo, estado vacio: %s", e)
         return {}
 
 
@@ -78,8 +82,8 @@ def training_report():
     status = {}
     try:
         status = json.loads((logs_dir / "train_status.json").read_text(encoding="utf-8"))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("sin train_status.json: %s", e)
     hist = status.get("loss_history") or []
     losses = [h["loss"] for h in hist if h.get("loss") is not None]
     train_n = val_n = 0

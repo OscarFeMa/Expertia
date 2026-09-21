@@ -371,7 +371,8 @@ async def query_stream(req: QueryStreamRequest, request: Request):
         try:
             from tools.translate import translate
             q_en = translate(q, "es", "en")
-        except Exception:
+        except Exception as e:
+            logger.debug("translate fallback to original query: %s", e)
             q_en = q
     else:
         q_en = q
@@ -403,11 +404,12 @@ async def query_stream(req: QueryStreamRequest, request: Request):
                             yield f"data: {__import__('json').dumps({'token': part})}\n\n"
                             await asyncio.sleep(0.02)
                         continue
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("translate_stream failed, yielding untranslated token: %s", e)
                 yield f"data: {__import__('json').dumps({'token': txt})}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
+            logger.warning("stream query failed: %s", e)
             yield f"data: {__import__('json').dumps({'error': str(e)})}\n\n"
     from fastapi.responses import StreamingResponse
     return StreamingResponse(gen(), media_type="text/event-stream")

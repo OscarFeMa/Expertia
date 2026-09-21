@@ -7,12 +7,14 @@ from pathlib import Path
 
 from config.settings import DATABASE_PATH
 
+logger = logging.getLogger(__name__)
+
 _LOG = Path(__file__).parent.parent / "logs" / "translate.log"
 try:
     logging.basicConfig(filename=str(_LOG), level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
-except Exception:
-    pass
+except Exception as e:
+    logger.debug("logging.basicConfig failed: %s", e)
 
 # Motor unico: NLLB-200-distilled-600M (acordado). Sin Helsinki.
 _NLLB = (None, None)
@@ -23,8 +25,8 @@ def _get_db():
     try:
         db.execute("PRAGMA busy_timeout=120000")
         db.execute("PRAGMA journal_mode=WAL")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("PRAGMA setup failed: %s", e)
     return db
 
 def _hash(text, src, tgt):
@@ -40,8 +42,8 @@ def _cache_get(h):
             db.close()
             return row[0]
         db.close()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("translations_cache get failed: %s", e)
     return None
 
 def _cache_put(h, src, tgt, src_text, trans_text):
@@ -64,8 +66,8 @@ def _cache_put(h, src, tgt, src_text, trans_text):
                    (h, src, tgt, src_text, trans_text, size))
         db.commit()
         db.close()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("translations_cache put failed: %s", e)
 
 _SUPPORTED = {"es", "zh", "hi", "ar", "fr", "ru"}
 _NLLB = (None, None)
@@ -80,8 +82,8 @@ def _load_nllb():
         mod = AutoModelForSeq2SeqLM.from_pretrained("facebook/nllb-200-distilled-600M")
         try:
             mod.eval()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("NLLB eval failed: %s", e)
         _NLLB = (tok, mod)
         logging.info("NLLB loaded")
         return True

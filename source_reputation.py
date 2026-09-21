@@ -84,7 +84,8 @@ def _extract_netloc(url: str) -> str:
     try:
         parsed = urlparse(url)
         return parsed.netloc.lower()
-    except Exception:
+    except Exception as e:
+        logger.debug("netloc parse fallo: %s", e)
         return ""
 
 

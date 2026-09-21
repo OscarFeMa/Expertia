@@ -36,6 +36,9 @@ from config.settings import (
     LLM_MAX_TOKENS,
     LLM_KEEP_ALIVE,
     LLM_NUM_CTX,
+    LLM_CONTROL_TIMEOUT_S,
+    LLM_PULL_TIMEOUT_S,
+    LLM_RUN_TIMEOUT_S,
 )
 
 logger = logging.getLogger(__name__)
@@ -207,7 +210,7 @@ class OfflineVerificationEngine:
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
-                timeout=30,
+                timeout=LLM_CONTROL_TIMEOUT_S,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
             )
             
@@ -345,7 +348,7 @@ class LLMRunner:
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
-                timeout=30,
+                timeout=LLM_CONTROL_TIMEOUT_S,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
             )
             
@@ -385,7 +388,7 @@ class LLMRunner:
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
-                timeout=30,
+                timeout=LLM_CONTROL_TIMEOUT_S,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
             )
             
@@ -416,7 +419,7 @@ class LLMRunner:
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
-                timeout=300,
+                timeout=LLM_RUN_TIMEOUT_S,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
             )
 
@@ -477,7 +480,7 @@ class LLMRunner:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=LLM_PULL_TIMEOUT_S)
                 if proc.returncode == 0:
                     logger.info(f"Model '{model_name}' pulled successfully")
                     self.verification_engine.get_available_models(force_refresh=True)
@@ -766,6 +769,7 @@ async def main():
             print(f"Model '{model_name}' is not available locally")
             
     except Exception as e:
+        logger.error("llm_manager __main__ failed: %s", e)
         print(f"Error: {e}")
     finally:
         await runner.cleanup()

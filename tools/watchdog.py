@@ -51,8 +51,8 @@ def _load_state() -> dict:
     if STATE_FILE.exists():
         try:
             return json.loads(STATE_FILE.read_text())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("watchdog state read failed, starting fresh: %s", e)
     return {
         "start_epoch": time.time(),
         "strike_counts": {},
@@ -76,7 +76,8 @@ def _load_pipeline_config() -> dict:
     try:
         data = json.loads(PIPELINE_STATE_FILE.read_text())
         return data
-    except Exception:
+    except Exception as e:
+        logger.warning("pipeline config read failed: %s", e)
         return {}
 
 
@@ -88,7 +89,8 @@ def _is_pid_alive(pid: int) -> bool:
                            capture_output=True, text=True, timeout=5,
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         return bool(re.search(rf"\b{re.escape(str(pid))}\b", r.stdout))
-    except Exception:
+    except Exception as e:
+        logger.warning("tasklist pid check failed: %s", e)
         return False
 
 
@@ -121,7 +123,8 @@ def _get_pipeline_hb() -> tuple:
                 "SELECT updated_at, current_specialist FROM pipeline_status WHERE id=1"
             ).fetchone()
             return row if row else (None, None)
-    except Exception:
+    except Exception as e:
+        logger.warning("pipeline_status read failed: %s", e)
         return None, None
 
 
@@ -130,7 +133,8 @@ def _get_max_activity_id() -> int | None:
         with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=5) as conn:
             row = conn.execute("SELECT MAX(id) FROM activity_log").fetchone()
             return row[0] if row and row[0] else None
-    except Exception:
+    except Exception as e:
+        logger.warning("activity id read failed: %s", e)
         return None
 
 
@@ -140,7 +144,8 @@ def _pipeline_log_growing(max_age_s: int = 300) -> bool:
         if not logs:
             return False
         return (time.time() - logs[0].stat().st_mtime) < max_age_s
-    except Exception:
+    except Exception as e:
+        logger.warning("pipeline log check failed: %s", e)
         return False
 
 

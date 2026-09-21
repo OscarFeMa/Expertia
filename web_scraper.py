@@ -426,7 +426,8 @@ class ContentExtractor:
     def _is_rate_limited(self, url: str) -> bool:
         try:
             netloc = urlparse(url).netloc.lower()
-        except Exception:
+        except Exception as e:
+            logger.debug("_is_rate_limited netloc parse failed: %s", e)
             return False
         until = self._rate_limited_until.get(netloc, 0)
         return time.time() < until
@@ -468,8 +469,8 @@ class ContentExtractor:
                 try:
                     self._rate_limited_until[urlparse(url).netloc.lower()] = \
                         time.time() + self._rate_limit_cooldown_sec
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("rate_limit cooldown set failed: %s", e)
                 logger.warning(f"Rate limit while fetching {url} — cooldown {self._rate_limit_cooldown_sec}s")
                 raise RateLimitError(f"Rate limit while fetching {url}")
             raise WebScraperError(f"HTTP error {e.response.status_code}")
