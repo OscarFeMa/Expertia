@@ -27,7 +27,7 @@ Elegido frente a `Qwen2.5-Math-1.5B` por: mejor razonamiento general (MATH 64.0)
 | Pieza | Detalle |
 |---|---|
 | Dataset | `expertia-math-puro.jsonl` (45k) + `_val` (5k). Extraído en solo-lectura de `knowledge_packages WHERE domain='Mathematics'` con `qid NOT NULL` y fórmula `P2534` preferente. Formato instrucción/respuesta, sin opiniones web. Generador: `tools/build_expertia_math_dataset.py` |
-| Método | QLoRA NF4 double-quant, LoRA r16/alpha32 sobre 7 módulos, `seq2048`, `batch 1 × accum 16`, `adamw_8bit`, `BF16`, checkpoint cada 200 pasos, resume automático. Script: `training/train_expertia_math.py` (copia versionada en `tools/usb-install/`) |
+| Método | QLoRA NF4 double-quant, LoRA r16/alpha32 sobre 7 módulos, `seq2048`, `batch 1 × accum 16`, `adamw_8bit`, `BF16`, checkpoint cada 200 pasos, resume automático. Script: `training/train_expertia.py` (copia de payload en `tools/usb-install/` como `train_expertia_math.py`) |
 | Dónde | PC dedicado **RTX 3070 Laptop 8GB** (`MAKEDERPC`, usuario local `expertia`), acceso WinRM desde el PC principal. Sin turnos: entrena 24/7 hasta completar (8436 pasos, 3 épocas) |
 | Resiliencia | Watchdog local (`Watch-Train.ps1`, relanza con resume) + auto-relanzamiento desde el PC principal (sync cada 5 min). Checkpoints 200/400/…/2000 verificados |
 | Monitor | Pestaña **ENTRENO** en `http://localhost:8011/neural/` (curva SVG con zoom, KPIs, ETA, GPU, log, informes) alimentada por espejo cada 5 min (`tools/sync_train_status.ps1`) |
