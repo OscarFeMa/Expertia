@@ -98,8 +98,14 @@ try {
         }
         # Lanzamiento blindado: tarea SYSTEM (los hijos de sesion WinRM mueren al cerrarla)
         try { Invoke-WebRequest "http://192.168.1.42:8000/Run-Electronics.cmd" -OutFile C:\training\Run-Electronics.cmd -UseBasicParsing } catch {}
-        schtasks /Create /TN "ExpertiaTrainElectronics" /TR "C:\training\Run-Electronics.cmd" /SC ONCE /ST 23:59 /RU SYSTEM /F
+        # One-shot sin cita-trampa: programa a +2min con /Z y borra tras verificar arranque.
+        # (/SC ONCE /ST 23:59 + /Run dejaba la cita viva: el /Run no la consume y re-dispara a las 23:59.)
+        $stNow = (Get-Date).AddMinutes(2).ToString('HH:mm')
+        schtasks /Create /TN "ExpertiaTrainElectronics" /TR "C:\training\Run-Electronics.cmd" /SC ONCE /ST $stNow /RU SYSTEM /Z /F
         schtasks /Run /TN "ExpertiaTrainElectronics"
+        Start-Sleep -Seconds 60
+        $upNow = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*train_expertia*" }
+        if ($upNow) { schtasks /Delete /TN "ExpertiaTrainElectronics" /F }
       }
       Add-Content (Join-Path $inc "relaunch.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') auto-relaunch por tarea (stale $([int]$staleMin)min)"
     }

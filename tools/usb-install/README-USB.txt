@@ -7,6 +7,8 @@ Contenido verificado: 91 archivos, 9.92 GB
 - payload/redist: python-3.11.9-amd64.exe 25MB
 - payload/scripts: train_expertia_math.py, requirements-train.txt, Modelfile, Start-Training.cmd, Start-Monitor.cmd, download_base.py
 - payload/monitor: monitor_train.py (standalone, sin dependencias)
+- ORIGEN: payload/scripts/train_expertia_math.py es copia generada de training/train_expertia.py
+  (renombrado F-023). Al preparar el USB: Copy-Item training\train_expertia.py payload\scripts\train_expertia_math.py
 
 INSTALACION (PC destino RTX 3070, Windows, 50GB libres en C:)
 1. Enchufar USB y ejecutar Install-ExpertiaTrain.cmd (doble clic)
