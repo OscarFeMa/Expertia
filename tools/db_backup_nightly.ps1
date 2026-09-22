@@ -10,6 +10,14 @@ function L($m) { Add-Content $log "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $m"
 L "=== backup nocturno inicio (online-safe .backup) ==="
 if (-not (Test-Path $src)) { L "ERROR: fuente no accesible ($src)"; exit 1 }
 if (-not (Test-Path $sqlite)) { L "ERROR: sqlite3 no encontrado ($sqlite)"; exit 1 }
+# Mutex: un .backup de 684GB tarda 15h+ con escritor activo; si el ciclo anterior
+# sigue vivo, lanzar otro solaparía I/O y locks. Se omite el ciclo sin error.
+$other = Get-CimInstance Win32_Process -Filter "Name='sqlite3.exe'" -ErrorAction SilentlyContinue |
+  Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*.backup*' }
+if ($other) {
+  L ("SKIP: .backup ya en curso PID $($other.ProcessId), se omite este ciclo")
+  exit 0
+}
 
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 & $sqlite $src ".backup '$($dst)'" 2>&1 | Out-Null

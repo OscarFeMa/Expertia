@@ -410,7 +410,8 @@ class App {
     if (lt) {
       lt.innerHTML = local.length ? local.map(p => {
         const [name, what, why] = App.describeProc(p.cmd || '');
-        return `<tr><td style="font:600 10px var(--mono)">PID ${p.pid}<br><span style="color:var(--text-faint)">${escapeHtml((p.cmd || '').split(/[\\/]/).pop().split(' ')[0])}</span></td><td><b>${escapeHtml(name)}</b></td><td>${escapeHtml(what)}</td><td>${escapeHtml(why)}</td><td class="num">${p.cpu ?? '—'}</td><td class="num">${p.mem_mb ?? '—'}</td><td>${escapeHtml(p.started || '')}</td></tr>`;
+        const role = /hermes-agent[\\/]venv/.test(p.cmd || '') && (p.mem_mb || 999) < 20 ? ' · lanzador' : (/[\\/]uv[\\/]/.test(p.cmd || '') ? ' · worker' : '');
+        return `<tr><td style="font:600 10px var(--mono)">PID ${p.pid}<br><span style="color:var(--text-faint)">${escapeHtml((p.cmd || '').split(/[\\/]/).pop().split(' ')[0])}</span></td><td><b>${escapeHtml(name)}</b><span style="color:var(--text-faint)">${escapeHtml(role)}</span></td><td>${escapeHtml(what)}</td><td>${escapeHtml(why)}</td><td class="num">${p.cpu ?? '—'}</td><td class="num">${p.mem_mb ?? '—'}</td><td>${escapeHtml(p.started || '')}</td></tr>`;
       }).join('') : `<tr><td colspan="7" style="color:var(--text-mute)">sin procesos Python — ¿pila caída? mira la pestaña ACTIVIDAD</td></tr>`;
     }
     const m = d.m3070 || {};
