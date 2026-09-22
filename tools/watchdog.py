@@ -46,6 +46,11 @@ HARD_TIMEOUT_HOURS = 0  # 0 = sin límite
 RESTART_BURST = 5       # máx relanzamientos
 RESTART_WINDOW = 1800   # en esta ventana (30 min)
 
+API_URL = os.environ.get("EXPERTIA_API", "http://localhost:8011/api/health")
+API_FAIL_LIMIT = 2      # fallos de health consecutivos antes de relanzar
+API_RESTART_BURST = 3   # máx relanzamientos de API
+API_RESTART_WINDOW = 1800  # en esta ventana (30 min)
+
 
 def _load_state() -> dict:
     if STATE_FILE.exists():
@@ -197,6 +202,36 @@ def _relaunch_pipeline(state: dict) -> bool:
         return False
 
 
+def _api_healthy(timeout: int = 8) -> bool:
+    """Chequeo barato de la API Neural Horizon (:8011/health)."""
+    try:
+        import urllib.request
+        with urllib.request.urlopen(API_URL, timeout=timeout) as r:
+            return r.status == 200
+    except Exception as e:
+        logger.debug("api health fallo: %s", e)
+        return False
+
+
+def _relaunch_api(state: dict) -> bool:
+    """Levanta query_api.py desacoplado (formato launcher, log propio)."""
+    try:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_path = LOG_DIR / f"api_watchdog_{ts}.log"
+        log_file = open(log_path, "w", encoding="utf-8")
+        proc = subprocess.Popen([str(PYTHON), "query_api.py"], cwd=str(REPO_ROOT),
+                                stdout=log_file, stderr=subprocess.STDOUT,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        state["api_pid"] = proc.pid
+        state["api_last_restart"] = time.time()
+        _save_state(state)
+        logger.warning(f"API relanzada PID={proc.pid} (log {log_path.name})")
+        return True
+    except Exception as e:
+        logger.error(f"Relanzamiento API fallo: {e}")
+        return False
+
+
 def _kill_process(pid: int):
     try:
         subprocess.run(["taskkill", "/F", "/PID", str(pid)],
@@ -254,6 +289,28 @@ def main():
         if deadline and now >= deadline:
             _shutdown(f"Hard timeout de {args.max_hours}h alcanzado")
             break
+
+        # ── API Neural Horizon: health + relanzamiento (independiente del pipeline) ──
+        if _api_healthy():
+            if state.get("api_fails"):
+                state["api_fails"] = 0
+                _save_state(state)
+        else:
+            fails = state.get("api_fails", 0) + 1
+            state["api_fails"] = fails
+            _save_state(state)
+            logger.warning(f"API :8011 sin respuesta (fallo {fails}/{API_FAIL_LIMIT})")
+            if fails >= API_FAIL_LIMIT:
+                state["api_fails"] = 0
+                api_restarts = [t for t in state.get("api_restarts", []) if now - t < API_RESTART_WINDOW]
+                if len(api_restarts) >= API_RESTART_BURST:
+                    logger.error("API en crash loop, se reanuda en 30min (watchdog sigue)")
+                    state["api_restarts"] = []
+                else:
+                    api_restarts.append(now)
+                    state["api_restarts"] = api_restarts
+                    _relaunch_api(state)
+                _save_state(state)
 
         pid = _get_pipeline_pid()
         if pid:
