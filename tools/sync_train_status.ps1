@@ -120,7 +120,23 @@ if ($trend) { Add-Content (Join-Path $inc "trend.log") $trend }
 Invoke-Command -Session $S -ScriptBlock {
   $l = Get-ChildItem C:\training\logs\train_*.log | Sort-Object LastWriteTime | Select-Object -Last 1
   $e = Get-ChildItem C:\training\logs\train_*.err.log -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
-  $ad = "C:\training\adapters\expertia-electronics-r16"
+  # Adapter/dataset ACTIVOS deducidos del entreno vivo (--out/--train); nunca rutas fijas.
+  $trainer = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*train_expertia*" } | Select-Object -First 1
+  $adName = ""
+  $dsFile = ""
+  if ($trainer) {
+    if ($trainer.CommandLine -match '--out\s+(\S+)') { $adName = Split-Path $Matches[1] -Leaf }
+    if ($trainer.CommandLine -match '--train\s+(\S+)') { $dsFile = Split-Path $Matches[1] -Leaf }
+  }
+  $ad = if ($adName) { "C:\training\adapters\$adName" } else { "C:\training\adapters\expertia-electronics-r16" }
+  $dsRows = 0
+  $dsValRows = 0
+  if ($dsFile) {
+    $dp = "C:\training\datasets\$dsFile"
+    if (Test-Path $dp) { $dsRows = @(Get-Content $dp -ReadCount 2000 -ErrorAction SilentlyContinue | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum }
+    $vp = "C:\training\datasets\" + ([IO.Path]::GetFileNameWithoutExtension($dsFile) + "_val.jsonl")
+    if (Test-Path $vp) { $dsValRows = @(Get-Content $vp -ReadCount 2000 -ErrorAction SilentlyContinue | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum }
+  }
   $g = $null
   try {
     $q = ((nvidia-smi -q -d TEMPERATURE,POWER,CLOCK 2>$null) -join "`n")
@@ -158,6 +174,18 @@ Invoke-Command -Session $S -ScriptBlock {
     gpu_raw = $g
     thermal_alert = $talert
     thermal_temp = $t
+    adapter_name = $adName
+    dataset_file = $dsFile
+    dataset_rows = $dsRows
+    dataset_val_rows = $dsValRows
+    procs = @($(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='cmd.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
+      $cmd = [string]$_.CommandLine
+      if ($cmd.Length -gt 200) { $cmd = $cmd.Substring(0, 200) }
+      [pscustomobject]@{ pid = $_.ProcessId; name = $_.Name; cmd = $cmd }
+    }))
+    tasks = @($(schtasks /Query /FO CSV 2>$null | ConvertFrom-Csv -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -match "Expertia|SWE|Post" } | ForEach-Object {
+      [pscustomobject]@{ name = $_.TaskName; next = $_.'Next Run Time'; status = $_.Status }
+    }))
   }
 } | ConvertTo-Json -Depth 3 | Set-Content (Join-Path $inc "remote_extra.json") -Encoding utf8
 Remove-PSSession $S

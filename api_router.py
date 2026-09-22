@@ -898,6 +898,7 @@ def training_status():
             if _t.time() - sf_inc.stat().st_mtime < 1200:
                 rep = json.loads(sf_inc.read_text(encoding="utf-8"))
                 rep["origen"] = "3070"
+                extra = {}
                 try:
                     _xp = inc / "remote_extra.json"
                     if _t.time() - _xp.stat().st_mtime >= 1200:
@@ -920,9 +921,9 @@ def training_status():
                                 logger.debug("gpu metric value parse failed: %s", e)
                 except Exception as e:
                     logger.debug("gpu block parse failed: %s", e)
-                rep["dataset_train"] = rep.get("dataset_train", 45000)
-                rep["dataset_val"] = rep.get("dataset_val", 5000)
-                rep["adapter"] = "r16 · seq1024 · Phi-reasoning · 3070 (electronics)"
+                rep["dataset_train"] = rep.get("dataset_train") or extra.get("dataset_rows") or 0
+                rep["dataset_val"] = rep.get("dataset_val") or extra.get("dataset_val_rows") or 0
+                rep["adapter"] = rep.get("adapter") or extra.get("adapter_name") or "r16 · seq1024 · Phi-reasoning · 3070"
                 rep["base_downloaded"] = True
                 return rep
     except Exception as e:
@@ -970,6 +971,79 @@ def training_status():
             out["log_file"] = logs[-1].name
     except Exception as e:
         out["error"] = str(e)[:200]
+    return out
+
+
+@router.get("/processes")
+def processes_status():
+    """Foto de procesos Python en SOBREMESA + espejo del 3070, con modelos Ollama.
+    Pensado para la pestaña PROCESOS: qué corre, dónde y por qué (la descripción
+    la pone el frontend por patrón de comando)."""
+    import time as _t
+    out = {"sobremesa": [], "m3070": {}, "ollama_models": []}
+    try:
+        import psutil
+        procs = []
+        for p in psutil.process_iter(["pid", "name", "cmdline", "create_time"]):
+            try:
+                nm = (p.info["name"] or "").lower()
+                cmd = " ".join(p.info["cmdline"] or [])
+                if "python" not in nm and "python" not in cmd.lower():
+                    continue
+                procs.append(p)
+            except Exception:
+                continue
+        for p in procs:
+            try:
+                p.cpu_percent()
+            except Exception:
+                pass
+        _t.sleep(0.5)
+        for p in procs:
+            try:
+                cmd = " ".join(p.info["cmdline"] or [])
+                if len(cmd) > 220:
+                    cmd = cmd[:220]
+                mem = p.memory_info()
+                out["sobremesa"].append({
+                    "pid": p.pid,
+                    "cmd": cmd,
+                    "cpu": round(p.cpu_percent(), 1),
+                    "mem_mb": round(mem.rss / 1048576, 1),
+                    "started": _t.strftime("%H:%M", _t.localtime(p.create_time())),
+                })
+            except Exception:
+                continue
+    except Exception as e:
+        logger.debug("processes sobremesa failed: %s", e)
+    try:
+        import urllib.request as _ur
+        with _ur.urlopen("http://localhost:11434/api/ps", timeout=5) as _r:
+            _d = json.load(_r)
+            out["ollama_models"] = [m.get("name", "") for m in _d.get("models", [])]
+    except Exception as e:
+        logger.debug("processes ollama ps failed: %s", e)
+    try:
+        base = Path("D:/proyectos/expertia/training")
+        inc = base / "incoming_3070"
+        m = {}
+        sf = inc / "train_status.json"
+        if sf.exists() and _t.time() - sf.stat().st_mtime < 1200:
+            st = json.loads(sf.read_text(encoding="utf-8"))
+            m["phase"] = st.get("phase")
+            m["step"] = st.get("step")
+            m["max_steps"] = st.get("max_steps")
+            m["adapter"] = st.get("adapter")
+        xp = inc / "remote_extra.json"
+        if xp.exists() and _t.time() - xp.stat().st_mtime < 1200:
+            x = json.loads(xp.read_text(encoding="utf-8-sig"))
+            m["procs"] = x.get("procs", [])
+            m["tasks"] = x.get("tasks", [])
+            m["gpu_raw"] = x.get("gpu_raw")
+            m["thermal_alert"] = x.get("thermal_alert", "")
+        out["m3070"] = m
+    except Exception as e:
+        logger.debug("processes 3070 mirror failed: %s", e)
     return out
 
 

@@ -50,6 +50,7 @@ class App {
     else if (e.key === 'F2') { e.preventDefault(); this.switchTab('metrics'); }
     else if (e.key === 'F3') { e.preventDefault(); this.switchTab('activity'); }
     else if (e.key === 'F4') { e.preventDefault(); this.switchTab('training'); }
+    else if (e.key === 'F5') { e.preventDefault(); this.switchTab('processes'); }
     else if (e.key === 'r' || e.key === 'R') { this.refresh(); }
     else if (e.key === 't' || e.key === 'T') { this.toggleTheme(); }
     else if (e.key === '?' || (e.key === '/' && e.shiftKey)) { e.preventDefault(); this.toggleHelp(); }
@@ -128,6 +129,9 @@ class App {
       requestAnimationFrame(() => {
         this.fetchJSON(`${this.apiBase}/training/status`).then(d => { if (d) this.updateTrainPanel(d); });
       });
+    }
+    if (name === 'processes') {
+      this.fetchJSON(`${this.apiBase}/processes`).then(d => { if (d) this.renderProcesses(d); });
     }
     if (name === 'training' && !this._trainResize) {
       this._trainResize = true;
@@ -363,6 +367,67 @@ class App {
       if(stick||nearBottom) log.scrollTop=log.scrollHeight;
     }
   }
+  // ── Pestaña PROCESOS: qué corre en cada máquina y por qué ──
+  static PROC_DESC = [
+    [/train_expertia/, (c) => { const m = c.match(/--train\s+(\S+)/); const d = m ? m[1].split(/[/\\]/).pop().replace('expertia-', '').replace('-puro.jsonl', '') : '?'; return ['Entreno ' + d, 'Fine-tuning QLoRA r16 del especialista ' + d, 'Crear el siguiente experto de la casa']; }],
+    [/eval_expertia/, () => ['Evaluación base vs adapter', 'Mide perplejidad en 500 muestras held-out', 'Decidir si el adapter mejora y cuánto (puerta de publicación)']],
+    [/merge_expertia/, () => ['Merge LoRA→FP16', 'Fusiona el adapter entrenado sobre la base', 'Producir el modelo completo para GGUF']],
+    [/convert_hf_to_gguf|llama-quantize|llama\.cpp/, () => ['Cuantización GGUF', 'Convierte FP16→F16→Q4_K_M', 'Pesos distribuibles (Ollama/HF)']],
+    [/orchestrator\.py.*--phase web/, () => ['Pipeline WEB', 'Alimentación continua de conocimiento (cascadas por especialista)', 'Hacer crecer la BD de la incubadora']],
+    [/orchestrator\.py.*--phase feed/, () => ['Pipeline FEED', 'Absorción de paquetes Wikidata a la BD', 'Incorporar conocimiento verificado']],
+    [/orchestrator\.py.*--phase nurture/, () => ['Pipeline NURTURE', 'Maduración de un especialista (ciclos de calidad)', 'Subir EMA/cobertura de un dominio']],
+    [/orchestrator\.py/, () => ['Orquestador', 'Coordina fases del pipeline', 'Motor de la incubadora']],
+    [/tools\/watchdog\.py|tools\\watchdog\.py/, () => ['Watchdog', 'Vigila pipeline + API y relanza si mueren o se congelan', 'Resiliencia sin intervención']],
+    [/query_api\.py/, () => ['API web :8011', 'Sirve esta interfaz, paneles y endpoints', 'Operar y observar el sistema']],
+    [/translate_daemon|translate\.py/, () => ['Traducción NLLB', 'Precachea traducciones en→es/hi/fr/zh/ar/ru por la noche', 'Incubadora multilingüe']],
+    [/guard_pipeline/, () => ['Guard horario', 'Comprueba pipeline vivo 1×/h y lo levanta si falta', 'Segunda red de seguridad']],
+    [/harvest_/, (c) => { const m = c.match(/harvest_([a-z_]+)\.py/); return ['Cosecha ' + (m ? m[1] : ''), 'Descarga materia prima (SE/Wiki/SPARQL/NCBI) con backoff', 'Alimentar futuros datasets']; }],
+    [/build_expertia_/, (c) => { const m = c.match(/build_expertia_([a-z_]+)_dataset/); return ['Build dataset ' + (m ? m[1] : ''), 'Fusiona raws + top-up BD → 45k+5k train/val', 'Materia prima del próximo entreno']; }],
+    [/audit_/, () => ['Auditor juez-LLM', 'Puntúa calidad de pares raw 0-10', 'Filtrar basura antes del build']],
+    [/canario_ollama/, () => ['Canario', '10 preguntas fijas vía Ollama + auto-flags', 'Puerta de publicación 10/10']],
+    [/sync_train_status/, () => ['Espejo 3070', 'Copia estado del 3070 cada 5 min + auto-relaunch', 'Visibilidad y resiliencia del entreno']],
+    [/launcher\.py/, () => ['Launcher', 'Arranca pipeline+watchdog+API desacoplados', 'Arranque canónico de la pila']],
+    [/pytest|ruff/, () => ['Tests/Lint', 'Verificación de calidad de código', 'Puerta verde antes de push']],
+    [/Run-.*\.cmd|cmd\.exe/, () => ['Wrapper Windows', 'Lanza un paso de la cadena del 3070 vía tarea', 'Supervivencia fuera de sesión WinRM']],
+  ];
+
+  static describeProc(cmd) {
+    for (const [re, fn] of App.PROC_DESC) {
+      if (re.test(cmd)) return fn(cmd);
+    }
+    const short = cmd.length > 90 ? cmd.slice(0, 90) + '…' : cmd;
+    return [short || '(sistema)', 'Proceso no catalogado', '—'];
+  }
+
+  renderProcesses(d) {
+    const lt = document.getElementById('proc-local-tbody');
+    const st = document.getElementById('proc-3070-tbody');
+    const lsub = document.getElementById('proc-local-sub');
+    const ssub = document.getElementById('proc-3070-sub');
+    const oll = document.getElementById('proc-ollama');
+    const local = d.sobremesa || [];
+    if (lsub) lsub.textContent = `${local.length} procesos · actualizado ahora`;
+    if (lt) {
+      lt.innerHTML = local.length ? local.map(p => {
+        const [name, what, why] = App.describeProc(p.cmd || '');
+        return `<tr><td style="font:600 10px var(--mono)">PID ${p.pid}<br><span style="color:var(--text-faint)">${escapeHtml((p.cmd || '').split(/[\\/]/).pop().split(' ')[0])}</span></td><td><b>${escapeHtml(name)}</b></td><td>${escapeHtml(what)}</td><td>${escapeHtml(why)}</td><td class="num">${p.cpu ?? '—'}</td><td class="num">${p.mem_mb ?? '—'}</td><td>${escapeHtml(p.started || '')}</td></tr>`;
+      }).join('') : `<tr><td colspan="7" style="color:var(--text-mute)">sin procesos Python — ¿pila caída? mira la pestaña ACTIVIDAD</td></tr>`;
+    }
+    const m = d.m3070 || {};
+    const rows = [];
+    (m.procs || []).forEach(p => {
+      const [name, what, why] = App.describeProc(p.cmd || '');
+      rows.push(`<tr><td style="font:600 10px var(--mono)">PID ${p.pid} · ${escapeHtml(p.name || '')}</td><td><b>${escapeHtml(name)}</b></td><td>${escapeHtml(what)}</td><td>${escapeHtml(why)}</td><td style="font:500 10px var(--mono);color:var(--text-mute)">${escapeHtml((p.cmd || '').slice(0, 80))}</td></tr>`);
+    });
+    (m.tasks || []).forEach(t => {
+      rows.push(`<tr><td style="font:600 10px var(--mono)">⏰ ${escapeHtml(t.name || '')}</td><td><b>Tarea programada</b></td><td>Disparo automático en el 3070</td><td>próx: ${escapeHtml(t.next || '—')} · ${escapeHtml(t.status || '')}</td></tr>`);
+    });
+    if (m.phase) rows.push(`<tr><td style="font:600 10px var(--mono)">🏋️ entreno</td><td><b>${escapeHtml(m.adapter || 'adapter')}</b></td><td>Ciclo de fine-tuning en GPU</td><td>fase ${escapeHtml(m.phase || '')} · paso ${m.step ?? '—'}/${m.max_steps ?? '—'}${m.thermal_alert ? ' · ⚠ ' + escapeHtml(m.thermal_alert) : ''}</td></tr>`);
+    if (ssub) ssub.textContent = m.phase ? `fase ${m.phase} · paso ${m.step ?? '—'}` : 'sin entreno activo';
+    if (st) st.innerHTML = rows.length ? rows.join('') : `<tr><td colspan="4" style="color:var(--text-mute)">sin datos del 3070 (¿espejo desactualizado?)</td></tr>`;
+    if (oll) oll.textContent = (d.ollama_models && d.ollama_models.length) ? d.ollama_models.join(' · ') : 'ninguno residente';
+  }
+
   updateReports(d){
     const el=document.getElementById('reports-list'); if(!el) return;
     const reps=d.reports||[];
@@ -490,6 +555,11 @@ class App {
       if (d?.alerts?.length) this.renderAlerts(d.alerts);
       if (this.tab === 'metrics') this.renderInsights();
     });
+
+    // Processes tab live data (psutil scan is cheap, ~0.5s)
+    if (this.tab === 'processes') {
+      this.fetchJSON(`${this.apiBase}/processes`).then(d => { if (d) this.renderProcesses(d); });
+    }
 
     this.rawOverview = overview;
     this.rawSpecs = specs?.specialists || [];
