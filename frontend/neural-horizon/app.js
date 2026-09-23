@@ -249,8 +249,15 @@ class App {
     const ok=r=>r>0.1&&r<60?r:null;
     const pts=(hist||[]).filter(h=>h.ts!=null);
     if(pts.length>=2){
-      const a=pts[Math.max(0,pts.length-6)], b=pts[pts.length-1];
-      const dt=(b.ts-a.ts)/60, r=dt>0.5?(b.step-a.step)/dt:null;
+      let a=pts[Math.max(0,pts.length-6)];
+      const b=pts[pts.length-1];
+      // corta por huecos (paradas/reinicios): solo el tramo continuo reciente,
+      // si no el paro contamina el ritmo (p.ej. 1.3/min tras un resume)
+      for(let i=pts.length-1;i>0;i--){
+        if(pts[i].ts-pts[i-1].ts>5*60){ a=pts[i]; break; }
+      }
+      const dt=(b.ts-a.ts)/60;
+      const r=(dt>0.5&&dt<=30&&(b.step-a.step)>0)?(b.step-a.step)/dt:null;
       const sane=ok(r);
       if(sane) return {rate:sane, src:'historial'};
     }
