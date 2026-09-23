@@ -39,3 +39,6 @@ Thumbs.db
 *.bak
 .vscode/
 .idea/
+
+# Kill-switch local (no versionar estado de pausa)
+tools/PAUSE_TRANSLATE

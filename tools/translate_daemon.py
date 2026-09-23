@@ -89,6 +89,13 @@ def precache(limit=2000, tgt="es"):
 
 if __name__ == "__main__":
     once = "--once" in sys.argv
+    # Kill-switch sin admin: si existe tools/PAUSE_TRANSLATE, salir sin traducir.
+    # (Las tareas programadas son de Administradores; esto permite pausar sin UAC.)
+    pause_file = Path(__file__).parent / "PAUSE_TRANSLATE"
+    if pause_file.exists():
+        logging.info("pausa activa (%s), sin traducir", pause_file.name)
+        print("translate pausado por PAUSE_TRANSLATE", flush=True)
+        sys.exit(0)
     logging.info("daemon start once=%s", once)
     print("daemon 22:00-08:00 es-first NLLB start", flush=True)
     while True:
