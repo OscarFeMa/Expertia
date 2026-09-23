@@ -15,11 +15,19 @@ STRICT_WHERE = """domain='Mathematics' AND qid IS NOT NULL AND structured_knowle
 RELAXED_WHERE = """domain='Mathematics' AND qid IS NOT NULL AND structured_knowledge IS NOT NULL AND (structured_knowledge LIKE '%P2534%' OR structured_knowledge LIKE '%defining formula%') AND LENGTH(structured_knowledge) BETWEEN 50 AND 2000 AND source_url LIKE '%wikidata.org/entity/%'"""
 
 GARBAGE_MARKERS = ("cookie", "sign in", "captcha", "subscribe", "javascript")
+# Sopa de metadatos scholarly: se descarta (canario DS 7/10).
+METADATA_MARKERS = ("scientific article published", "language of work",
+                    "instance of: http", "author: Q", "source url: http")
 
 
 def is_garbage(text):
     low = text.lower()
     return any(m in low for m in GARBAGE_MARKERS)
+
+
+def is_metadata_soup(text):
+    low = (text or "").lower()
+    return any(m in low for m in METADATA_MARKERS)
 
 
 def fetch_batch(db_path, max_id, batch):
@@ -53,7 +61,7 @@ def to_record(row):
     url = (row.get("source_url") or "").strip()
     if not topic or not sk:
         return None
-    if is_garbage(sk):
+    if is_garbage(sk) or is_metadata_soup(sk):
         return None
     instruction = f"Explica {topic} [{qid}]" if qid else f"Explica {topic}"
     return {
