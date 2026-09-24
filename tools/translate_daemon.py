@@ -23,6 +23,26 @@ except Exception as e:
 
 TARGETS = ["es", "hi", "fr", "zh", "ar", "ru"]
 
+# Exclusion mutua entre instancias (maraton vs tarea 22:00): lock de fichero
+# no bloqueante; si otra instancia lo tiene, salir sin traducir.
+_LOCK_FH = None
+
+
+def _take_singleton_lock():
+    global _LOCK_FH
+    try:
+        lock_path = Path(__file__).parent / ".translate_daemon.lock"
+        _LOCK_FH = open(lock_path, "a+b")
+        try:
+            import msvcrt
+            msvcrt.locking(_LOCK_FH.fileno(), msvcrt.LK_NBLCK, 1)
+        except ImportError:
+            import fcntl
+            fcntl.flock(_LOCK_FH.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except Exception:
+        return False
+
 # Estado vivo para el panel (/api/translate/status): ventana deslizante de
 # marcas de tiempo (ritmo real, no media desde el arranque) + acumulados
 # persistentes por idioma (el done por pasada engañaba).
@@ -155,6 +175,10 @@ if __name__ == "__main__":
         print("translate pausado por PAUSE_TRANSLATE", flush=True)
         sys.exit(0)
     logging.info("daemon start once=%s ignore_window=%s budgets=%s", once, ignore_window, budgets)
+    if not _take_singleton_lock():
+        logging.info("otra instancia activa, exit 0")
+        print("translate: otra instancia activa, exit 0", flush=True)
+        sys.exit(0)
     print("daemon 22:00-08:00 es-first NLLB start", flush=True)
     while True:
         h = datetime.now().hour
