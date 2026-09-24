@@ -355,6 +355,9 @@ class App {
     const mu=d.gpu_mem_used, mf=d.gpu_mem_free;
     set('kpi-vram', (mu!=null)?`${(mu/1024).toFixed(1)} / ${((mu+mf)/1024).toFixed(1)} GB`:'—');
     set('kpi-pow', (d.gpu_power!=null&&d.gpu_power>=0)?`${d.gpu_power}W / ${(d.gpu_power_limit!=null&&d.gpu_power_limit>0)?d.gpu_power_limit:'?'}W${temp!=null&&temp>=85?' · ¡REFRIGERAR!':''}`:'n/d');
+    if(d.phase==='training'&&d.gpu_power!=null&&d.gpu_power>=0&&d.gpu_power<70){
+      const wb=$('train-worker'); if(wb){ wb.textContent+=' · ⚠ POTENCIA BAJA (<70W)'; wb.style.color='var(--red,#d96a5c)'; }
+    }
     set('train-lr', d.lr!=null?Number(d.lr).toExponential(1):'—');
     set('train-time', d.elapsed_s!=null?this._fmtDur(d.elapsed_s):'—');
     set('train-ds', `${(d.dataset_train||0).toLocaleString()} / ${(d.dataset_val||0).toLocaleString()}`);
