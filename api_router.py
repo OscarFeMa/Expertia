@@ -1047,6 +1047,23 @@ def processes_status():
     return out
 
 
+@router.get("/translate/status")
+def translate_status():
+    """Progreso del precache de traducciones (lo escribe translate_daemon)."""
+    out = {"running": False, "tgt": None, "done": 0, "budget": 0,
+           "rate_per_h": 0, "eta_min": None, "updated": None}
+    try:
+        p = Path(__file__).parent / "logs" / "translate_status.json"
+        if p.exists():
+            import time as _t
+            d = json.loads(p.read_text(encoding="utf-8"))
+            out.update(d)
+            out["running"] = (_t.time() - p.stat().st_mtime) < 900
+    except Exception as e:
+        logger.debug("translate status failed: %s", e)
+    return out
+
+
 @router.get("/reports")
 def list_reports(limit: int = 10):
     rd = Path(__file__).parent / "storage" / "reports"

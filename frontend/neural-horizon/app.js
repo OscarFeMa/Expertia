@@ -132,6 +132,7 @@ class App {
     }
     if (name === 'processes') {
       this.fetchJSON(`${this.apiBase}/processes`).then(d => { if (d) this.renderProcesses(d); });
+      this.fetchJSON(`${this.apiBase}/translate/status`).then(d => { if (d) this.renderTranslate(d); });
     }
     if (name === 'training' && !this._trainResize) {
       this._trainResize = true;
@@ -439,6 +440,16 @@ class App {
     if (oll) oll.textContent = (d.ollama_models && d.ollama_models.length) ? d.ollama_models.join(' · ') : 'ninguno residente';
   }
 
+  renderTranslate(d) {
+    const st = document.getElementById('tr-state');
+    const det = document.getElementById('tr-detail');
+    if (!st || !det) return;
+    if (!d || !d.tgt) { st.textContent = 'parado'; det.textContent = 'sin datos (¿daemon parado?)'; return; }
+    st.textContent = d.running ? `traduciendo ${d.tgt}` : `pausado en ${d.tgt}`;
+    const eta = d.eta_min != null ? ` · ETA ${Math.round(d.eta_min)} min` : '';
+    det.textContent = `${d.tgt}: ${d.done}/${d.budget} · ${d.rate_per_h}/h${eta} · act. ${d.updated || '—'}`;
+  }
+
   updateReports(d){
     const el=document.getElementById('reports-list'); if(!el) return;
     const reps=d.reports||[];
@@ -570,6 +581,7 @@ class App {
     // Processes tab live data (psutil scan is cheap, ~0.5s)
     if (this.tab === 'processes') {
       this.fetchJSON(`${this.apiBase}/processes`).then(d => { if (d) this.renderProcesses(d); });
+      this.fetchJSON(`${this.apiBase}/translate/status`).then(d => { if (d) this.renderTranslate(d); });
     }
 
     this.rawOverview = overview;

@@ -1,4 +1,5 @@
 import logging
+import json
 import sqlite3
 import time
 from datetime import datetime
@@ -88,7 +89,38 @@ def precache(limit=2000, tgt="es"):
     return done
 
 if __name__ == "__main__":
-    once = "--once" in sys.argv
+    import argparse as _ap
+    _pp = _ap.ArgumentParser()
+    _pp.add_argument("--once", action="store_true")
+    _pp.add_argument("--ignore-window", action="store_true",
+                     help="maraton 24h: ignora la ventana 22-08")
+    _pp.add_argument("--budget-es", type=int, default=2400)
+    _pp.add_argument("--budget-other", type=int, default=400)
+    _aa, _ = _pp.parse_known_args()
+    once = _aa.once or ("--once" in sys.argv)
+    ignore_window = _aa.ignore_window
+    budgets = {"es": _aa.budget_es}
+    for _t in TARGETS:
+        budgets.setdefault(_t, _aa.budget_other)
+    _tgt_stats = {}
+
+    def _write_status(tgt, done, budget):
+        try:
+            st = _tgt_stats.setdefault(tgt, {"start": time.time(), "done": 0})
+            st["done"] = done
+            el_h = max((time.time() - st["start"]) / 3600, 1 / 3600)
+            rate = done / el_h
+            rem = max(budget - done, 0)
+            out = {"tgt": tgt, "done": done, "budget": budget,
+                   "rate_per_h": round(rate, 1),
+                   "eta_min": round(rem / rate * 60, 1) if rate > 0 else None,
+                   "updated": datetime.now().isoformat(timespec="seconds")}
+            _stf = Path(__file__).parent.parent / "logs" / "translate_status.json"
+            _stf.parent.mkdir(parents=True, exist_ok=True)
+            _stf.write_text(json.dumps(out), encoding="utf-8")
+        except Exception as e:
+            logger.debug("translate status fallo: %s", e)
+
     # Kill-switch sin admin: si existe tools/PAUSE_TRANSLATE, salir sin traducir.
     # (Las tareas programadas son de Administradores; esto permite pausar sin UAC.)
     pause_file = Path(__file__).parent / "PAUSE_TRANSLATE"
@@ -96,23 +128,28 @@ if __name__ == "__main__":
         logging.info("pausa activa (%s), sin traducir", pause_file.name)
         print("translate pausado por PAUSE_TRANSLATE", flush=True)
         sys.exit(0)
-    logging.info("daemon start once=%s", once)
+    logging.info("daemon start once=%s ignore_window=%s budgets=%s", once, ignore_window, budgets)
     print("daemon 22:00-08:00 es-first NLLB start", flush=True)
     while True:
         h = datetime.now().hour
-        if h >= 22 or h < 8:
+        if ignore_window or h >= 22 or h < 8:
             for tgt in TARGETS:
-                if not (22 <= datetime.now().hour or datetime.now().hour < 8):
+                if not ignore_window and not (22 <= datetime.now().hour or datetime.now().hour < 8):
                     break
+                budget = budgets.get(tgt, 400)
                 try:
-                    n = precache(BUDGET.get(tgt, 400), tgt)
+                    n = precache(budget, tgt)
                 except Exception as e:
                     logging.error(f"precache {tgt} failed: {e}")
                     n = -1
                 msg = f"precached {tgt} {n}"
                 print(msg, flush=True)
                 logging.info(msg)
-                if n > 0:
+                if n >= 0:
+                    _write_status(tgt, n, budget)
+                # Rotacion real: solo se para si el idioma se agoto (n < budget);
+                # si llego al tope, hay mas trabajo -> sigue al siguiente idioma.
+                if n > 0 and n < budget * 0.9:
                     logging.info(f"es-first: {tgt} aun con trabajo ({n} nuevos), resto manana")
                     break
                 time.sleep(10)
