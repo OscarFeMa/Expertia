@@ -88,7 +88,7 @@ def precache(limit=2000, tgt="es"):
         if exists:
             continue
         try:
-            out = translate(txt, "en", tgt)
+            out = translate(txt, "en", tgt, strict=True)
         except Exception as e:
             if "bad allocation" in str(e).lower():
                 gc.collect()

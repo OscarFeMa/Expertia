@@ -92,7 +92,7 @@ def _load_nllb():
         print(f"NLLB load failed: {e}")
         return False
 
-def translate(text, src="en", tgt="es"):
+def translate(text, src="en", tgt="es", strict=False):
     if not text or not text.strip():
         return text
     if tgt not in _SUPPORTED and tgt != "es":
@@ -119,6 +119,8 @@ def translate(text, src="en", tgt="es"):
             _NLLB_FAILS += 1
             logging.warning(f"translate NLLB error en->{tgt} (#{_NLLB_FAILS}): {e}")
             print(f"translate NLLB error en->{tgt}: {e}")
+            if strict:
+                raise
     return text
 
 def translate_stream(text, src="en", tgt="es"):
