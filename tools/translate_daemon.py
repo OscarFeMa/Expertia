@@ -130,7 +130,6 @@ if __name__ == "__main__":
     _aa, _ = _pp.parse_known_args()
     once = _aa.once or ("--once" in sys.argv)
     ignore_window = _aa.ignore_window
-    global _IGNORE_WINDOW
     _IGNORE_WINDOW = ignore_window
     budgets = {"es": _aa.budget_es}
     for _t in TARGETS:
