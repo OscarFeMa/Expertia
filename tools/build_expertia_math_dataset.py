@@ -68,7 +68,7 @@ def to_record(row):
         "system": SYSTEM_PROMPT,
         "instruction": instruction[:300],
         "input": "",
-        "output": f"{sk}\nSource: {url}"[:2000],
+        "output": sk[:2000],
         "metadata": {"domain": "Mathematics", "qid": qid, "source_url": url, "origin": "wikidata_pure"},
     }
 
