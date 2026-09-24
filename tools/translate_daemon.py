@@ -24,7 +24,18 @@ except Exception as e:
 TARGETS = ["es", "hi", "fr", "zh", "ar", "ru"]
 
 # Estado vivo para el panel (/api/translate/status): ventana deslizante de
-# marcas de tiempo (ritmo real, no media desde el arranque).
+# marcas de tiempo (ritmo real, no media desde el arranque) + acumulados
+# persistentes por idioma (el done por pasada engañaba).
+_MTOTALS = Path(__file__).parent.parent / "logs" / "translate_totals.json"
+
+
+def _load_totals():
+    try:
+        if _MTOTALS.exists():
+            return json.loads(_MTOTALS.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
 _MSTATE = {"tgt": None, "budget": 0, "done": 0, "times": []}
 
 
@@ -41,6 +52,7 @@ def _mstatus_touch(final=False):
             rate = (n - 1) / ((ts[-1] - ts[0]) / 3600)
         rem = max(_MSTATE["budget"] - _MSTATE["done"], 0)
         out = {"tgt": _MSTATE["tgt"], "done": _MSTATE["done"],
+               "total_lang": _MSTATE.get("total_lang", 0),
                "budget": _MSTATE["budget"], "rate_per_h": round(rate, 1),
                "eta_min": round(rem / rate * 60, 1) if rate > 0 else None,
                "updated": datetime.now().isoformat(timespec="seconds")}
@@ -163,6 +175,13 @@ if __name__ == "__main__":
                 logging.info(msg)
                 if n >= 0:
                     _MSTATE["done"] = n
+                    try:
+                        _tots = _load_totals()
+                        _tots[tgt] = _tots.get(tgt, 0) + n
+                        _MTOTALS.write_text(json.dumps(_tots), encoding="utf-8")
+                        _MSTATE["total_lang"] = _tots[tgt]
+                    except Exception as e:
+                        logger.debug("totals fallo: %s", e)
                     _mstatus_touch(final=True)
                 # Rotacion real: solo se para si el idioma se agoto (n < budget);
                 # si llego al tope, hay mas trabajo -> sigue al siguiente idioma.

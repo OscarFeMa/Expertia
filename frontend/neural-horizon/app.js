@@ -447,11 +447,12 @@ class App {
     if (!d || !d.tgt) { st.textContent = 'parado'; det.textContent = 'sin datos (¿daemon parado?)'; return; }
     st.textContent = d.running ? `traduciendo ${d.tgt}` : `pausado en ${d.tgt}`;
     let txt;
+    const tot = d.total_lang != null ? ` (acum. ${d.total_lang})` : '';
     if ((d.done || 0) < 5 || !(d.rate_per_h > 0)) {
-      txt = `${d.tgt}: ${d.done}/${d.budget} · calentando (midiendo ritmo) · act. ${d.updated || '—'}`;
+      txt = `${d.tgt}: ${d.done}/${d.budget}${tot} · calentando (midiendo ritmo) · act. ${d.updated || '—'}`;
     } else {
       const eta = d.eta_min != null ? ` · ETA ${Math.round(d.eta_min)} min` : '';
-      txt = `${d.tgt}: ${d.done}/${d.budget} · ${d.rate_per_h}/h${eta} · act. ${d.updated || '—'}`;
+      txt = `${d.tgt}: ${d.done}/${d.budget}${tot} · ${d.rate_per_h}/h${eta} · act. ${d.updated || '—'}`;
     }
     det.textContent = txt;
   }
