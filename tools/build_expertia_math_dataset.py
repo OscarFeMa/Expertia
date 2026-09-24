@@ -17,7 +17,9 @@ RELAXED_WHERE = """domain='Mathematics' AND qid IS NOT NULL AND structured_knowl
 GARBAGE_MARKERS = ("cookie", "sign in", "captcha", "subscribe", "javascript")
 # Sopa de metadatos scholarly: se descarta (canario DS 7/10).
 METADATA_MARKERS = ("scientific article published", "language of work",
-                    "instance of: http", "author: Q", "source url: http")
+                    "instance of:", "author: Q", "source url:",
+                    "country of origin", "official website", "inception: +",
+                    "subclass of:", "taxon rank:")
 
 
 def is_garbage(text):
