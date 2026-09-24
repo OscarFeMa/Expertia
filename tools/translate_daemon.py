@@ -22,6 +22,33 @@ except Exception as e:
     translate = None
 
 TARGETS = ["es", "hi", "fr", "zh", "ar", "ru"]
+
+# Estado vivo para el panel (/api/translate/status): ventana deslizante de
+# marcas de tiempo (ritmo real, no media desde el arranque).
+_MSTATE = {"tgt": None, "budget": 0, "done": 0, "times": []}
+
+
+def _mstatus_touch(final=False):
+    try:
+        now = time.time()
+        ts = _MSTATE["times"]
+        if not final:
+            ts.append(now)
+            del ts[:-100]
+        n = len(ts)
+        rate = 0.0
+        if n >= 5 and ts[-1] > ts[0]:
+            rate = (n - 1) / ((ts[-1] - ts[0]) / 3600)
+        rem = max(_MSTATE["budget"] - _MSTATE["done"], 0)
+        out = {"tgt": _MSTATE["tgt"], "done": _MSTATE["done"],
+               "budget": _MSTATE["budget"], "rate_per_h": round(rate, 1),
+               "eta_min": round(rem / rate * 60, 1) if rate > 0 else None,
+               "updated": datetime.now().isoformat(timespec="seconds")}
+        _stf = Path(__file__).parent.parent / "logs" / "translate_status.json"
+        _stf.parent.mkdir(parents=True, exist_ok=True)
+        _stf.write_text(json.dumps(out), encoding="utf-8")
+    except Exception as e:
+        logger.debug("translate status fallo: %s", e)
 ROTATE = {"es": 0, "hi": 1, "fr": 2, "zh": 3, "ar": 4, "ru": 5}
 # es-first estricto: el primer idioma con trabajo pendiente consume la noche;
 # solo se avanza al siguiente cuando un idioma sale saturado (0 nuevos).
@@ -72,10 +99,12 @@ def precache(limit=2000, tgt="es"):
                 continue
             raise
         done += 1
+        _MSTATE["done"] = _MSTATE.get("done", 0) + 1
         if done % 50 == 0:
             msg = f"precache {tgt} {done}/{limit}"
             print(msg, flush=True)
             logging.info(msg)
+            _mstatus_touch()
             gc.collect()
             if has_torch:
                 try:
@@ -102,24 +131,6 @@ if __name__ == "__main__":
     budgets = {"es": _aa.budget_es}
     for _t in TARGETS:
         budgets.setdefault(_t, _aa.budget_other)
-    _tgt_stats = {}
-
-    def _write_status(tgt, done, budget):
-        try:
-            st = _tgt_stats.setdefault(tgt, {"start": time.time(), "done": 0})
-            st["done"] = done
-            el_h = max((time.time() - st["start"]) / 3600, 1 / 3600)
-            rate = done / el_h
-            rem = max(budget - done, 0)
-            out = {"tgt": tgt, "done": done, "budget": budget,
-                   "rate_per_h": round(rate, 1),
-                   "eta_min": round(rem / rate * 60, 1) if rate > 0 else None,
-                   "updated": datetime.now().isoformat(timespec="seconds")}
-            _stf = Path(__file__).parent.parent / "logs" / "translate_status.json"
-            _stf.parent.mkdir(parents=True, exist_ok=True)
-            _stf.write_text(json.dumps(out), encoding="utf-8")
-        except Exception as e:
-            logger.debug("translate status fallo: %s", e)
 
     # Kill-switch sin admin: si existe tools/PAUSE_TRANSLATE, salir sin traducir.
     # (Las tareas programadas son de Administradores; esto permite pausar sin UAC.)
@@ -137,6 +148,8 @@ if __name__ == "__main__":
                 if not ignore_window and not (22 <= datetime.now().hour or datetime.now().hour < 8):
                     break
                 budget = budgets.get(tgt, 400)
+                _MSTATE.update(tgt=tgt, budget=budget, done=0, times=[])
+                _mstatus_touch()
                 try:
                     n = precache(budget, tgt)
                 except Exception as e:
@@ -146,7 +159,8 @@ if __name__ == "__main__":
                 print(msg, flush=True)
                 logging.info(msg)
                 if n >= 0:
-                    _write_status(tgt, n, budget)
+                    _MSTATE["done"] = n
+                    _mstatus_touch(final=True)
                 # Rotacion real: solo se para si el idioma se agoto (n < budget);
                 # si llego al tope, hay mas trabajo -> sigue al siguiente idioma.
                 if n > 0 and n < budget * 0.9:

@@ -446,8 +446,14 @@ class App {
     if (!st || !det) return;
     if (!d || !d.tgt) { st.textContent = 'parado'; det.textContent = 'sin datos (¿daemon parado?)'; return; }
     st.textContent = d.running ? `traduciendo ${d.tgt}` : `pausado en ${d.tgt}`;
-    const eta = d.eta_min != null ? ` · ETA ${Math.round(d.eta_min)} min` : '';
-    det.textContent = `${d.tgt}: ${d.done}/${d.budget} · ${d.rate_per_h}/h${eta} · act. ${d.updated || '—'}`;
+    let txt;
+    if ((d.done || 0) < 5 || !(d.rate_per_h > 0)) {
+      txt = `${d.tgt}: ${d.done}/${d.budget} · calentando (midiendo ritmo) · act. ${d.updated || '—'}`;
+    } else {
+      const eta = d.eta_min != null ? ` · ETA ${Math.round(d.eta_min)} min` : '';
+      txt = `${d.tgt}: ${d.done}/${d.budget} · ${d.rate_per_h}/h${eta} · act. ${d.updated || '—'}`;
+    }
+    det.textContent = txt;
   }
 
   updateReports(d){
