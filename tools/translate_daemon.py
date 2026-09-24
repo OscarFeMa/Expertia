@@ -53,6 +53,8 @@ ROTATE = {"es": 0, "hi": 1, "fr": 2, "zh": 3, "ar": 4, "ru": 5}
 # es-first estricto: el primer idioma con trabajo pendiente consume la noche;
 # solo se avanza al siguiente cuando un idioma sale saturado (0 nuevos).
 BUDGET = {"es": 800, "hi": 400, "fr": 400, "zh": 400, "ar": 400, "ru": 400}
+# True en modo maraton 24h: ignora tambien el control horario POR FILA de precache().
+_IGNORE_WINDOW = False
 
 def precache(limit=2000, tgt="es"):
     if translate is None:
@@ -111,7 +113,7 @@ def precache(limit=2000, tgt="es"):
                     torch.cuda.empty_cache()
                 except Exception as e:
                     logger.debug("torch.cuda.empty_cache failed (periodic): %s", e)
-        if not (22 <= datetime.now().hour or datetime.now().hour < 8):
+        if not _IGNORE_WINDOW and not (22 <= datetime.now().hour or datetime.now().hour < 8):
             break
     db.close()
     gc.collect()
@@ -128,6 +130,8 @@ if __name__ == "__main__":
     _aa, _ = _pp.parse_known_args()
     once = _aa.once or ("--once" in sys.argv)
     ignore_window = _aa.ignore_window
+    global _IGNORE_WINDOW
+    _IGNORE_WINDOW = ignore_window
     budgets = {"es": _aa.budget_es}
     for _t in TARGETS:
         budgets.setdefault(_t, _aa.budget_other)
