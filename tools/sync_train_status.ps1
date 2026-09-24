@@ -5,15 +5,25 @@ $inc = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) "traini
 New-Item -ItemType Directory -Path $inc -Force | Out-Null
 $cred = Import-Clixml (Join-Path $inc "cred.xml")
 $ip3070 = @(arp -a 2>$null | Select-String "E0-0A-F6-9E-CB-01" | ForEach-Object { if ($_ -match "(192\.168\.1\.\d+)") { $Matches[1] } }) | Select-Object -First 1
-if (-not $ip3070) { $ip3070 = "192.168.1.41" }
-try {
-  $S = New-PSSession -ComputerName $ip3070 -Credential $cred -ErrorAction Stop
-} catch {
+$cands = @()
+if ($ip3070) { $cands += $ip3070 }
+# DHCP del 3070 rota (.41/.33 vistos): candidatos fijos como respaldo.
+foreach ($c in @("192.168.1.41", "192.168.1.33")) { if ($cands -notcontains $c) { $cands += $c } }
+$S = $null
+foreach ($ip in $cands) {
+  try {
+    $S = New-PSSession -ComputerName $ip -Credential $cred -ErrorAction Stop
+    $ip3070 = $ip
+    break
+  } catch { }
+}
+if (-not $S) {
+  $ip = $cands[0]
   $pw = $cred.GetNetworkCredential().Password
-  net use "\\$ip3070\C$" /user:expertia $pw 2>$null | Out-Null
-  Copy-Item "\\$ip3070\C$\training\logs\train_status.json" (Join-Path $inc "train_status.json") -Force -ErrorAction Stop
+  net use "\\$ip\C$" /user:expertia $pw 2>$null | Out-Null
+  Copy-Item "\\$ip\C$\training\logs\train_status.json" (Join-Path $inc "train_status.json") -Force -ErrorAction Stop
   Remove-Item (Join-Path $inc "remote_extra.json") -Force -ErrorAction SilentlyContinue
-  net use "\\$ip3070\C$" /delete 2>$null | Out-Null
+  net use "\\$ip\C$" /delete 2>$null | Out-Null
   exit 0
 }
 $copied = $false
