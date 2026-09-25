@@ -42,3 +42,4 @@ Thumbs.db
 
 # Kill-switch local (no versionar estado de pausa)
 tools/PAUSE_TRANSLATE
+tools/PAUSE_FEED

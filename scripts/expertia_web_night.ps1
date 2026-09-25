@@ -1,5 +1,12 @@
 $ErrorActionPreference = "Continue"
 $repo = Split-Path -Parent $PSScriptRoot
+# Kill-switch sin admin: si existe tools/PAUSE_FEED, no lanzar nada.
+# (La tarea \ExpertiaWebNight es de Administradores; esto pausa sin UAC.)
+$pauseFile = Join-Path $repo "tools\PAUSE_FEED"
+if (Test-Path $pauseFile) {
+  Add-Content (Join-Path $repo "logs\web_night.log") "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') pausa activa, sin lanzar"
+  exit 0
+}
 $py = "C:\Users\usuario\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe"
 & $py (Join-Path $repo "tools\gen_cycle_report.py") --kind training 2>&1 | Out-Null
 Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like "*train_expertia*.py*" } | ForEach-Object {
