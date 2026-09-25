@@ -75,6 +75,27 @@ def to_record(row):
     }
 
 
+
+
+def _take_build_lock():
+    """Evita dos builds concurrentes del mismo dataset (corrompen la salida):
+    lock con PID vivo; si el dueno murio, se reclama."""
+    import os as _os
+    lock = Path(__file__).parent / ("." + Path(__file__).stem + ".lock")
+    if lock.exists():
+        try:
+            old = int(lock.read_text(encoding="utf-8").strip())
+            _os.kill(old, 0)
+            print("lock: otro build vivo PID %d, exit." % old)
+            raise SystemExit(0)
+        except SystemExit:
+            raise
+        except Exception:
+            pass
+    lock.write_text(str(_os.getpid()), encoding="utf-8")
+    import atexit
+    atexit.register(lambda: lock.exists() and lock.unlink())
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--db", default=DEFAULT_DB)
@@ -85,6 +106,7 @@ def main():
     p.add_argument("--relaxed", action="store_true")
     p.add_argument("--val-out", default="")
     args = p.parse_args()
+    _take_build_lock()
 
     where = RELAXED_WHERE if args.relaxed else STRICT_WHERE
     out_path = Path(args.out)
