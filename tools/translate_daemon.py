@@ -105,11 +105,12 @@ def precache(limit=2000, tgt="es"):
     # hot-set: high trust + recent, ventana de ids recientes (la tabla tiene
     # 900M+ filas sin indice en language: el ORDER BY global tardaba 10+ min)
     rows = db.execute(
-        "SELECT kp.id, kp.topic, kp.structured_knowledge FROM knowledge_packages kp "
+        "SELECT kp.id, kp.topic, kp.structured_knowledge, COALESCE(sr.trust_score,40) as ts FROM knowledge_packages kp "
         "LEFT JOIN source_reputation sr ON sr.netloc = substr(kp.source_url, instr(kp.source_url, '://')+3, instr(substr(kp.source_url, instr(kp.source_url, '://')+3), '/')-1) "
         "WHERE kp.id > (SELECT COALESCE(MAX(id),0)-200000 FROM knowledge_packages) "
-        "AND kp.language='en' ORDER BY COALESCE(sr.trust_score,40) DESC, kp.id DESC LIMIT ?", (limit,)
+        "AND kp.language='en' ORDER BY RANDOM() LIMIT ?", (limit * 10,)
     ).fetchall()
+    rows = sorted(rows, key=lambda r: r[3], reverse=True)
     done = 0
     for r in rows:
         txt = (r[2] or "")[:800]
