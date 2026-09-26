@@ -8,6 +8,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = r"E:\expertia-data\incubator.db"
 DEFAULT_OUT = r"D:\proyectos\expertia\training\datasets\expertia-math-puro.jsonl"
+RAW = Path(r"D:\proyectos\expertia\training\datasets\physics_raw")
 SYSTEM_PROMPT = "Eres ExpertiaMath, matematico puro. Responde solo con definicion formal y formula. Sin opinion web."
 BATCH = 2000
 
@@ -77,6 +78,40 @@ def to_record(row):
 
 
 
+def load_raw(limit_each=15000):
+    """Raws StackExchange (cosecha con key): LaTeX real, sin filtro P2534 (solo aplica a Wikidata)."""
+    recs, seen = [], set()
+    for name, origin in (("se_math.jsonl", "se_math"), ("se_matheducators.jsonl", "se_matheducators"),
+                         ("se_mathoverflow.jsonl", "se_mathoverflow")):
+        f = RAW / name
+        if not f.exists():
+            continue
+        for line in open(f, encoding="utf-8"):
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            qid = (r.get("qid") or "").strip()
+            label = (r.get("label") or "").strip()
+            formula = (r.get("formula") or "").strip()
+            if not label or not formula:
+                continue
+            if len(formula) < 50 or len(formula) > 2000:
+                continue
+            key = ("se", qid or label[:80])
+            if key in seen:
+                continue
+            seen.add(key)
+            seen.add((qid, label))
+            rec = to_record({"topic": label, "structured_knowledge": formula, "qid": qid, "source_url": ""})
+            if rec:
+                rec["metadata"]["origin"] = origin
+                recs.append(rec)
+            if len(recs) >= limit_each:
+                break
+    return recs, seen
+
+
 def _take_build_lock():
     """Evita dos builds concurrentes del mismo dataset (corrompen la salida):
     lock con PID vivo; si el dueno murio, se reclama."""
@@ -119,6 +154,10 @@ def main():
     max_id = None
     seen = set()
     strict = not args.relaxed
+    raw_recs, raw_seen = load_raw()
+    collected.extend(raw_recs)
+    seen.update(raw_seen)
+    print("raw recs: %d" % len(raw_recs), flush=True)
     while len(collected) < args.limit:
         rows = fetch_batch(args.db, max_id, BATCH)
         if not rows:
