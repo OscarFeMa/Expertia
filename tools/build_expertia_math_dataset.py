@@ -125,6 +125,8 @@ def main():
             break
         max_id = min(r["id"] for r in rows)
         scanned += len(rows)
+        if (scanned // 20000) != ((scanned - len(rows)) // 20000):
+            print("collected=%d scanned=%d" % (len(collected), scanned), flush=True)
         for r in rows:
             sk = r.get("structured_knowledge") or ""
             if len(sk) < 50 or len(sk) > 2000:
