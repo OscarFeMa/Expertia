@@ -44,8 +44,13 @@ try {
   $sh = Get-CimInstance Win32_ShadowCopy -Filter ("ID='" + $res.ShadowID + "'") -ErrorAction Stop
   $dev = $sh.DeviceObject.TrimEnd('\')
   L "VSS snapshot OK ($dev)"
-  $rc = robocopy "$dev\expertia\data" "E:\expertia-backups" $srcFile /J /R:3 /W:30 /NFL /NDL /NJH /NJS
+  # robocopy no traga rutas \\?\GLOBALROOT: se monta via junction temporal.
+  $mnt = "C:\shadow_bak_tmp"
+  try { if (Test-Path $mnt) { cmd /c rmdir $mnt 2>$null | Out-Null } } catch {}
+  cmd /c mklink /J $mnt "$dev\" 2>&1 | Out-Null
+  $rc = robocopy "$mnt\expertia\data" "E:\expertia-backups" $srcFile /J /R:3 /W:30 /NFL /NDL /NJH /NJS
   $rc = $LASTEXITCODE
+  cmd /c rmdir $mnt 2>&1 | Out-Null
   try { $sh | Remove-CimInstance -ErrorAction SilentlyContinue } catch {}
   if ($rc -ge 8) { throw "robocopy exit $rc" }
   $sw.Stop()
