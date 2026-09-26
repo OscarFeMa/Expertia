@@ -1,5 +1,10 @@
 # Expertia — Synaptic Archive
 
+> ## ⏸️ Pausa temporal del proyecto (26-sep-2026)
+> El desarrollo de Expertia queda en **pausa temporal de duración por determinar**.
+> **No es un cierre ni un abandono**: el pipeline entra en hibernación y el trabajo
+> se retomará. Gracias por el interés.
+
 Motor de orquestación de agentes especializados para hardware local. Gestiona una red de 18 micro-modelos LLM (Ollama) con pipeline de scraping web + destilación, validación por Wikidata, y scoring dinámico EMA.
 
 ## Overview
