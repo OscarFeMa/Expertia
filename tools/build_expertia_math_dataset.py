@@ -83,7 +83,8 @@ def load_raw(limit_each=15000):
     recs, seen = [], set()
     for name, origin in (("se_math.jsonl", "se_math"), ("se_matheducators.jsonl", "se_matheducators"),
                          ("se_mathoverflow.jsonl", "se_mathoverflow"),
-                         ("gsm8k.jsonl", "gsm8k"), ("hendrycks_math.jsonl", "hendrycks_math")):
+                         ("gsm8k.jsonl", "gsm8k"), ("hendrycks_math.jsonl", "hendrycks_math"),
+                         ("orca_math.jsonl", "orca_math")):
         f = RAW / name
         if not f.exists():
             continue
