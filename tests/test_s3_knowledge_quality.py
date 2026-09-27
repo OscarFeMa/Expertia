@@ -16,10 +16,16 @@ class TestS31_PropertyLabels:
         assert PROPERTY_LABELS['P279'] == 'subclass of'
 
     def test_property_labels_used_in_build(self):
+        # Contrato hecho-puro (post 27-sep-2026): el extractor usa FACT_LABELS
+        # (literales verificables) y excluye _SOUP_PROP_IDS; ya no emite la
+        # ficha Entity:/Properties: con PROPERTY_LABELS (generaba FAIL metadata).
         from pathlib import Path
         content = Path(__file__).parent.parent / "tools" / "update_wikidata.py"
         text = content.read_text(encoding="utf-8")
-        assert "PROPERTY_LABELS.get(prop_id, prop_id)" in text
+        assert "FACT_LABELS" in text
+        assert "_SOUP_PROP_IDS" in text
+        assert "Entity: {label}" not in text
+        assert "Properties:\\n" not in text
 
 
 class TestS32_QualityFilter:
