@@ -333,6 +333,13 @@ def update_specialist(
         topic = f'{label} — Wikidata entity'
 
         try:
+            exists = db.execute_query(
+                '''SELECT 1 FROM knowledge_packages
+                   WHERE domain = ? AND qid = ? LIMIT 1''',
+                (domain, qid), fetch=True
+            )
+            if exists:
+                continue  # duplicado: INSERT OR IGNORE lo saltaría; no contar
             db.execute_query(
                 '''INSERT OR IGNORE INTO knowledge_packages
                    (topic, source_url, domain, qid, structured_knowledge, created_at)
