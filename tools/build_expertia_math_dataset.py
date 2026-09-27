@@ -82,7 +82,8 @@ def load_raw(limit_each=15000):
     """Raws StackExchange (cosecha con key): LaTeX real, sin filtro P2534 (solo aplica a Wikidata)."""
     recs, seen = [], set()
     for name, origin in (("se_math.jsonl", "se_math"), ("se_matheducators.jsonl", "se_matheducators"),
-                         ("se_mathoverflow.jsonl", "se_mathoverflow")):
+                         ("se_mathoverflow.jsonl", "se_mathoverflow"),
+                         ("gsm8k.jsonl", "gsm8k"), ("hendrycks_math.jsonl", "hendrycks_math")):
         f = RAW / name
         if not f.exists():
             continue
@@ -154,7 +155,7 @@ def main():
     max_id = None
     seen = set()
     strict = not args.relaxed
-    raw_recs, raw_seen = load_raw()
+    raw_recs, raw_seen = load_raw(limit_each=50000)
     collected.extend(raw_recs)
     seen.update(raw_seen)
     print("raw recs: %d" % len(raw_recs), flush=True)
