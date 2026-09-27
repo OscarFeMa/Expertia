@@ -151,51 +151,84 @@ def _pick_first(values: Dict, langs: List[str], key: str = 'value'):
     return ''
 
 
+# Propiedades que aportan HECHO verificable (literales: cantidades, fórmulas, fechas).
+# Todo lo demás (P31 instance of, P279 subclass of, P17 country, identificadores
+# externos, URLs...) es sopa de metadatos: el validator la rechaza y el canario
+# penaliza su regurgitación. Etiquetas seguras (sin marcadores de sopa).
+FACT_LABELS = {
+    'P2534': 'defining formula',
+    'P2067': 'mass', 'P2048': 'height', 'P2046': 'area', 'P2043': 'length',
+    'P2073': 'maximum capacity', 'P2052': 'speed', 'P2050': 'density',
+    'P1082': 'population', 'P2044': 'elevation', 'P2061': 'luminosity',
+    'P2216': 'decay width', 'P2054': 'half-life',
+}
+
+# Prefijos de ficha que el extractor YA NO emite (formato pre-sep-2026 generaba
+# "Entity:/Properties: instance of: Q..." → FAIL metadata en validator).
+_SOUP_PROP_IDS = {
+    'P31', 'P279', 'P17', 'P495', 'P571', 'P576', 'P585', 'P856', 'P407',
+    'P50', 'P175', 'P136', 'P364', 'P106', 'P101', 'P108', 'P131', 'P159',
+    'P176', 'P178', 'P180', 'P195', 'P276', 'P910', 'P646', 'P268', 'P214',
+    'P227', 'P213', 'P2002', 'P673', 'P166', 'P1411', 'P800', 'P1559',
+    'P973', 'P851', 'P39', 'P27', 'P569', 'P570', 'P26', 'P25', 'P40',
+    'P3373', 'P22', 'P3095', 'P361', 'P527', 'P610', 'P1101', 'P2562',
+    'P1559',
+}
+
+
+def _claim_literal(prop_id: str, claim: dict) -> Optional[str]:
+    """Devuelve el valor literal (cantidad/fórmula/fecha/texto) o None si es
+    referencia a entidad (Q-id), URL o tipo no factual."""
+    try:
+        mainsnak = claim.get('mainsnak', {})
+        if mainsnak.get('snaktype') != 'value':
+            return None
+        dv = mainsnak.get('datavalue', {})
+        vtype = dv.get('type', '')
+        value = dv.get('value')
+        if vtype == 'quantity' and isinstance(value, dict):
+            amt = value.get('amount', '').lstrip('+')
+            unit = (value.get('unit', '') or '').split('/')[-1]
+            return amt + (f' {unit}' if unit and unit != '1' else '')
+        if vtype == 'time' and isinstance(value, dict):
+            return (value.get('time', '') or '').lstrip('+').split('T')[0]
+        if vtype == 'string':
+            s = str(value)[:200]
+            if s.startswith(('http://', 'https://')):
+                return None
+            return s
+        if vtype == 'monolingualtext' and isinstance(value, dict):
+            return str(value.get('text', ''))[:300]
+        if vtype == 'math':
+            return str(value)[:500]
+        return None  # wikibase-entityid y resto: sopa
+    except Exception:
+        return None
+
+
 def build_structured_knowledge(entity: Dict, languages: str = LANGUAGES) -> str:
+    """Formato hecho-puro (post 27-sep-2026): 'label — description' + líneas de
+    hecho con literales. Sin ficha Entity:/Properties:, sin P31/P279, sin Q-ids
+    desnudos. Devuelve '' si no hay definición aprovechable."""
     langs = languages.split('|')
     label = _pick_first(entity.get('labels') or {}, langs)
     desc = _pick_first(entity.get('descriptions') or {}, langs)
-    aliases_list = []
-    aliases_dict = entity.get('aliases') or {}
-    for lang in langs:
-        if lang in aliases_dict:
-            aliases_list = [a.get('value', '') for a in aliases_dict[lang][:5]]
-            break
-    if not aliases_list:
-        for v in aliases_dict.values():
-            aliases_list = [a.get('value', '') for a in v[:5]]
-            break
-    alias_text = '; '.join(aliases_list)
+    if not label:
+        return ''
+    head = f'{label} — {desc}' if desc else label
 
+    facts = []
     claims = entity.get('claims') or {}
-    claim_lines = []
-    for prop_id, claim_list in list(claims.items())[:8]:
+    for prop_id, claim_list in claims.items():
+        if prop_id in _SOUP_PROP_IDS or prop_id not in FACT_LABELS:
+            continue
         for claim in claim_list[:2]:
-            try:
-                mainsnak = claim.get('mainsnak', {})
-                if mainsnak.get('snaktype') != 'value':
-                    continue
-                datavalue = mainsnak.get('datavalue', {})
-                value = datavalue.get('value', {})
-                if isinstance(value, dict):
-                    val_str = value.get('id', value.get('time', json.dumps(value)))
-                else:
-                    val_str = str(value)
-                property_label = PROPERTY_LABELS.get(prop_id, prop_id)
-                claim_lines.append(f'  {property_label}: {val_str[:200]}')
-            except Exception as e:
-                logger.debug("build_structured_knowledge claim parse failed: %s", e)
+            lit = _claim_literal(prop_id, claim)
+            if lit:
+                facts.append(f'{FACT_LABELS[prop_id]}: {lit}')
+                break
 
-    parts = []
-    if label:
-        parts.append(f'Entity: {label}')
-    if desc:
-        parts.append(f'Description: {desc}')
-    if alias_text:
-        parts.append(f'Aliases: {alias_text}')
-    if claim_lines:
-        parts.append('Properties:\n' + '\n'.join(claim_lines))
-
+    parts = [head] + facts
     return '\n'.join(parts)
 
 
@@ -334,6 +367,8 @@ def main():
                         help='Only update this specialist domain')
     parser.add_argument('--minutes-per-domain', type=int, default=25,
                         help='Time budget per specialist; exceeding it skips to next')
+    parser.add_argument('--since', type=str, default='',
+                        help='Override fecha desde (YYYY-MM-DD): ignora last_wikidata_download')
     args = parser.parse_args()
 
     db = get_db_manager()
@@ -370,7 +405,9 @@ def main():
         last_sync = row.get('last_wikidata_download')
 
         since = None
-        if not args.full and last_sync:
+        if args.since:
+            since = args.since if 'T' in args.since else args.since + 'T00:00:00'
+        elif not args.full and last_sync:
             since = last_sync.replace(' ', 'T') if 'T' not in last_sync else last_sync
 
         progress['current_domain'] = domain
